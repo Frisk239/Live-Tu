@@ -28,9 +28,10 @@ export const apiService = {
   models: {
     async fetchModels(): Promise<ModelConfigState> {
       try {
-        const res = await fetch(`${API_BASE_URL}/models`);
+        const res = await fetch(`${API_BASE_URL}/models/config`);
         if (!res.ok) throw new Error('Failed to fetch model configuration');
-        return await res.json();
+        const json = await res.json();
+        return json.success ? json : json;
       } catch (err) {
         console.warn('[API Client] Falling back to local model configuration');
         return Promise.resolve(JSON.parse(localStorage.getItem('aigc_model_config') || 'null'));

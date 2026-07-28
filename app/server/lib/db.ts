@@ -155,4 +155,40 @@ export function initDatabase() {
       'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80'
     );
   }
+
+  // Seed default model configs if empty
+  const modelCountStmt = db.prepare('SELECT COUNT(*) as count FROM model_config');
+  const modelCount = (modelCountStmt.get() as { count: number }).count;
+  if (modelCount === 0) {
+    const insertModel = db.prepare(`
+      INSERT INTO model_config (
+        id, name, category, provider, base_url, api_key, model_code,
+        recommended_scenario, speed_rating, speed_ms, quality_rating,
+        description, badge, enabled, is_default
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const initialModels = [
+      // Text Models
+      ['DeepSeek V3', 'DeepSeek V3', 'text', 'DeepSeek AI Platform', 'https://api.deepseek.com/v1', 'sk-ds-prod-v3-commercial-key-998', 'deepseek-chat', '卖点库提炼、电商爆款文案生成与脚本重构', '极快', '0.8s', '专业级', '深度求索商业旗舰 LLM', 'AI推荐首选', 1, 1],
+      ['DeepSeek R1', 'DeepSeek R1', 'text', 'DeepSeek AI Platform', 'https://api.deepseek.com/v1', 'sk-ds-prod-r1-reasoning-key-881', 'deepseek-reasoner', '深度思维链推理、合规规避分析', '标准', '2.5s', '影视级', '具有深度思考力的推理大模型', '深度推理', 1, 0],
+      ['GPT-4o', 'GPT-4o', 'text', 'OpenAI Enterprise', 'https://api.openai.com/v1', 'sk-proj-openai-gpt4o-enterprise-key', 'gpt-4o', '全能高保真文案润色与多模态解析', '快速', '1.2s', '专业级', 'OpenAI 旗舰全能大语言模型', null, 1, 0],
+      ['Gemini 3.6 Flash', 'Gemini 3.6 Flash', 'text', 'Google Gemini AIGC', 'https://generativelanguage.googleapis.com/v1beta', 'sk-google-gemini-pro-production-v1', 'gemini-3.6-flash', '5步工作台全链路反推与多模态视觉理解', '极快', '0.9s', '专业级', 'Google 极速高多模态模型', null, 1, 0],
+      ['Claude 3.5 Sonnet', 'Claude 3.5 Sonnet', 'text', 'Anthropic AI', 'https://api.anthropic.com/v1', 'sk-ant-api03-claude35-sonnet-key', 'claude-3-5-sonnet-20241022', '高质感长文案创作与情感带货脚本', '标准', '1.8s', '影视级', '细腻情感文案王者', null, 1, 0],
+
+      // Image Models
+      ['Imagen 4 Ultra', 'Imagen 4 Ultra', 'image', 'Google Gemini AIGC', 'https://generativelanguage.googleapis.com/v1beta', 'sk-google-gemini-pro-production-v1', 'imagen-4-ultra', '超高清写真级重构，膏体微距特写', '精细', '4.8s', '影视级', 'Google 旗舰超高清重构模型', 'AI推荐首选', 1, 1],
+      ['Imagen 4', 'Imagen 4', 'image', 'Google Gemini AIGC', 'https://generativelanguage.googleapis.com/v1beta', 'sk-google-gemini-std-key-8890', 'imagen-4-standard', '通用标准商业图，家居浴室场景', '快速', '2.1s', '高清', '标准商业级高画质', null, 1, 0],
+      ['Nano Banana Pro', 'Nano Banana Pro', 'image', 'Banana AI Cloud', 'https://api.nanobanana.ai/v2', 'nb-prod-8871923091283', 'nano-banana-pro-v2', '商业摄影渲染，膏体拉丝光影', '标准', '3.5s', '专业级', '轻量化商业摄影模型', null, 1, 0],
+      ['GPT Image 2', 'GPT Image 2', 'image', 'OpenAI Enterprise', 'https://api.openai.com/v1', 'sk-proj-openai-dalle2-commercial-key', 'dall-e-3-hd', '写实物理渲染，复杂多光源反射', '标准', '2.8s', '写实级', '写实物理渲染模型', null, 1, 0],
+
+      // Video Models
+      ['Seedance 2.0 Fast', 'Seedance 2.0 Fast', 'video', '星河中转 / Seedance', '/api/seedance', 'relay-account-password', 'doubao-seedance-2-0-fast', '快节奏卡点、抖音前3秒冲击力', '极快', '3.2s', '高清', '走星河 Seedance 2.0 中转', '中转默认', 1, 1],
+      ['Seedance 2.0', 'Seedance 2.0', 'video', '星河中转 / Seedance', '/api/seedance', 'relay-account-password', 'doubao-seedance-2-0', '商业级物理运镜，膏体拉丝镜头', '精细', '7.2s', '物理级', '星河中转 Seedance 2.0 标准模型', null, 1, 0],
+    ];
+
+    for (const m of initialModels) {
+      insertModel.run(...m);
+    }
+  }
 }

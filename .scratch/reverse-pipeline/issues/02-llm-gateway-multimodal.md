@@ -4,12 +4,12 @@
 
 **Blocked by:** 01 — SQLite 基础设施 + Server 路由拆分
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] `llm-gateway.ts` 模块实现，接受 `{system, user, imageUrl?, modelId?}` 参数
-- [ ] 从 SQLite `model_config` 表读取 baseUrl/apiKey 并动态构建请求
-- [ ] 传入 imageUrl 时，请求 payload 包含 `image_url` 类型的 content block
-- [ ] 未传入 imageUrl 时，退化为纯文本 messages
-- [ ] 前端模型配置中心的保存操作写入 SQLite，下次 AI 调用使用新配置
-- [ ] Provider 级别的错误处理与超时重试逻辑
-- [ ] 测试：mock 上游 HTTP，验证请求格式（含多模态和纯文本两种场景）
+- [x] `llm-gateway.ts` 模块实现，接受 `{system, user, imageUrl?, modelId?}` 参数
+- [x] 从 SQLite `model_config` 表读取 baseUrl/apiKey 并动态构建请求
+- [x] 传入 imageUrl 时，请求 payload 包含 `image_url` 类型的 content block
+- [x] 未传入 imageUrl 时，退化为纯文本 messages
+- [x] 前端模型配置中心的保存操作写入 SQLite，下次 AI 调用使用新配置
+- [x] Provider 级别的错误处理与超时重试逻辑
+- [x] 测试：mock 上游 HTTP，验证请求格式（含多模态和纯文本两种场景，见 `server/test/llm-gateway.test.ts`）

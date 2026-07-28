@@ -136,31 +136,54 @@ export const apiService = {
 
   // --- 3. Material & Asset REST API ---
   materials: {
-    async uploadMaterial(file: File): Promise<MaterialItem> {
-      const formData = new FormData();
-      formData.append('file', file);
-
+    async fetchMaterials(): Promise<MaterialItem[]> {
       try {
-        const res = await fetch(`${API_BASE_URL}/materials/upload`, {
-          method: 'POST',
-          body: formData,
+        const res = await fetch(`${API_BASE_URL}/materials`);
+        if (!res.ok) throw new Error('Fetch materials failed');
+        const json = await res.json();
+        return json.data || [];
+      } catch (err) {
+        console.warn('[API Client] Materials fetch fallback');
+        return [];
+      }
+    },
+
+    async uploadMaterial(file: File): Promise<MaterialItem> {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = async () => {
+          try {
+            const dataUrl = reader.result as string;
+            const res = await fetch(`${API_BASE_URL}/materials/upload`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: file.name,
+                dataUrl,
+                mediaType: file.type.startsWith('video') ? 'video' : 'image',
+                size: (file.size / (1024 * 1024)).toFixed(1) + ' MB',
+              }),
+            });
+            if (!res.ok) throw new Error('Upload material failed');
+            const json = await res.json();
+            resolve(json.data);
+          } catch (err) {
+            reject(err);
+          }
+        };
+        reader.onerror = () => reject(new Error('FileReader failed'));
+        reader.readAsDataURL(file);
+      });
+    },
+
+    async deleteMaterial(id: string): Promise<{ success: boolean }> {
+      try {
+        const res = await fetch(`${API_BASE_URL}/materials/${id}`, {
+          method: 'DELETE',
         });
-        if (!res.ok) throw new Error('Upload material failed');
         return await res.json();
       } catch (err) {
-        const objectUrl = URL.createObjectURL(file);
-        const isVideo = file.type.startsWith('video');
-        const sizeMb = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
-
-        return {
-          id: 'mat_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4),
-          name: file.name,
-          url: objectUrl,
-          type: isVideo ? 'video' : 'image',
-          size: sizeMb,
-          duration: isVideo ? '00:15' : undefined,
-          createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        };
+        return { success: false };
       }
     },
   },

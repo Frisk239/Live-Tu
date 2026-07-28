@@ -107,32 +107,23 @@ export default function App() {
   const [userRole, setUserRole] = useState<'admin' | 'user'>('admin');
 
   // Materials & Tasks State
-  const [materials, setMaterials] = useState<MaterialItem[]>([
-    {
-      id: 'mat_1',
-      name: '纯净高质感膏体拉丝.mp4',
-      url: MOCK_PRESET_TEMPLATES[0]?.coverImage || 'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80',
-      type: 'image',
-      size: '2.4 MB',
-      createdAt: '10:30',
-    },
-    {
-      id: 'mat_2',
-      name: '沉浸式晨间洗漱与泡泡揉搓.mp4',
-      url: MOCK_PRESET_TEMPLATES[1]?.coverImage || 'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=600&q=80',
-      type: 'image',
-      size: '4.8 MB',
-      createdAt: '11:15',
-    },
-    {
-      id: 'mat_3',
-      name: '油敏肌高清毛孔对比特写.mp4',
-      url: MOCK_PRESET_TEMPLATES[2]?.coverImage || 'https://images.unsplash.com/photo-1512290900673-7002fffe929a?auto=format&fit=crop&w=600&q=80',
-      type: 'image',
-      size: '3.1 MB',
-      createdAt: '12:00',
-    },
-  ]);
+  const [materials, setMaterials] = useState<MaterialItem[]>([]);
+
+  useEffect(() => {
+    apiService.materials
+      .fetchMaterials()
+      .then((data) => {
+        if (data && data.length > 0) {
+          setMaterials(data);
+        }
+      })
+      .catch((err) => console.warn('[App] SQLite materials fetch fallback:', err));
+  }, []);
+
+  const handleDeleteMaterial = (id: string) => {
+    apiService.materials.deleteMaterial(id).catch(() => {});
+    setMaterials((prev) => prev.filter((m) => m.id !== id));
+  };
 
   const [tasks, setTasks] = useState<TaskItem[]>([
     {
@@ -721,7 +712,7 @@ export default function App() {
             <MaterialsPageView
               materials={materials}
               onAddMaterials={(newItems) => setMaterials((prev) => [...newItems, ...prev])}
-              onDeleteMaterial={(id) => setMaterials((prev) => prev.filter((m) => m.id !== id))}
+              onDeleteMaterial={handleDeleteMaterial}
               onSelectMaterial={(material) => {
                 setPipelineData((prev) => ({
                   ...prev,

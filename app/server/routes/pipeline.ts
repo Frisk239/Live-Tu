@@ -361,27 +361,104 @@ pipelineRouter.post('/step3', async (req, res) => {
   return res.json({ success: true, data, source, modelUsed });
 });
 
-// Step 4
+// Step 4: BGM 库检索与 LLM 语义卡点匹配
 pipelineRouter.post('/step4', async (req, res) => {
   const inputs = req.body.inputs || req.body;
-  const { tonePreference = '治愈', productId, productInfo } = inputs;
+  const {
+    copywritingTitle = '',
+    tonePreference = '治愈',
+    commercialScenario = '个人',
+    musicModel,
+    productId,
+    productInfo,
+  } = inputs;
+
   const product = getProductContext(productId, productInfo);
 
-  const mockStep4 = {
-    bgm_recommendation: {
-      track_name: tonePreference === '卡点' ? 'Trap Tech Beat 128BPM' : `Morning Breeze - ${product.name} Theme`,
-      artist: tonePreference === '卡点' ? 'Phonk Master' : 'Chillout SoundLab',
-      style: tonePreference === '卡点' ? ['卡点Electronic', '重低音Trap'] : ['治愈Lofi', '晨间轻音乐'],
-      bpm: tonePreference === '卡点' ? '128' : '82',
-      mood_match: `契合【${product.name}】的演示场景`,
-      sync_point: '1.2s（产品特写）、2.8s（成分展示）',
-      license_note: '抖音/小红书曲库已商业授权',
-    },
-    alternatives: [
-      { track_name: 'Soft Ambient Glow', style: '纯水声+轻音乐', when_to_use: '适合小红书Vlog' },
-    ],
-  };
-  return res.json({ success: true, data: mockStep4, source: 'mock' });
+  // 从 SQLite 读取候选 BGM 库
+  let bgmRows: any[] = [];
+  try {
+    const bgmStmt = db.prepare('SELECT * FROM bgm_library ORDER BY created_at DESC');
+    bgmRows = bgmStmt.all() as any[];
+  } catch (err: any) {
+    console.warn('Failed to query bgm_library from DB:', err.message);
+  }
+
+  const bgmCandidates = bgmRows.map((r) => ({
+    id: r.id,
+    track_name: r.track_name,
+    artist: r.artist,
+    style_tags: r.style_tags,
+    bpm: r.bpm,
+    mood: r.mood,
+    audio_url: r.audio_url,
+  }));
+
+  const systemPrompt = `你是一个专业的电商短视频音乐总监与音画匹配算法专家。
+针对品牌产品【${product.name}】（定位：${product.positioning}），
+根据文案标题【${copywritingTitle || product.name}】与用户偏好调性【${tonePreference}】，
+从以下候选 BGM 本地库中选择最匹配的音乐配乐：
+
+【候选 BGM 音乐库】
+${JSON.stringify(bgmCandidates, null, 2)}
+
+必须返回合法 JSON 对象，包含字段：
+- bgm_recommendation: {
+    track_name: string (匹配曲目名称),
+    artist: string (艺术家),
+    style: string[] (风格标签数组),
+    bpm: string (BPM数值字符串),
+    mood_match: string (契合度与调性匹配说明),
+    sync_point: string (建议卡点秒数说明，如 "1.2s (镜头推进特写), 2.8s (成分效果)"),
+    license_note: string (如 "已商业授权"),
+    audioSampleUrl: string (对应的试听 audio_url)
+  }
+- alternatives: Array<{ track_name: string, style: string, when_to_use: string }> (2首备选曲目说明)`;
+
+  let data: any = null;
+  let source = 'mock';
+
+  try {
+    const gatewayRes = await callLlmGateway({
+      system: systemPrompt,
+      user: `【BGM匹配任务】
+- 目标产品：${product.name}
+- 视频调性偏好：${tonePreference}
+- 商业授权场景：${commercialScenario}
+请进行语义最佳匹配。`,
+      modelId: musicModel,
+    });
+
+    if (gatewayRes.success && gatewayRes.data && gatewayRes.data.bgm_recommendation) {
+      data = gatewayRes.data;
+      source = gatewayRes.source;
+    }
+  } catch (err: any) {
+    console.warn('Step 4 LLM Gateway error, falling back to local database match:', err.message);
+  }
+
+  if (!data || !data.bgm_recommendation) {
+    const matchedBgm = bgmRows.find((b) => b.mood?.includes(tonePreference) || b.track_name?.includes(tonePreference)) || bgmRows[0];
+
+    data = {
+      bgm_recommendation: {
+        track_name: matchedBgm ? matchedBgm.track_name : (tonePreference === '卡点' ? 'Trap Tech Beat 128BPM' : `Morning Breeze - ${product.name} Theme`),
+        artist: matchedBgm ? matchedBgm.artist : (tonePreference === '卡点' ? 'Phonk Master' : 'Chillout SoundLab'),
+        style: matchedBgm ? JSON.parse(matchedBgm.style_tags || '[]') : (tonePreference === '卡点' ? ['卡点Electronic', '重低音Trap'] : ['治愈Lofi', '晨间轻音乐']),
+        bpm: String(matchedBgm ? matchedBgm.bpm : (tonePreference === '卡点' ? 128 : 82)),
+        mood_match: `契合【${product.name}】的${tonePreference}演示场景，音效拉满`,
+        sync_point: tonePreference === '卡点' ? '0.8s（快切镜头）、2.0s（拉丝展示）' : '1.2s（产品特写）、2.8s（成分展示）',
+        license_note: matchedBgm ? matchedBgm.license_type : '抖音/小红书曲库已商业授权',
+        audioSampleUrl: matchedBgm ? matchedBgm.audio_url : 'https://assets.mixkit.co/music/preview/mixkit-tech-house-vibes-130.mp3',
+      },
+      alternatives: [
+        { track_name: 'Soft Ambient Glow', style: '纯水声+轻音乐', when_to_use: '适合小红书沉浸种草 Vlog' },
+        { track_name: 'Rhythmic Energy Pulse', style: '硬核测评 Pulse', when_to_use: '适合抖音高强度测评卡点' },
+      ],
+    };
+  }
+
+  return res.json({ success: true, data, source });
 });
 
 // Step 5

@@ -1,0 +1,28 @@
+- generic [ref=e4]:
+  - generic [ref=e6]:
+    - generic [ref=e8]: BUV
+    - generic [ref=e10]:
+      - img [ref=e11]
+      - generic [ref=e14]: AI 短视频反推与生成工作台
+    - heading "欢迎登录平台" [level=1] [ref=e15]
+    - paragraph [ref=e16]: 短视频解析 · 镜头运镜 · 爆款文案 · BGM卡点 · 成品合成
+  - generic [ref=e17]:
+    - generic [ref=e18]:
+      - generic [ref=e19]:
+        - img [ref=e20]
+        - generic [ref=e23]: 账号 (Username)
+      - textbox "请输入测试账号 (haini)" [ref=e25]: haini
+    - generic [ref=e26]:
+      - generic [ref=e27]:
+        - img [ref=e28]
+        - generic [ref=e31]: 密码 (Password)
+      - textbox "请输入登录密码 (888)" [ref=e33]: "888"
+    - generic [ref=e34]:
+      - generic [ref=e35]:
+        - text: "测试凭据:"
+        - strong [ref=e36]: haini / 888
+      - button "一键填入凭据" [ref=e37] [cursor=pointer]
+    - button "立即登录工作台" [ref=e38] [cursor=pointer]:
+      - generic [ref=e39]: 立即登录工作台
+      - img [ref=e40]
+  - generic [ref=e42]: BUV AI Studio · 企业级短视频反推与AIGC全流水线平台

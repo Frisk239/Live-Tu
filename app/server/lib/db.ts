@@ -191,4 +191,26 @@ export function initDatabase() {
       insertModel.run(...m);
     }
   }
+
+  // Seed default BGM library entries if empty
+  const bgmCountStmt = db.prepare('SELECT COUNT(*) as count FROM bgm_library');
+  const bgmCount = (bgmCountStmt.get() as { count: number }).count;
+  if (bgmCount === 0) {
+    const insertBgm = db.prepare(`
+      INSERT INTO bgm_library (
+        id, track_name, artist, style_tags, bpm, mood, license_type, audio_path, audio_url
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const initialBgmList = [
+      ['bgm_morning_breeze', 'Morning Breeze (BUV 晨间清爽主题曲)', 'Chillout SoundLab', JSON.stringify(['治愈Lofi', '晨间轻音乐']), 82, '治愈清爽', '已商业授权', 'uploads/bgm/morning_breeze.mp3', 'https://assets.mixkit.co/music/preview/mixkit-tech-house-vibes-130.mp3'],
+      ['bgm_trap_beat', 'Trap Tech Beat 128BPM (抖音卡点神曲)', 'Phonk Master', JSON.stringify(['卡点Electronic', '重低音Trap']), 128, '卡点冲击', '已商业授权', 'uploads/bgm/trap_beat.mp3', 'https://assets.mixkit.co/music/preview/mixkit-hip-hop-02-738.mp3'],
+      ['bgm_pure_ambient', 'Pure Water Ambient Glow (小红书沉浸种草)', 'Soft Ambient', JSON.stringify(['纯水声', '高级轻音乐']), 75, '高级沉浸', '已商业授权', 'uploads/bgm/pure_ambient.mp3', 'https://assets.mixkit.co/music/preview/mixkit-feeling-happy-5.mp3'],
+      ['bgm_energy_pulse', 'Rhythmic Energy Pulse (硬核测评节奏)', 'Dynamic Sound', JSON.stringify(['节奏Pulse', '商业卡点']), 120, '硬核测评', '已商业授权', 'uploads/bgm/energy_pulse.mp3', 'https://assets.mixkit.co/music/preview/mixkit-games-world-beat-466.mp3'],
+    ];
+
+    for (const bgm of initialBgmList) {
+      insertBgm.run(...bgm);
+    }
+  }
 }

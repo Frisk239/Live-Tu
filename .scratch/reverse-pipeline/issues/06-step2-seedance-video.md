@@ -4,11 +4,11 @@
 
 **Blocked by:** 05 — Step 1 多模态视觉拆解
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Seedance 中转逻辑完整迁移至 `server/routes/seedance.ts`，功能不破坏
-- [ ] `POST /api/pipeline/step2` 改用 LLM Gateway 生成视频 Prompt
-- [ ] 产品信息从 SQLite 注入 Step 2 的 System Prompt
-- [ ] Seedance 任务创建、状态轮询、Token 自动刷新全部正常
-- [ ] 前端 Step2Card 正确显示 Seedance 任务状态（queued → processing → completed）
-- [ ] 一键全自动模式下 Step 1 → Step 2 自动级联运行
+- [x] Seedance 中转逻辑完整迁移至 `server/routes/seedance.ts`，功能不破坏
+- [x] `POST /api/pipeline/step2` 改用 LLM Gateway 生成视频运镜 Prompt
+- [x] 产品信息从 SQLite 注入 Step 2 的 System Prompt
+- [x] Seedance 任务创建、状态轮询、Token 自动刷新全部正常
+- [x] 前端 Step2Card 正确显示 Seedance 任务状态与运镜类型
+- [x] 一键全自动模式下 Step 1 → Step 2 自动级联运行

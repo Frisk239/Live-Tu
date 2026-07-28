@@ -35,6 +35,12 @@ function getProductContext(productId?: string, bodyProductInfo?: any) {
   };
 }
 
+function clampSeedanceDuration(duration: number): number {
+  if (duration <= 5) return 5;
+  if (duration <= 10) return 10;
+  return 10;
+}
+
 // Step 1: 多模态视觉拆解与静态图 Prompt 生成
 pipelineRouter.post('/step1', async (req, res) => {
   const inputs = req.body.inputs || req.body;
@@ -127,39 +133,106 @@ ${targetMediaUrl ? '- 请结合所上传的画面素材进行深度视觉解析�
   return res.json({ success: true, data: mockResult, source: 'mock' });
 });
 
-// Step 2
+// Step 2: 静态图 → 视频生成运镜 Prompt & 星河 Seedance 图生视频接入
 pipelineRouter.post('/step2', async (req, res) => {
   const inputs = req.body.inputs || req.body;
-  const { static_image_prompt = '', videoTone = 'douyin_beat', durationSec = 4, videoModel, productId, productInfo } = inputs;
+  const {
+    static_image_prompt = '',
+    imageUrl = '',
+    mediaUrl = '',
+    videoTone = 'douyin_beat',
+    durationSec = 4,
+    videoModel = 'Seedance 2.0 Fast',
+    productId,
+    productInfo,
+  } = inputs;
+
+  const targetImageUrl = imageUrl || mediaUrl || '';
   const product = getProductContext(productId, productInfo);
 
   let data: any = null;
+  let gatewaySource = 'mock';
+
   try {
     const gatewayRes = await callLlmGateway({
-      system: `你是一个 AI 视频运镜专家。必须返回 JSON，字段：motion_type, motion_intensity, motion_description, duration_sec, video_prompt, audio_layer, negative_prompt`,
-      user: `针对产品【${product.name}】，静态图 Prompt【${static_image_prompt}】，调性【${videoTone}】，时长【${durationSec}s】，生成运镜 Prompt 结构化 JSON。`,
+      system: `你是一个专业 AIGC 短视频运镜专家。
+针对品牌产品【${product.name}】（定位：${product.positioning}，卖点特色：${product.customSellingPoints}），
+结合首帧静态图描述及选定的视频调性，生成结构化镜头运镜 Prompt。
+
+必须返回合法 JSON 对象，包含字段：
+- motion_type: 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right' | 'tilt_up' | 'tilt_down' | 'rotate' | 'static_micro_motion'
+- motion_intensity: 'subtle' | 'medium' | 'strong'
+- motion_description (中文描述镜头推进、特写与微动作)
+- duration_sec (字符串, 如 "${durationSec}")
+- video_prompt (英文结构化运镜 Prompt, 供 Seedance / Veo 图生视频模型使用)
+- audio_layer (配套音效描述)
+- negative_prompt (负向 Prompt)`,
+      user: `【运镜生成任务】
+- 目标产品：${product.name}
+- 静态图首帧描述：${static_image_prompt || `A high-end commercial shot of ${product.name}`}
+- 目标调性：${videoTone}
+- 期望时长：${durationSec}秒
+请输出结构化 JSON。`,
+      modelId: videoModel,
     });
+
     if (gatewayRes.success && gatewayRes.data) {
       data = gatewayRes.data;
+      gatewaySource = gatewayRes.source;
     }
   } catch (err: any) {
-    console.warn('Step2 fallback:', err.message);
+    console.warn('Step 2 LLM Gateway error, using fallback motion generator:', err.message);
   }
 
   if (!data) {
     data = {
       motion_type: videoTone === 'douyin_beat' ? 'pan_left' : 'zoom_in',
       motion_intensity: videoTone === 'douyin_beat' ? 'strong' : 'subtle',
-      motion_description: `镜头由中景平滑推进至 ${product.name} 瓶身特写`,
+      motion_description: `镜头由中景平滑推进至 ${product.name} 瓶身特写，展示膏体冰淇淋拉丝质感`,
       duration_sec: String(durationSec),
-      video_prompt: `A smooth slow zoom-in camera motion focusing on ${product.name}, 60fps cinematic quality`,
+      video_prompt: `A smooth slow zoom-in camera motion focusing on ${product.name}, 60fps cinematic quality, natural lighting`,
       audio_layer: '晨间水滴声与轻柔环境音',
       negative_prompt: '避免无意义旋转、变形、抖动、花式转场',
     };
   }
 
-  data.seedanceConfigured = hasSeedanceConfig();
-  return res.json({ success: true, data, source: 'mock' });
+  // Check and trigger Seedance relay task if configured
+  const seedanceConfigured = hasSeedanceConfig();
+  data.seedanceConfigured = seedanceConfigured;
+
+  if (seedanceConfigured && targetImageUrl) {
+    try {
+      const seedanceRes = await createSeedanceVideo({
+        prompt: data.video_prompt,
+        model: videoModel.includes('Fast') ? 'doubao-seedance-2-0-fast' : 'doubao-seedance-2-0',
+        duration: clampSeedanceDuration(Number(durationSec) || 5),
+        resolution: '720p',
+        aspectRatio: '9:16',
+        materials: [{ type: 'image', url: targetImageUrl }],
+      });
+
+      const task = normalizeSeedanceTask(seedanceRes);
+      data.seedanceTaskId = task.id;
+      data.seedanceStatus = task.status;
+      data.previewVideoUrl = task.url || undefined;
+      data.seedanceInferenceId = task.inferenceId;
+
+      return res.json({
+        success: true,
+        data,
+        source: `${gatewaySource}+seedance-relay`,
+        seedance: task,
+      });
+    } catch (err: any) {
+      console.warn('Seedance task submission warning:', err.message);
+      data.seedanceStatus = 'submit_failed';
+      data.seedanceError = err.message;
+    }
+  } else {
+    data.seedanceStatus = seedanceConfigured ? 'awaiting_image_input' : 'unconfigured';
+  }
+
+  return res.json({ success: true, data, source: gatewaySource });
 });
 
 // Step 3

@@ -58,18 +58,23 @@ export interface TimelineClip {
 
 interface ArtificialVideoEditorProps {
   initialVideoUrl?: string;
+  initialAudioUrl?: string;
   initialTitle?: string;
   initialBgmTrack?: string;
   onClose?: () => void;
   onExport?: (clips: TimelineClip[]) => void;
+  /** Called when server FFmpeg render succeeds */
+  onRenderComplete?: (result: { videoUrl: string; downloadUrl: string; filename: string }) => void;
 }
 
 export const ArtificialVideoEditor: React.FC<ArtificialVideoEditorProps> = ({
-  initialVideoUrl = 'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80',
+  initialVideoUrl = '',
+  initialAudioUrl = '',
   initialTitle = '高奢小绿泥晨间洗漱与泡泡揉搓',
   initialBgmTrack = '高奢晨间治愈轻音乐 (Lofi 85 BPM)',
   onClose,
   onExport,
+  onRenderComplete,
 }) => {
   // Navigation Active Tab
   const [activeTab, setActiveTab] = useState<
@@ -265,24 +270,72 @@ export const ArtificialVideoEditor: React.FC<ArtificialVideoEditorProps> = ({
     }
   };
 
-  // Export Trigger
-  const handleTriggerExport = () => {
+  // Export Trigger — real server FFmpeg render
+  const handleTriggerExport = async () => {
+    if (!initialVideoUrl) {
+      alert('缺少视频源：请先完成 Step2 图生视频并取得预览片 URL');
+      return;
+    }
+
     setIsExporting(true);
-    setExportProgress(10);
-    const interval = setInterval(() => {
-      setExportProgress((prev) => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setTimeout(() => {
-            setIsExporting(false);
-            if (onExport) onExport(clips);
-            alert('🎉 视频人工程排版与渲染合成完毕！已成功保存至素材库。');
-          }, 500);
-          return 100;
-        }
-        return prev + 18;
+    setExportProgress(15);
+
+    const textClips = clips
+      .filter((c) => c.trackId === 'text' || c.type === 'text')
+      .sort((a, b) => a.startTime - b.startTime);
+
+    const subtitles = textClips
+      .map((c) => ({ text: c.textValue || c.name, at: `${c.startTime}s` }))
+      .filter((s) => s.text);
+
+    const brandStamp =
+      textClips.find((c) => c.name.includes('角标') || c.name.includes('品牌'))?.textValue || '';
+
+    const progressTimer = setInterval(() => {
+      setExportProgress((prev) => Math.min(prev + 8, 90));
+    }, 400);
+
+    try {
+      const res = await fetch('/api/render/ffmpeg', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          aspectRatio: '9:16',
+          videoSourceUrl: initialVideoUrl,
+          audioSourceUrl: initialAudioUrl || undefined,
+          subtitles,
+          brandStamp,
+          outputFilename: `edit_${Date.now()}.mp4`,
+          durationSec: totalDuration || 4,
+        }),
       });
-    }, 300);
+      const json = await res.json();
+      clearInterval(progressTimer);
+
+      if (!json.success || !json.data) {
+        setIsExporting(false);
+        setExportProgress(0);
+        alert(json.error || '服务端 FFmpeg 导出失败');
+        return;
+      }
+
+      setExportProgress(100);
+      onExport?.(clips);
+      onRenderComplete?.({
+        videoUrl: json.data.videoUrl,
+        downloadUrl: json.data.downloadUrl || json.data.videoUrl,
+        filename: json.data.filename,
+      });
+      setTimeout(() => {
+        setIsExporting(false);
+        alert(`🎉 成片已渲染：${json.data.filename}\n可在 Step5 下载或打开 ${json.data.downloadUrl}`);
+      }, 400);
+    } catch (err: any) {
+      clearInterval(progressTimer);
+      setIsExporting(false);
+      setExportProgress(0);
+      alert(err?.message || '导出请求失败');
+    }
   };
 
   // Time Formatter 00:00:02:15

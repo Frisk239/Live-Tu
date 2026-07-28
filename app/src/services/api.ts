@@ -21,6 +21,19 @@ export interface ApiGenerateResponse<T> {
   modelUsed: string;
 }
 
+export interface BgmTrack {
+  id: string;
+  track_name: string;
+  artist: string;
+  style_tags: string[];
+  bpm: number;
+  mood: string;
+  license_type: string;
+  audio_path?: string;
+  audio_url?: string;
+  created_at?: string;
+}
+
 export const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || '/api';
 
 export const apiService = {
@@ -31,10 +44,21 @@ export const apiService = {
         const res = await fetch(`${API_BASE_URL}/models/config`);
         if (!res.ok) throw new Error('Failed to fetch model configuration');
         const json = await res.json();
-        return json.success ? json : json;
+        if (!json || json.success === false) throw new Error(json?.error || 'model config unavailable');
+        return {
+          textModels: json.textModels || [],
+          imageModels: json.imageModels || [],
+          videoModels: json.videoModels || [],
+          autoRecommendationEnabled: json.autoRecommendationEnabled ?? true,
+          defaultTextModel: json.defaultTextModel || 'DeepSeek V3',
+          defaultImageModel: json.defaultImageModel || 'Imagen 4 Ultra',
+          defaultVideoModel: json.defaultVideoModel || 'Seedance 2.0 Fast',
+        };
       } catch (err) {
         console.warn('[API Client] Falling back to local model configuration');
-        return Promise.resolve(JSON.parse(localStorage.getItem('aigc_model_config') || 'null'));
+        const local = JSON.parse(localStorage.getItem('aigc_model_config') || 'null');
+        if (local) return local;
+        throw err;
       }
     },
 
@@ -80,20 +104,13 @@ export const apiService = {
           statusCode: res.status,
         };
       } catch (err) {
-        const simulatedLatency = Math.floor(Math.random() * 80) + 40;
-        if (!model.apiKey || model.apiKey.trim().length === 0) {
-          return {
-            success: false,
-            message: '未配置有效 API Key，请检查密钥填写',
-            latencyMs: simulatedLatency,
-            statusCode: 401,
-          };
-        }
+        const elapsed = Date.now() - startTime;
+        const message = err instanceof Error ? err.message : '连接失败，请检查网络和 API 地址';
         return {
-          success: true,
-          message: `模型通道在线！延迟 ${simulatedLatency}ms (REST Endpoint Ready)`,
-          latencyMs: simulatedLatency,
-          statusCode: 200,
+          success: false,
+          message: `连接失败: ${message} (${elapsed}ms)`,
+          latencyMs: elapsed,
+          statusCode: 0,
         };
       }
     },
@@ -202,28 +219,13 @@ export const apiService = {
     },
 
     async createTask(taskData: { id?: string; title?: string; status?: string; currentStep?: number; pipelineData: any; thumbnailUrl?: string }): Promise<{ success: boolean; data: TaskItem }> {
-      try {
-        const res = await fetch(`${API_BASE_URL}/tasks`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(taskData),
-        });
-        if (!res.ok) throw new Error('Task creation failed');
-        return await res.json();
-      } catch (err) {
-        return {
-          success: true,
-          data: {
-            id: taskData.id || 'TASK-' + Math.floor(100000 + Math.random() * 900000),
-            title: taskData.title || '视频爆款反推任务 #' + Math.floor(Math.random() * 100),
-            createdAt: new Date().toLocaleString(),
-            status: (taskData.status as any) || 'completed',
-            currentStep: (taskData.currentStep as StepId) || 5,
-            pipelineData: taskData.pipelineData,
-            thumbnailUrl: taskData.thumbnailUrl,
-          },
-        };
-      }
+      const res = await fetch(`${API_BASE_URL}/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(taskData),
+      });
+      if (!res.ok) throw new Error('Task creation failed');
+      return await res.json();
     },
 
     async deleteTask(id: string): Promise<{ success: boolean }> {
@@ -267,7 +269,68 @@ export const apiService = {
     },
   },
 
-  // --- 5. Presets Preset Templates REST API ---
+  // --- 5. BGM Library REST API ---
+  bgm: {
+    async fetchBgm(): Promise<BgmTrack[]> {
+      try {
+        const res = await fetch(`${API_BASE_URL}/bgm`);
+        if (!res.ok) throw new Error('Fetch BGM failed');
+        const json = await res.json();
+        return json.data || [];
+      } catch {
+        return [];
+      }
+    },
+
+    async uploadBgm(params: {
+      name: string;
+      artist?: string;
+      bpm?: number;
+      mood?: string;
+      styleTags?: string[];
+      file?: File;
+      url?: string;
+    }): Promise<{ success: boolean; data?: BgmTrack; error?: string }> {
+      try {
+        let fileDataUrl: string | undefined;
+        if (params.file) {
+          fileDataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as string);
+            reader.onerror = () => reject(new Error('FileReader failed'));
+            reader.readAsDataURL(params.file!);
+          });
+        }
+        const res = await fetch(`${API_BASE_URL}/bgm/upload`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: params.name,
+            artist: params.artist,
+            bpm: params.bpm,
+            mood: params.mood,
+            styleTags: params.styleTags,
+            fileDataUrl,
+            url: params.url,
+          }),
+        });
+        return await res.json();
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
+
+    async deleteBgm(id: string): Promise<{ success: boolean }> {
+      try {
+        const res = await fetch(`${API_BASE_URL}/bgm/${id}`, { method: 'DELETE' });
+        return await res.json();
+      } catch {
+        return { success: false };
+      }
+    },
+  },
+
+  // --- 6. Presets Preset Templates REST API ---
   presets: {
     async fetchPresets(): Promise<any[]> {
       try {

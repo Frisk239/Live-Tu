@@ -154,6 +154,42 @@ export function initDatabase() {
       '一润二修三控油，膏体薄荷绿质感拉丝，自然清爽不紧绷',
       'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80'
     );
+    insertStmt.run(
+      'prod_copper_serum',
+      'BUV 蓝铜胜肽急救修护精华液',
+      '精华修护',
+      '高浓胜肽 · 快速退红 · 屏障强韧',
+      '129元/30ml',
+      '天猫修护精华新品榜 Top 1 / SGS 实测 3分钟急救舒缓',
+      '99%高纯蓝铜胜肽（深层修护） + 蓝桉叶微凝珠',
+      '重组Ⅲ型胶原蛋白 + 积雪草提取物（舒缓退红）',
+      '5重神经酰胺 + 依克多因（屏障锁水）',
+      '3分钟肌肤泛红 -42.5%',
+      '7天经皮水分流失 -28.9%',
+      '28天屏障厚度 +18.4%',
+      JSON.stringify(['根治过敏', '秒变水光肌', '永久抗衰']),
+      '敏感肌、刷酸泛红、医美后修护、换季屏障受损人群',
+      '天然梦幻宝石蓝色质地，一抹即化，轻盈不黏腻，专为脆弱肌定制。',
+      'https://images.unsplash.com/photo-1620916566398-39f1143ab7be?auto=format&fit=crop&w=600&q=80'
+    );
+    insertStmt.run(
+      'prod_coffee_shampoo',
+      'BUV 咖啡因微米蓬松洗发水',
+      '洗护控油',
+      '微米洁净 · 48小时高颅顶 · 根根立挺',
+      '69元/500ml',
+      '抖音美发爆款榜 Top 2 / 卖出 500万瓶',
+      '德国微米级咖啡因（激活发根微循环）',
+      '侧柏叶提取物 + 泛醇 B5（控油养头皮）',
+      '无硅油APG微泡表活（深层清爽不堵塞）',
+      '48小时持续蓬松',
+      '头皮油脂分泌 -52.3%',
+      '头屑发生率 -71.2%',
+      JSON.stringify(['永不脱发', '三天不洗头', '生发神器']),
+      '细软塌发质、扁塌油头、头皮出油发痒的年轻男女',
+      '清爽无硅油配方，森林薄荷香调，洗完发根自动立挺，视觉发量暴增。',
+      'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=600&q=80'
+    );
   }
 
   // Seed default model configs if empty
@@ -168,23 +204,24 @@ export function initDatabase() {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
+    // enabled=1 for usable defaults; is_default only for one per category
     const initialModels = [
       // Text Models
-      ['DeepSeek V3', 'DeepSeek V3', 'text', 'DeepSeek AI Platform', 'https://api.deepseek.com/v1', 'sk-ds-prod-v3-commercial-key-998', 'deepseek-chat', '卖点库提炼、电商爆款文案生成与脚本重构', '极快', '0.8s', '专业级', '深度求索商业旗舰 LLM', 'AI推荐首选', 1, 1],
-      ['DeepSeek R1', 'DeepSeek R1', 'text', 'DeepSeek AI Platform', 'https://api.deepseek.com/v1', 'sk-ds-prod-r1-reasoning-key-881', 'deepseek-reasoner', '深度思维链推理、合规规避分析', '标准', '2.5s', '影视级', '具有深度思考力的推理大模型', '深度推理', 1, 0],
-      ['GPT-4o', 'GPT-4o', 'text', 'OpenAI Enterprise', 'https://api.openai.com/v1', 'sk-proj-openai-gpt4o-enterprise-key', 'gpt-4o', '全能高保真文案润色与多模态解析', '快速', '1.2s', '专业级', 'OpenAI 旗舰全能大语言模型', null, 1, 0],
-      ['Gemini 3.6 Flash', 'Gemini 3.6 Flash', 'text', 'Google Gemini AIGC', 'https://generativelanguage.googleapis.com/v1beta', 'sk-google-gemini-pro-production-v1', 'gemini-3.6-flash', '5步工作台全链路反推与多模态视觉理解', '极快', '0.9s', '专业级', 'Google 极速高多模态模型', null, 1, 0],
-      ['Claude 3.5 Sonnet', 'Claude 3.5 Sonnet', 'text', 'Anthropic AI', 'https://api.anthropic.com/v1', 'sk-ant-api03-claude35-sonnet-key', 'claude-3-5-sonnet-20241022', '高质感长文案创作与情感带货脚本', '标准', '1.8s', '影视级', '细腻情感文案王者', null, 1, 0],
+      ['DeepSeek V3', 'DeepSeek V3', 'text', 'DeepSeek AI Platform', 'https://api.deepseek.com/v1', '', 'deepseek-chat', '卖点库提炼、电商爆款文案生成与脚本重构', '极快', '0.8s', '专业级', '深度求索商业旗舰 LLM', 'AI推荐首选', 1, 1],
+      ['DeepSeek R1', 'DeepSeek R1', 'text', 'DeepSeek AI Platform', 'https://api.deepseek.com/v1', '', 'deepseek-reasoner', '深度思维链推理、合规规避分析', '标准', '2.5s', '影视级', '具有深度思考力的推理大模型', '深度推理', 1, 0],
+      ['GPT-4o', 'GPT-4o', 'text', 'OpenAI Enterprise', 'https://api.openai.com/v1', '', 'gpt-4o', '全能高保真文案润色与多模态解析', '快速', '1.2s', '专业级', 'OpenAI 旗舰全能大语言模型', null, 1, 0],
+      ['Gemini 3.6 Flash', 'Gemini 3.6 Flash', 'text', 'Google Gemini AIGC', 'https://generativelanguage.googleapis.com/v1beta', '', 'gemini-3.6-flash', '5步工作台全链路反推与多模态视觉理解', '极快', '0.9s', '专业级', 'Google 极速高多模态模型', null, 1, 0],
+      ['Claude 3.5 Sonnet', 'Claude 3.5 Sonnet', 'text', 'Anthropic AI', 'https://api.anthropic.com/v1', '', 'claude-3-5-sonnet-20241022', '高质感长文案创作与情感带货脚本', '标准', '1.8s', '影视级', '细腻情感文案王者', null, 1, 0],
 
       // Image Models
-      ['Imagen 4 Ultra', 'Imagen 4 Ultra', 'image', 'Google Gemini AIGC', 'https://generativelanguage.googleapis.com/v1beta', 'sk-google-gemini-pro-production-v1', 'imagen-4-ultra', '超高清写真级重构，膏体微距特写', '精细', '4.8s', '影视级', 'Google 旗舰超高清重构模型', 'AI推荐首选', 1, 1],
-      ['Imagen 4', 'Imagen 4', 'image', 'Google Gemini AIGC', 'https://generativelanguage.googleapis.com/v1beta', 'sk-google-gemini-std-key-8890', 'imagen-4-standard', '通用标准商业图，家居浴室场景', '快速', '2.1s', '高清', '标准商业级高画质', null, 1, 0],
-      ['Nano Banana Pro', 'Nano Banana Pro', 'image', 'Banana AI Cloud', 'https://api.nanobanana.ai/v2', 'nb-prod-8871923091283', 'nano-banana-pro-v2', '商业摄影渲染，膏体拉丝光影', '标准', '3.5s', '专业级', '轻量化商业摄影模型', null, 1, 0],
-      ['GPT Image 2', 'GPT Image 2', 'image', 'OpenAI Enterprise', 'https://api.openai.com/v1', 'sk-proj-openai-dalle2-commercial-key', 'dall-e-3-hd', '写实物理渲染，复杂多光源反射', '标准', '2.8s', '写实级', '写实物理渲染模型', null, 1, 0],
+      ['Imagen 4 Ultra', 'Imagen 4 Ultra', 'image', 'Google Gemini AIGC', 'https://generativelanguage.googleapis.com/v1beta', '', 'imagen-4-ultra', '超高清写真级重构，膏体微距特写', '精细', '4.8s', '影视级', 'Google 旗舰超高清重构模型', 'AI推荐首选', 1, 1],
+      ['Imagen 4', 'Imagen 4', 'image', 'Google Gemini AIGC', 'https://generativelanguage.googleapis.com/v1beta', '', 'imagen-4-standard', '通用标准商业图，家居浴室场景', '快速', '2.1s', '高清', '标准商业级高画质', null, 1, 0],
+      ['Nano Banana Pro', 'Nano Banana Pro', 'image', 'Banana AI Cloud', 'https://api.nanobanana.ai/v2', '', 'nano-banana-pro-v2', '商业摄影渲染，膏体拉丝光影', '标准', '3.5s', '专业级', '轻量化商业摄影模型', null, 1, 0],
+      ['GPT Image 2', 'GPT Image 2', 'image', 'OpenAI Enterprise', 'https://api.openai.com/v1', '', 'dall-e-3-hd', '写实物理渲染，复杂多光源反射', '标准', '2.8s', '写实级', '写实物理渲染模型', null, 1, 0],
 
       // Video Models
-      ['Seedance 2.0 Fast', 'Seedance 2.0 Fast', 'video', '星河中转 / Seedance', '/api/seedance', 'relay-account-password', 'doubao-seedance-2-0-fast', '快节奏卡点、抖音前3秒冲击力', '极快', '3.2s', '高清', '走星河 Seedance 2.0 中转', '中转默认', 1, 1],
-      ['Seedance 2.0', 'Seedance 2.0', 'video', '星河中转 / Seedance', '/api/seedance', 'relay-account-password', 'doubao-seedance-2-0', '商业级物理运镜，膏体拉丝镜头', '精细', '7.2s', '物理级', '星河中转 Seedance 2.0 标准模型', null, 1, 0],
+      ['Seedance 2.0 Fast', 'Seedance 2.0 Fast', 'video', '星河中转 / Seedance', '/api/seedance', '', 'doubao-seedance-2-0-fast', '快节奏卡点、抖音前3秒冲击力', '极快', '3.2s', '高清', '走星河 Seedance 2.0 中转', '中转默认', 1, 1],
+      ['Seedance 2.0', 'Seedance 2.0', 'video', '星河中转 / Seedance', '/api/seedance', '', 'doubao-seedance-2-0', '商业级物理运镜，膏体拉丝镜头', '精细', '7.2s', '物理级', '星河中转 Seedance 2.0 标准模型', null, 1, 0],
     ];
 
     for (const m of initialModels) {
@@ -231,11 +268,11 @@ export function initDatabase() {
         '适用于晨间自然光、高润泽肌感与生活Vlog，强调沉浸感与治愈情绪',
         'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80',
         JSON.stringify({
-          step1: { platform: 'xiaohongshu', bloggerType: 'daily_seeding' },
-          step2: { videoTone: 'xiaohongshu_healing', durationSec: 4 },
-          step3: { targetPlatform: 'xiaohongshu', scriptPersona: '高级感沉浸' },
-          step4: { tonePreference: '治愈' },
-          step5: { aspectRatio: '3:4', subtitleStyle: '极简小绿红书体' },
+          step1: { status: 'completed', inputs: { mediaUrl: 'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80', platform: 'xiaohongshu', bloggerType: 'daily_seeding', viralReason: '自然光质感+高辨识度绿泥膏体拉丝，评论区问询度高', imageModel: 'Imagen 4 Ultra' }, output: { scene: '晨间阳光浴室镜前，暖淡阳光从左侧百叶窗透入', subject: '女性纤手持 BUV 绿泥洁面管身，挤出绿泥膏体带有细腻磨砂颗粒', style: '小红书治愈风', palette: ['#A8D5BA 薄荷绿', '#FFFFFF 纯白', '#F5F5F0 暖白'], lighting: '晨间自然柔光，高光微润，无明显阴影', composition: '三分法对角线构图，管身与膏体居中偏右下', mood: '清爽治愈晨间仪式感', camera: '45度俯拍特写 + 微距大光圈虚化', static_image_prompt: 'a young Asian woman holding BUV mint green clay cleanser tube in a bright sunny bathroom, morning natural light through white blinds, product close-up, creamy mint green texture visible, clean minimalist background, lifestyle photography, high end skincare ad style, soft focus background, 8k resolution', rationale: '小红书爆款=真实晨间场景+产品膏体质感显现+低饱和治愈色调，天然薄荷绿增强油皮清爽心理暗示' } },
+          step2: { status: 'completed', inputs: { static_image_prompt: 'a young Asian woman holding BUV mint green clay cleanser tube...', imageUrl: 'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80', videoTone: 'xiaohongshu_healing', durationSec: 4, videoModel: 'Seedance 2.0 Fast' }, output: { motion_type: 'zoom_in', motion_intensity: 'subtle', motion_description: '镜头由中景缓慢向前推近至 BUV 绿泥膏体挤出瞬间，阳光光斑在管身上缓慢流动', duration_sec: '4', video_prompt: 'A slow smooth zoom-in shot, camera moves closer to the BUV green clay cleanser tube, a gentle push of creamy mint green cleanser emerging, natural morning light flickering smoothly, soft water droplets on the mirror, cinematic motion, 60fps slow motion, ultra smooth', audio_layer: '晨间水滴声 + 阳光微风环境音', negative_prompt: '避免镜头快速旋转，避免产品膏体变形，避免镜头抖动' } },
+          step3: { status: 'completed', inputs: { videoPrompt: 'A slow smooth zoom-in shot...', targetPlatform: 'xiaohongshu', scriptPersona: '油皮亲妈' }, output: { title: '大油田的晨间快乐水！挤出来是冰淇淋泥膏🍃', hook: '夏天早上起来脸像喷油池？试试这支3重泥控油！', body: '每次用 BUV 笔薇小绿泥，像给毛孔做了一场冰爽 SPA！\n\n它用了亚马逊白泥+火山泥+冰河泥 3重天然泥，结合 4重控油植萃。SGS 实测 8小时控油达 -66.87%！不仅控油还不紧绷，洗完脸水嫩透亮～', hashtags: ['#BUV小绿泥', '#油皮洁面推荐', '#控油洗面奶', '#晨间护肤'], cta: '油皮姐妹快去试试，真的会爱上洗脸的感觉！', platform_fit: { douyin: '大油田救星！实测8小时控油-66.87%！BUV小绿泥洗完整天不泛油！点击下方小黄车直接领优惠～', xiaohongshu: '晨间洗脸仪式感！BUV小绿泥冰淇淋膏体敲治愈🍃 3重泥+4重植萃，SGS实测14天黑头都少了35.92%～' } } },
+          step4: { status: 'completed', inputs: { copywritingTitle: '大油田的晨间快乐水！挤出来是冰淇淋泥膏🍃', tonePreference: '治愈', commercialScenario: '抖音/小红书商业化' }, output: { bgm_recommendation: { track_name: 'Morning Dew & Mint Breeze', artist: 'Chillout SoundLab', style: ['治愈Lofi', '晨间轻音乐', '环境音润饰'], bpm: '82', mood_match: '柔和的钢琴伴以低沉Lofi鼓点，完美契合晨间舒缓沉浸的洗脸场景', sync_point: '1.2s（挤出膏体瞬间）、2.8s（泡沫展现特写）', license_note: '抖音/小红书音效库免版权商业授权（CC0认证）' }, alternatives: [{ track_name: 'Soft Waterdrops', style: '纯水声+轻音乐', when_to_use: '适合小红书Vlog原声感配音' }, { track_name: 'Fresh Start Piano', style: '清爽钢琴曲', when_to_use: '适合偏大牌TVC质感短视频' }] } },
+          step5: { status: 'completed', inputs: { aspectRatio: '9:16', subtitleStyle: '黄字黑边' }, output: { timeline: [{ at: '0.0s', action: 'video_in', source: 'video_step2.mp4' }, { at: '0.0s', action: 'audio_in', source: 'morning_dew.mp3', volume: 0.3 }, { at: '0.2s', action: 'subtitle_in', text: '夏天早上起来脸像喷油池？', position: 'bottom_center' }, { at: '1.5s', action: 'subtitle_in', text: 'BUV小绿泥 SGS实测8小时控油-66.87%', position: 'bottom_center' }, { at: '2.8s', action: 'brand_stamp', text: '沙利文国货控油洁面销量第一', position: 'top_right' }, { at: '3.8s', action: 'subtitle_in', text: '点击左下角领油皮福利！', position: 'bottom_center' }], output: { filename: 'buv_v_20260723_morning.mp4', resolution: '1080x1920', format: 'mp4_h264', duration_sec: 4 }, qa_checklist: ['✓ 音画精准卡点（1.2s膏体拉丝音效到位）', '✓ SGS 8小时控油数据字幕明显高亮', '✓ 字幕位于下方20%区域，不挡产品管身', '✓ 结尾带右上方沙利文第一品牌认证角标'] } },
         }),
       ],
       [
@@ -245,11 +282,11 @@ export function initDatabase() {
         '适用于SGS数据硬核对比、重低音卡点与强转化挂车口播',
         'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=600&q=80',
         JSON.stringify({
-          step1: { platform: 'douyin', bloggerType: 'ingredients_pro' },
-          step2: { videoTone: 'douyin_beat', durationSec: 4 },
-          step3: { targetPlatform: 'douyin', scriptPersona: '成分党' },
-          step4: { tonePreference: '卡点' },
-          step5: { aspectRatio: '9:16', subtitleStyle: '黄字黑边' },
+          step1: { status: 'completed', inputs: { mediaUrl: 'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=600&q=80', platform: 'douyin', bloggerType: 'skincare_expert', viralReason: '左右半脸对比+吸油纸压脸实测，完播率高', imageModel: 'Imagen 4 Fast' }, output: { scene: '专业皮肤实验室/高质感冷调化妆台，带有数显吸油量仪器', subject: '博主将吸油纸贴在额头，左边普通洗面奶满油，右边 BUV 洁面干爽', style: '抖音硬核测评风', palette: ['#00B060 BUV绿', '#222222 深灰', '#00E5FF 科技蓝'], lighting: '高对比冷白环形灯，细节极其清晰', composition: '左右对比分屏构图 + 中央放大标注', mood: '硬核科学专业信任感', camera: '高清平视中景，快速卡点推镜头', static_image_prompt: 'split screen photo testing skin oil levels, left side oily skin with blue blot paper saturated, right side clean matte skin holding BUV mint green cleanser, clinical beauty lab background, ring light reflections, text overlay graphics style, 4k ultra detailed', rationale: '抖音爆款=前3秒强反差钩子+实验数据可视证明+黑马产品强引导' } },
+          step2: { status: 'completed', inputs: { static_image_prompt: 'split screen photo testing skin oil levels...', imageUrl: 'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=600&q=80', videoTone: 'douyin_beat', durationSec: 5, videoModel: 'Seedance 2.0 Fast' }, output: { motion_type: 'pan_left', motion_intensity: 'strong', motion_description: '镜头由左边油光脸快速横移至右边BUV洗完的哑光干爽脸，伴随数据图表动效弹出', duration_sec: '5', video_prompt: 'Fast dynamic whip pan shot from left oily forehead to right clean matte face with BUV green cleanser, glowing HUD data showing oil decrease -66.8%, high energy fast pacing, studio lighting, clear skin details, cinematic commercial video', audio_layer: '重低音卡点 + 机械扫描音效', negative_prompt: '避免过度虚化导致数据看不清，避免低画质' } },
+          step3: { status: 'completed', inputs: { videoPrompt: 'Fast dynamic whip pan shot...', targetPlatform: 'douyin', scriptPersona: '成分党' }, output: { title: '油皮别瞎洗了！SGS实测8小时控油-66.87%！🔥', hook: '吸油纸一压全是油？你洗脸洗对了吗？', body: '看看 SGS 专业报告！BUV 笔薇小绿泥，凭什么能卖爆3000万支？\n\n核心就在它的【3:4:3 清爽控油模型】：亚马逊白泥吸走老废角质，4重植萃调节油脂。实测打出的泡沫比奶油还细！洗完8小时不出油！', hashtags: ['#BUV小绿泥', '#控油洗面奶', '#SGS实测', '#油皮救星'], cta: '点击下方链接，领买一送一专属补贴！', platform_fit: { douyin: '油皮炸裂推荐！SGS权威机构认证：8小时控油-66.87%，14天黑头少35.92%！BUV小绿泥现在只要49！速抢！', xiaohongshu: '成分党硬核扒成分！BUV小绿泥不只是控油，3重泥+4重植萃温和不伤肤，大油田洗完真的会谢！' } } },
+          step4: { status: 'completed', inputs: { copywritingTitle: '油皮别瞎洗了！SGS实测8小时控油-66.87%！🔥', tonePreference: '卡点', commercialScenario: '抖音/小红书商业化' }, output: { bgm_recommendation: { track_name: 'Trap Tech Beat 128BPM', artist: 'Phonk Master', style: ['卡点Electronic', '重低音Trap', '高节奏打击'], bpm: '128', mood_match: '强节奏低音震感，极其适合抖音前3秒冲击力与硬核测评卡点', sync_point: '0.8s（吸油纸撕开）、2.2s（SGS报告弹出）、4.0s（领优惠卡点）', license_note: '抖音短视频曲库已商业授权' }, alternatives: [{ track_name: 'Future Bass Rush', style: '电音节奏', when_to_use: '适合年轻学生人群卡点' }, { track_name: 'Cyber Attack', style: '科技节奏', when_to_use: '适合实验室测评风' }] } },
+          step5: { status: 'completed', inputs: { aspectRatio: '9:16', subtitleStyle: '黄字黑边' }, output: { timeline: [{ at: '0.0s', action: 'video_in', source: 'video_step2.mp4' }, { at: '0.0s', action: 'audio_in', source: 'trap_tech.mp3', volume: 0.35 }, { at: '0.0s', action: 'subtitle_in', text: '吸油纸一压全是油？你洗脸洗对了吗？', position: 'bottom_center' }, { at: '2.0s', action: 'subtitle_in', text: 'BUV小绿泥 SGS实测：8小时控油-66.87%', position: 'bottom_center' }, { at: '3.5s', action: 'brand_stamp', text: '沙利文国货控油洁面销量第一', position: 'top_right' }, { at: '4.2s', action: 'subtitle_in', text: '点击左下角，领买一送一活动！', position: 'bottom_center' }], output: { filename: 'buv_v_20260723_hardcore.mp4', resolution: '1080x1920', format: 'mp4_h264', duration_sec: 5 }, qa_checklist: ['✓ 强低音卡点精准触发', '✓ 黄字黑边高对比字幕保障完播与可读性', '✓ SGS 权威数据文字大字高亮', '✓ 左下角引导挂车箭头指引明确'] } },
         }),
       ],
       [
@@ -259,11 +296,11 @@ export function initDatabase() {
         '适用于沙利文销量背书、成分党硬核解析与高客单转化',
         'https://images.unsplash.com/photo-1617897903246-719242758050?auto=format&fit=crop&w=600&q=80',
         JSON.stringify({
-          step1: { platform: 'shipinhao', bloggerType: 'ingredients_pro' },
-          step2: { videoTone: 'tvc_luxury', durationSec: 5 },
-          step3: { targetPlatform: 'shipinhao', scriptPersona: '油皮亲妈' },
-          step4: { tonePreference: '高级' },
-          step5: { aspectRatio: '9:16', subtitleStyle: '白字柔影' },
+          step1: { status: 'completed', inputs: { mediaUrl: 'https://images.unsplash.com/photo-1512290900673-7002fffe929a?auto=format&fit=crop&w=600&q=80', platform: 'shipinhao', bloggerType: 'skincare_expert', viralReason: '鼻翼毛孔细腻度对比 + 绿泥微孔吸附视觉 + 品质信任背书', imageModel: 'Imagen 4 Ultra' }, output: { scene: '高奢护肤光感镜头，洁面泡沫覆盖鼻翼与 T 区', subject: 'BUV 绿泥细腻泡沫深层揉搓，洗后鼻翼通透哑光', style: '高质感护肤大片', palette: ['#A8D5BA 薄荷绿', '#2A302E 深绿灰', '#FFFFFF 纯白'], lighting: '柔光箱 45 度侧光，透出肌肤水润微光', composition: '极近微距特写构图', mood: '极度舒爽清透沉浸', camera: '100mm 护肤微距镜头', static_image_prompt: 'extreme macro shot of nose and cheek skin with rich creamy mint green cleanser bubbles, BUV skincare product, 14-day pore refinement comparison visual, ultra detailed skin texture, soft studio lighting, water splash elements, 8k resolution', rationale: '种草黑马=直观痛点解决（黑头/毛孔）+高清透视觉感+数据背书' } },
+          step2: { status: 'completed', inputs: { static_image_prompt: 'extreme macro shot of nose and cheek skin with rich creamy mint green cleanser bubbles...', imageUrl: 'https://images.unsplash.com/photo-1512290900673-7002fffe929a?auto=format&fit=crop&w=600&q=80', videoTone: 'xiaohongshu_healing', durationSec: 4, videoModel: 'Seedance 2.0 Fast' }, output: { motion_type: 'zoom_in', motion_intensity: 'subtle', motion_description: '微距镜头极其缓慢滑过洁面泡沫，泡沫在微风中微微浮动，展现丰富细腻包覆感', duration_sec: '4', video_prompt: 'Extreme macro slow motion video, camera glides over rich dense mint green cleanser foam on skin, tiny bubbles moving smoothly, soft studio light reflections, crystal clean aesthetic, 4k 60fps', audio_layer: '细腻泡沫揉搓声 + 柔和流水音效', negative_prompt: '避免皮肤噪点过重，避免画面过于暗淡' } },
+          step3: { status: 'completed', inputs: { videoPrompt: 'Extreme macro slow motion video...', targetPlatform: 'shipinhao', scriptPersona: '高级感沉浸' }, output: { title: '鼻翼黑头真的被"吸"走了！14天黑头-35.92%！✨', hook: '毛孔粗大还爱长黑头？别再用撕拉面膜伤害皮肤了！', body: '用 BUV 笔薇小绿泥，3重天然泥（白泥+火山泥+冰河泥）就像毛孔磁铁，把深层油脂黑头通通吸走！SGS 权威实测 14 天黑头少 35.92%！而且加了 4 重控油植萃，洗完水润舒缓，完全不拉扯皮肤～', hashtags: ['#BUV小绿泥', '#去黑头洗面奶', '#毛孔收敛', '#油敏肌洁面'], cta: '黑头姐妹快试试，洗出通透水光肌！', platform_fit: { douyin: '黑头党狂喜！SGS权威实测14天黑头少35.92%！BUV小绿泥3重天然泥微孔吸附，现在只要49！', xiaohongshu: '告别撕拉面膜！BUV小绿泥温柔去黑头，3重泥+4重植萃，洗完鼻翼干净又清爽～', shipinhao: '国货品质之选！BUV小绿泥SGS权威认证，14天黑头-35.92%，3重天然泥温和吸附不伤肤～' } } },
+          step4: { status: 'completed', inputs: { copywritingTitle: '鼻翼黑头真的被"吸"走了！14天黑头-35.92%！✨', tonePreference: '高级', commercialScenario: '抖音/小红书商业化' }, output: { bgm_recommendation: { track_name: 'Crystal Clear Water Ambience', artist: 'Pure Zen Audio', style: ['水感轻音乐', '治愈ASMR', '高质感背景音'], bpm: '90', mood_match: '清澈透亮的音色，完美衬托黑头净澈与毛孔水润收敛过程', sync_point: '1.0s（泡沫展示）、2.5s（SGS黑头报告）', license_note: '小红书音效库免版权商业授权' }, alternatives: [{ track_name: 'Pure Skin Vibe', style: '轻快Lofi', when_to_use: '适合日常 Vlog 种草' }] } },
+          step5: { status: 'completed', inputs: { aspectRatio: '9:16', subtitleStyle: '白字柔影' }, output: { timeline: [{ at: '0.0s', action: 'video_in', source: 'video_step2.mp4' }, { at: '0.0s', action: 'audio_in', source: 'crystal_water.mp3', volume: 0.3 }, { at: '0.2s', action: 'subtitle_in', text: '别再用撕拉面膜伤害皮肤了！', position: 'bottom_center' }, { at: '1.8s', action: 'subtitle_in', text: 'BUV小绿泥 SGS实测：14天黑头-35.92%', position: 'bottom_center' }, { at: '3.6s', action: 'subtitle_in', text: '洗出哑光透亮好皮肤！', position: 'bottom_center' }], output: { filename: 'buv_v_20260723_pores.mp4', resolution: '1080x1920', format: 'mp4_h264', duration_sec: 4 }, qa_checklist: ['✓ SGS 14天黑头数据卡点清晰', '✓ 高清微距画面极具说服力', '✓ 音效轻盈质感高级'] } },
         }),
       ],
     ];
@@ -316,5 +353,48 @@ export function initDatabase() {
     for (const t of defaultTasks) {
       insertTask.run(...t);
     }
+  }
+
+  // One-shot migration: older seeds stored enabled=0 for every model, which emptied UI selectors
+  try {
+    const enabledCount = (db.prepare('SELECT COUNT(*) as count FROM model_config WHERE enabled = 1').get() as { count: number }).count;
+    const totalModels = (db.prepare('SELECT COUNT(*) as count FROM model_config').get() as { count: number }).count;
+    if (totalModels > 0 && enabledCount === 0) {
+      db.exec('UPDATE model_config SET enabled = 1');
+    }
+  } catch (err) {
+    console.warn('[db] model_config enabled migration skipped:', err);
+  }
+
+  // Backfill empty model API keys / base URLs from 云雾 env (docs/云雾.txt + .env)
+  // Gateway already falls back at runtime; this makes 模型中心 UI reflect real routing.
+  try {
+    const yunwuKey = process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
+    const yunwuBase = (process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1').replace(/\/$/, '');
+    if (yunwuKey && yunwuKey !== 'MY_GEMINI_API_KEY' && !yunwuKey.startsWith('your_')) {
+      // Text + image models: point empty keys to 云雾 OpenAI-compatible relay
+      db.prepare(
+        `UPDATE model_config
+         SET api_key = CASE WHEN api_key IS NULL OR api_key = '' THEN ? ELSE api_key END,
+             base_url = CASE
+               WHEN (api_key IS NULL OR api_key = '') AND category IN ('text', 'image') THEN ?
+               WHEN base_url IS NULL OR base_url = '' THEN ?
+               ELSE base_url
+             END
+         WHERE category IN ('text', 'image')`
+      ).run(yunwuKey, yunwuBase, yunwuBase);
+    }
+
+    // Video models: local seedance relay path
+    const seedanceBase = (process.env.SEEDANCE_BASE_URL || '').replace(/\/$/, '');
+    if (seedanceBase) {
+      db.prepare(
+        `UPDATE model_config
+         SET base_url = ?
+         WHERE category = 'video' AND (base_url IS NULL OR base_url = '' OR base_url = '/api/seedance')`
+      ).run(seedanceBase);
+    }
+  } catch (err) {
+    console.warn('[db] model_config env backfill skipped:', err);
   }
 }

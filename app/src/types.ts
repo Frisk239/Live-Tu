@@ -1,6 +1,6 @@
 export type StepId = 1 | 2 | 3 | 4 | 5;
 
-export type StepStatus = 'pending' | 'running' | 'completed';
+export type StepStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 export interface Step1Inputs {
   mediaUrl: string;
@@ -190,5 +190,7 @@ export interface PresetTemplate {
   tag: string;
   description: string;
   coverImage: string;
-  data: PipelineData;
+  /** Full 5-step snapshot; aligned with backend `/api/presets` field name */
+  pipelineData: PipelineData;
+  createdAt?: string;
 }

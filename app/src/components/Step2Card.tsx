@@ -30,7 +30,6 @@ interface Step2CardProps {
   output?: Step2Output;
   step1Output?: Step1Output;
   status: StepStatus;
-  useMockMode: boolean;
   modelConfig: ModelConfigState;
   onUpdateInputs: (inputs: Partial<Step2Inputs>) => void;
   onUpdateOutput?: (updatedOutput: Partial<Step2Output>) => void;
@@ -39,6 +38,8 @@ interface Step2CardProps {
   onReset: () => void;
   onPrev: () => void;
   onNext: () => void;
+  /** Upstream Step1 re-ran; current step artifacts may be outdated */
+  upstreamStale?: boolean;
 }
 
 export const Step2Card: React.FC<Step2CardProps> = ({
@@ -46,7 +47,6 @@ export const Step2Card: React.FC<Step2CardProps> = ({
   output,
   step1Output,
   status,
-  useMockMode,
   modelConfig,
   onUpdateInputs,
   onUpdateOutput,
@@ -55,6 +55,7 @@ export const Step2Card: React.FC<Step2CardProps> = ({
   onReset,
   onPrev,
   onNext,
+  upstreamStale = false,
 }) => {
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [copiedJson, setCopiedJson] = useState(false);
@@ -80,6 +81,96 @@ export const Step2Card: React.FC<Step2CardProps> = ({
       }
     }
   }, [inputs.videoTone, modelConfig.autoRecommendationEnabled]);
+
+  const [seedanceWaitSec, setSeedanceWaitSec] = useState(0);
+
+  // Poll Seedance task until video URL is ready
+  useEffect(() => {
+    const taskId = output?.seedanceTaskId;
+    const st = (output?.seedanceStatus || '').toLowerCase();
+    const done =
+      !taskId ||
+      Boolean(output?.previewVideoUrl) ||
+      st === 'success' ||
+      st === 'completed' ||
+      st === 'failed' ||
+      st === 'error' ||
+      st === 'submit_failed' ||
+      st === 'unconfigured' ||
+      st === 'not_configured' ||
+      st === 'timeout';
+
+    if (done || !onUpdateOutput) {
+      if (output?.previewVideoUrl) setSeedanceWaitSec(0);
+      return;
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 60;
+    const startedAt = Date.now();
+    setSeedanceWaitSec(0);
+
+    const tick = async () => {
+      if (cancelled) return;
+      attempts += 1;
+      setSeedanceWaitSec(Math.floor((Date.now() - startedAt) / 1000));
+      try {
+        const res = await fetch(`/api/seedance/generations/${encodeURIComponent(taskId!)}`);
+        const json = await res.json();
+        if (!json.success || !json.data) {
+          if (attempts >= maxAttempts) {
+            onUpdateOutput({ seedanceStatus: 'error', seedanceError: json.error || '轮询超时' });
+          }
+          return;
+        }
+        const task = json.data as {
+          status?: string;
+          url?: string;
+          error?: string;
+          inferenceId?: string;
+        };
+        const nextStatus = task.status || 'processing';
+        onUpdateOutput({
+          seedanceStatus: nextStatus,
+          previewVideoUrl: task.url || output?.previewVideoUrl,
+          seedanceInferenceId: task.inferenceId || output?.seedanceInferenceId,
+          seedanceError: task.error || undefined,
+        });
+        if (
+          task.url ||
+          nextStatus === 'success' ||
+          nextStatus === 'completed' ||
+          nextStatus === 'failed' ||
+          nextStatus === 'error'
+        ) {
+          cancelled = true;
+        }
+      } catch (err: any) {
+        if (attempts >= maxAttempts) {
+          onUpdateOutput({ seedanceStatus: 'error', seedanceError: err?.message || '轮询失败' });
+          cancelled = true;
+        }
+      }
+    };
+
+    void tick();
+    const timer = setInterval(() => {
+      if (cancelled || attempts >= maxAttempts) {
+        clearInterval(timer);
+        if (attempts >= maxAttempts && !cancelled) {
+          onUpdateOutput({ seedanceStatus: 'error', seedanceError: 'Seedance 轮询超时（约 3 分钟）' });
+        }
+        return;
+      }
+      void tick();
+    }, 3000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [output?.seedanceTaskId, output?.seedanceStatus, output?.previewVideoUrl, onUpdateOutput]);
 
   const handleCopyPrompt = async () => {
     if (output?.video_prompt) {
@@ -235,21 +326,37 @@ export const Step2Card: React.FC<Step2CardProps> = ({
           </div>
 
           {/* Context Inheritance Banner */}
-          <div className="p-3 bg-emerald-50 border border-emerald-200/80 rounded-xl shadow-2xs flex items-center justify-between text-xs text-emerald-900">
+          <div
+            className={`p-3 rounded-xl shadow-2xs flex items-center justify-between text-xs ${
+              upstreamStale
+                ? 'bg-amber-50 border border-amber-300 text-amber-950'
+                : 'bg-emerald-50 border border-emerald-200/80 text-emerald-900'
+            }`}
+          >
             <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="font-semibold text-emerald-800">
-                已自动引用 Step 1 产物
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  upstreamStale ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500 animate-pulse'
+                }`}
+              />
+              <span className={`font-semibold ${upstreamStale ? 'text-amber-900' : 'text-emerald-800'}`}>
+                {upstreamStale
+                  ? '上游 Step 1 已更新，下游产物仍保留 — 请点击同步后再重跑'
+                  : '已自动引用 Step 1 产物'}
               </span>
             </div>
             {onSyncFromStep1 && (
               <button
                 onClick={onSyncFromStep1}
-                className="px-2.5 py-1 bg-white border border-emerald-200 rounded-lg text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 transition-colors flex items-center gap-1 shadow-2xs cursor-pointer"
+                className={`px-2.5 py-1 bg-white rounded-lg text-[11px] font-semibold transition-colors flex items-center gap-1 shadow-2xs cursor-pointer ${
+                  upstreamStale
+                    ? 'border border-amber-300 text-amber-800 hover:bg-amber-50'
+                    : 'border border-emerald-200 text-emerald-700 hover:bg-emerald-50'
+                }`}
                 title="一键拉取 Step 1 最新 static_image_prompt"
               >
-                <RefreshCw className="w-3 h-3 text-emerald-600" />
-                <span>同步 Step 1 结果</span>
+                <RefreshCw className={`w-3 h-3 ${upstreamStale ? 'text-amber-600' : 'text-emerald-600'}`} />
+                <span>{upstreamStale ? '同步上游产物' : '同步 Step 1 结果'}</span>
               </button>
             )}
           </div>
@@ -494,20 +601,40 @@ export const Step2Card: React.FC<Step2CardProps> = ({
                     <span className="text-[10px] text-slate-400 font-mono uppercase">星河 Seedance 中转</span>
                     <span
                       className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold ${
-                        output.seedanceStatus === 'success'
+                        output.seedanceStatus === 'success' || output.seedanceStatus === 'completed'
                           ? 'bg-emerald-900/40 text-emerald-300 border-emerald-700/50'
-                          : output.seedanceStatus === 'processing'
+                          : output.seedanceStatus === 'processing' ||
+                              (output.seedanceTaskId && !output.previewVideoUrl)
                           ? 'bg-amber-900/40 text-amber-300 border-amber-700/50'
-                          : output.seedanceStatus === 'not_configured'
+                          : output.seedanceStatus === 'not_configured' ||
+                              output.seedanceStatus === 'unconfigured'
                           ? 'bg-slate-800 text-slate-300 border-slate-700'
-                          : output.seedanceStatus === 'submit_failed' || output.seedanceStatus === 'error'
+                          : output.seedanceStatus === 'submit_failed' ||
+                              output.seedanceStatus === 'error' ||
+                              output.seedanceStatus === 'timeout'
                           ? 'bg-rose-900/40 text-rose-300 border-rose-700/50'
                           : 'bg-blue-900/40 text-blue-300 border-blue-700/50'
                       }`}
                     >
                       {output.seedanceStatus || 'prompt_only'}
+                      {output.seedanceTaskId && !output.previewVideoUrl && seedanceWaitSec > 0
+                        ? ` · ${seedanceWaitSec}s`
+                        : ''}
                     </span>
                   </div>
+                  {output.seedanceTaskId && !output.previewVideoUrl && (
+                    <div className="space-y-1">
+                      <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                        <div
+                          className="h-full bg-amber-500/80 transition-all duration-500"
+                          style={{ width: `${Math.min(95, (seedanceWaitSec / 180) * 100)}%` }}
+                        />
+                      </div>
+                      <p className="text-[10px] text-amber-200/80">
+                        正在轮询 Seedance 任务（约每 3s），已等待 {seedanceWaitSec}s / 180s
+                      </p>
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
                     <div>
                       <span className="text-slate-500">模型：</span>
@@ -528,14 +655,41 @@ export const Step2Card: React.FC<Step2CardProps> = ({
                     <p className="text-[11px] text-rose-300">{output.seedanceError}</p>
                   )}
                   {output.previewVideoUrl && (
-                    <a
-                      href={output.previewVideoUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex text-[11px] text-blue-400 hover:underline"
-                    >
-                      打开生成视频
-                    </a>
+                    <div className="space-y-2">
+                      <video
+                        src={output.previewVideoUrl}
+                        className="w-full max-h-48 rounded-lg bg-black object-contain border border-slate-800"
+                        controls
+                        playsInline
+                      />
+                      <div className="flex flex-wrap items-center gap-2">
+                        <a
+                          href={output.previewVideoUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex text-[11px] text-blue-400 hover:underline"
+                        >
+                          打开生成视频
+                        </a>
+                        {(output.seedanceStatus === 'success' ||
+                          output.seedanceStatus === 'completed' ||
+                          output.previewVideoUrl) && (
+                          <button
+                            type="button"
+                            onClick={onNext}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold"
+                          >
+                            视频已就绪 · 继续文案/合成
+                            <ArrowRight className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                      {String(output.previewVideoUrl).includes('/uploads/renders/') && (
+                        <p className="text-[10px] text-emerald-400/90">
+                          已缓存到本地 renders，可供 Step5 FFmpeg 直接合成
+                        </p>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>

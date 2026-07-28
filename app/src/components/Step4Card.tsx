@@ -32,13 +32,13 @@ interface Step4CardProps {
   output?: Step4Output;
   step3Output?: Step3Output;
   status: StepStatus;
-  useMockMode: boolean;
   onUpdateInputs: (inputs: Partial<Step4Inputs>) => void;
   onSyncFromStep3?: () => void;
   onRun: () => void;
   onReset: () => void;
   onPrev: () => void;
   onNext: () => void;
+  upstreamStale?: boolean;
 }
 
 export const Step4Card: React.FC<Step4CardProps> = ({
@@ -46,13 +46,13 @@ export const Step4Card: React.FC<Step4CardProps> = ({
   output,
   step3Output,
   status,
-  useMockMode,
   onUpdateInputs,
   onSyncFromStep3,
   onRun,
   onReset,
   onPrev,
   onNext,
+  upstreamStale = false,
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [copiedJson, setCopiedJson] = useState(false);
@@ -201,21 +201,41 @@ export const Step4Card: React.FC<Step4CardProps> = ({
           </div>
 
           {/* Context Inheritance Banner */}
-          <div className="p-2.5 bg-indigo-50/80 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/60 rounded-xl flex items-center justify-between text-xs">
+          <div
+            className={`p-2.5 rounded-xl flex items-center justify-between text-xs ${
+              upstreamStale
+                ? 'bg-amber-50 border border-amber-300'
+                : 'bg-indigo-50/80 dark:bg-indigo-950/30 border border-indigo-200/80 dark:border-indigo-800/60'
+            }`}
+          >
             <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-              <span className="font-semibold text-indigo-800 dark:text-indigo-300">
-                🔗 已自动引用 Step 3 爆款标题
+              <span
+                className={`w-2 h-2 rounded-full animate-pulse ${
+                  upstreamStale ? 'bg-amber-500' : 'bg-indigo-500'
+                }`}
+              />
+              <span
+                className={`font-semibold ${
+                  upstreamStale ? 'text-amber-900' : 'text-indigo-800 dark:text-indigo-300'
+                }`}
+              >
+                {upstreamStale
+                  ? '上游 Step 3 已更新，BGM 推荐仍保留 — 请同步后重跑'
+                  : '🔗 已自动引用 Step 3 爆款标题'}
               </span>
             </div>
             {onSyncFromStep3 && (
               <button
                 onClick={onSyncFromStep3}
-                className="px-2 py-1 bg-white dark:bg-slate-800 border border-indigo-300 text-indigo-700 dark:text-indigo-300 rounded-lg text-[11px] font-bold hover:bg-indigo-100 dark:hover:bg-slate-700 transition-colors flex items-center gap-1 shadow-sm"
+                className={`px-2 py-1 bg-white dark:bg-slate-800 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 shadow-sm ${
+                  upstreamStale
+                    ? 'border border-amber-300 text-amber-800 hover:bg-amber-50'
+                    : 'border border-indigo-300 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-slate-700'
+                }`}
                 title="一键拉取 Step 3 最新文案标题"
               >
                 <RefreshCw className="w-3 h-3" />
-                <span>同步 Step 3 结果</span>
+                <span>{upstreamStale ? '同步上游产物' : '同步 Step 3 结果'}</span>
               </button>
             )}
           </div>

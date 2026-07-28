@@ -9,6 +9,10 @@ import {
   ArrowLeft,
   Download,
   X,
+  FilePenLine,
+  Loader2,
+  AlertCircle,
+  Clock,
 } from 'lucide-react';
 import { TaskItem } from '../types';
 import { downloadJsonFile } from '../utils/format';
@@ -20,6 +24,57 @@ interface TasksPageViewProps {
   onBackToPipeline: () => void;
 }
 
+/** In-progress workspace autosave (not a finished delivery) */
+function isDraftTask(task: TaskItem): boolean {
+  if (task.status === 'completed') return false;
+  if (task.status === 'failed') return false;
+  return (
+    task.id.startsWith('draft_') ||
+    task.title.includes('草稿') ||
+    task.status === 'generating' ||
+    task.status === 'queued'
+  );
+}
+
+function StatusBadge({ task }: { task: TaskItem }) {
+  if (task.status === 'completed') {
+    return (
+      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+        已完成 · Step {task.currentStep || 5}
+      </span>
+    );
+  }
+  if (task.status === 'failed') {
+    return (
+      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200 flex items-center gap-1">
+        <AlertCircle className="w-3 h-3" />
+        失败
+      </span>
+    );
+  }
+  return (
+    <>
+      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1">
+        <FilePenLine className="w-3 h-3" />
+        草稿
+      </span>
+      {task.status === 'generating' && (
+        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          进行中 · Step {task.currentStep}
+        </span>
+      )}
+      {task.status === 'queued' && (
+        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 flex items-center gap-1">
+          <Clock className="w-3 h-3" />
+          排队中
+        </span>
+      )}
+    </>
+  );
+}
+
 export const TasksPageView: React.FC<TasksPageViewProps> = ({
   tasks,
   onSelectTask,
@@ -27,10 +82,16 @@ export const TasksPageView: React.FC<TasksPageViewProps> = ({
   onBackToPipeline,
 }) => {
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskItem | null>(null);
-  const [statusFilter, setStatusFilter] = useState<'all' | 'completed'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'draft' | 'failed'>('all');
+
+  const draftCount = tasks.filter(isDraftTask).length;
+  const completedCount = tasks.filter((t) => t.status === 'completed').length;
+  const failedCount = tasks.filter((t) => t.status === 'failed').length;
 
   const filteredTasks = tasks.filter((t) => {
     if (statusFilter === 'completed') return t.status === 'completed';
+    if (statusFilter === 'draft') return isDraftTask(t);
+    if (statusFilter === 'failed') return t.status === 'failed';
     return true;
   });
 
@@ -66,37 +127,49 @@ export const TasksPageView: React.FC<TasksPageViewProps> = ({
         </div>
 
         <div className="text-right text-xs font-semibold text-slate-500 hidden sm:block">
-          累计完成 <span className="text-emerald-600 font-bold text-sm">{tasks.length}</span> 个反推工程
+          共 <span className="text-slate-800 font-bold text-sm">{tasks.length}</span> 条 · 草稿{' '}
+          <span className="text-amber-600 font-bold text-sm">{draftCount}</span> · 完成{' '}
+          <span className="text-emerald-600 font-bold text-sm">{completedCount}</span>
         </div>
       </div>
 
       {/* Filter Bar */}
-      <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-surface-sm flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setStatusFilter('all')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-              statusFilter === 'all'
-                ? 'bg-slate-900 text-white shadow-md'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            全部任务 ({tasks.length})
-          </button>
-          <button
-            onClick={() => setStatusFilter('completed')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
-              statusFilter === 'completed'
-                ? 'bg-emerald-600 text-white shadow-md'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
-          >
-            已完成 ({tasks.filter((t) => t.status === 'completed').length})
-          </button>
+      <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-surface-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          {(
+            [
+              { id: 'all' as const, label: `全部 (${tasks.length})`, active: 'bg-slate-900 text-white' },
+              {
+                id: 'draft' as const,
+                label: `草稿 (${draftCount})`,
+                active: 'bg-amber-600 text-white',
+              },
+              {
+                id: 'completed' as const,
+                label: `已完成 (${completedCount})`,
+                active: 'bg-emerald-600 text-white',
+              },
+              {
+                id: 'failed' as const,
+                label: `失败 (${failedCount})`,
+                active: 'bg-rose-600 text-white',
+              },
+            ] as const
+          ).map((f) => (
+            <button
+              key={f.id}
+              onClick={() => setStatusFilter(f.id)}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                statusFilter === f.id ? `${f.active} shadow-md` : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
         </div>
 
         <span className="text-xs font-medium text-slate-500">
-          点击【载入工作台】可直接在主界面对具体步骤进行细化调整
+          草稿由工作台自动保存；【载入工作台】可继续编辑
         </span>
       </div>
 
@@ -128,12 +201,9 @@ export const TasksPageView: React.FC<TasksPageViewProps> = ({
                   )}
 
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="font-extrabold text-sm text-slate-900">{task.title}</h3>
-                      <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                        5步流水线完毕
-                      </span>
+                      <StatusBadge task={task} />
                     </div>
                     <p className="text-xs text-slate-500 mt-1 line-clamp-1">
                       首帧提示词: {task.pipelineData.step1.output?.static_image_prompt || '暂无静态图提示词'}

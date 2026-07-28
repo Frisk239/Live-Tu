@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ProductItem, SellingPointsAiModel } from '../types';
-import { PRODUCT_TEMPLATES, INITIAL_PRODUCTS } from '../data/presets';
+import { PRODUCT_TEMPLATES } from '../data/presets';
 import {
   X,
   ShieldCheck,
@@ -12,7 +12,6 @@ import {
   Plus,
   Trash2,
   Check,
-  RotateCcw,
   Package,
   Cpu,
   Zap,
@@ -41,8 +40,9 @@ export const BrandKnowledgeModal: React.FC<BrandKnowledgeModalProps> = ({
   const [showTemplateMenu, setShowTemplateMenu] = useState<boolean>(false);
 
   if (!isOpen) return null;
+  if (!products || products.length === 0) return null;
 
-  const currentProduct = products.find((p) => p.id === selectedProductId) || products[0] || INITIAL_PRODUCTS[0];
+  const currentProduct = products.find((p) => p.id === selectedProductId) || products[0];
   const isActive = currentProduct.id === activeProductId;
 
   const handleFieldChange = (fieldPath: string, value: any) => {
@@ -120,14 +120,6 @@ export const BrandKnowledgeModal: React.FC<BrandKnowledgeModalProps> = ({
     }
     if (activeProductId === productId) {
       onSelectActiveProduct(filtered[0].id);
-    }
-  };
-
-  const handleResetDefaults = () => {
-    if (confirm('确认重置卖点库为初始品牌产品预设吗？')) {
-      onUpdateProducts(INITIAL_PRODUCTS);
-      setSelectedProductId(INITIAL_PRODUCTS[0].id);
-      onSelectActiveProduct(INITIAL_PRODUCTS[0].id);
     }
   };
 
@@ -320,13 +312,6 @@ export const BrandKnowledgeModal: React.FC<BrandKnowledgeModalProps> = ({
 
             {/* Bottom Actions */}
             <div className="pt-4 border-t border-slate-200/80 mt-4">
-              <button
-                onClick={handleResetDefaults}
-                className="w-full px-3 py-1.5 rounded-lg border border-slate-200/80 bg-white hover:bg-slate-100 text-slate-700 text-xs font-medium shadow-2xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-                <span>恢复默认卖点预设</span>
-              </button>
             </div>
           </div>
 

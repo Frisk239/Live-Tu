@@ -22,8 +22,14 @@ import {
   Maximize2,
   Minimize2,
   Scissors,
+  AlertCircle,
 } from 'lucide-react';
 import { ArtificialVideoEditor } from './ArtificialVideoEditor';
+
+interface Step5Readiness {
+  ffmpegInstalled?: boolean | null;
+  publicBaseUrl?: string | null;
+}
 
 interface Step5CardProps {
   inputs: Step5Inputs;
@@ -32,12 +38,15 @@ interface Step5CardProps {
   step3Output?: Step3Output;
   step4Output?: Step4Output;
   status: StepStatus;
-  useMockMode: boolean;
   onUpdateInputs: (inputs: Partial<Step5Inputs>) => void;
   onSyncFromPrevSteps?: () => void;
   onRun: () => void;
   onReset: () => void;
   onPrev: () => void;
+  upstreamStale?: boolean;
+  /** Optional: jump back to step 2 when video missing */
+  onGoStep2?: () => void;
+  readiness?: Step5Readiness;
 }
 
 export const Step5Card: React.FC<Step5CardProps> = ({
@@ -47,12 +56,14 @@ export const Step5Card: React.FC<Step5CardProps> = ({
   step3Output,
   step4Output,
   status,
-  useMockMode,
   onUpdateInputs,
   onSyncFromPrevSteps,
   onRun,
   onReset,
   onPrev,
+  upstreamStale = false,
+  onGoStep2,
+  readiness,
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -64,6 +75,20 @@ export const Step5Card: React.FC<Step5CardProps> = ({
 
   const isRunning = status === 'running';
   const isCompleted = status === 'completed' && Boolean(output);
+  const isFailed = status === 'failed';
+  const videoSource =
+    step2Output?.previewVideoUrl ||
+    (step2Output as any)?.seedanceLocalUrl ||
+    '';
+  const audioSource = step4Output?.bgm_recommendation?.audioSampleUrl || '';
+  const blockers: string[] = [];
+  if (!videoSource) {
+    blockers.push('缺少 Step2 视频源（previewVideoUrl）。请完成图生视频或使用公网首帧重新跑 Step2。');
+  }
+  if (readiness?.ffmpegInstalled === false) {
+    blockers.push('本机未检测到 FFmpeg。请安装 ffmpeg 并加入 PATH 后重启服务（Windows: winget install FFmpeg）。');
+  }
+  const canRun = blockers.length === 0 && !isRunning;
 
   // Simulated video playback timer
   React.useEffect(() => {
@@ -138,9 +163,26 @@ export const Step5Card: React.FC<Step5CardProps> = ({
       {/* Artificial Video Editor Fullscreen Overlay */}
       {isArtificialEditorOpen && (
         <ArtificialVideoEditor
-          initialTitle={inputs.copywritingTitle || '高奢小绿泥晨间洗漱视频成片'}
-          initialBgmTrack={inputs.bgmName || 'Chill Lofi Beats'}
+          initialVideoUrl={
+            step2Output?.previewVideoUrl ||
+            output?.output?.videoUrl ||
+            ''
+          }
+          initialAudioUrl={step4Output?.bgm_recommendation?.audioSampleUrl || ''}
+          initialTitle={step3Output?.title || '高奢小绿泥晨间洗漱视频成片'}
+          initialBgmTrack={step4Output?.bgm_recommendation?.track_name || 'Chill Lofi Beats'}
           onClose={() => setIsArtificialEditorOpen(false)}
+          onRenderComplete={(result) => {
+            // Parent can refresh via full re-run; surface download immediately
+            if (result.downloadUrl) {
+              const link = document.createElement('a');
+              link.href = result.downloadUrl;
+              link.download = result.filename;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+            }
+          }}
         />
       )}
 
@@ -230,7 +272,8 @@ export const Step5Card: React.FC<Step5CardProps> = ({
 
           <button
             onClick={onRun}
-            disabled={isRunning}
+            disabled={!canRun}
+            title={blockers[0] || '开始服务端 FFmpeg 合成'}
             className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 transition-all shadow-md shadow-emerald-600/20"
           >
             {isRunning ? (
@@ -241,12 +284,48 @@ export const Step5Card: React.FC<Step5CardProps> = ({
             ) : (
               <>
                 <Play className="w-3.5 h-3.5 fill-current" />
-                <span>运行 </span>
+                <span>运行合成</span>
               </>
             )}
           </button>
         </div>
       </div>
+
+      {(blockers.length > 0 || isFailed) && (
+        <div className="mx-6 mt-4 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-xs space-y-2">
+          <p className="font-bold flex items-center gap-1.5">
+            <AlertCircle className="w-4 h-4" />
+            {isFailed ? '上一次合成失败' : '合成前置条件未满足'}
+          </p>
+          <ul className="list-disc list-inside space-y-1 text-rose-800/90">
+            {blockers.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+            {isFailed && !blockers.length && <li>请查看服务端日志或补齐视频/音频源后重试</li>}
+          </ul>
+          <div className="flex flex-wrap gap-2 pt-1">
+            {onGoStep2 && !videoSource && (
+              <button
+                type="button"
+                onClick={onGoStep2}
+                className="px-3 py-1.5 rounded-lg bg-white border border-rose-200 text-rose-800 font-bold hover:bg-rose-100"
+              >
+                返回 Step2 生成视频
+              </button>
+            )}
+            {videoSource && (
+              <span className="text-[11px] text-emerald-700 font-mono truncate max-w-full">
+                视频源: {videoSource}
+              </span>
+            )}
+            {audioSource && (
+              <span className="text-[11px] text-slate-600 font-mono truncate max-w-full">
+                BGM: {audioSource}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Inputs Column */}
@@ -259,18 +338,38 @@ export const Step5Card: React.FC<Step5CardProps> = ({
           </div>
 
           {/* Context Inheritance Banner */}
-          <div className="p-3 bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-800/60 rounded-xl space-y-2 text-xs">
+          <div
+            className={`p-3 rounded-xl space-y-2 text-xs ${
+              upstreamStale
+                ? 'bg-amber-50 border border-amber-300'
+                : 'bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-800/60'
+            }`}
+          >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span className="font-bold text-emerald-800 dark:text-emerald-300">
-                  🔗 自动化继承上下文 (Step 1 → Step 4)
+                <span
+                  className={`w-2 h-2 rounded-full animate-pulse ${
+                    upstreamStale ? 'bg-amber-500' : 'bg-emerald-500'
+                  }`}
+                />
+                <span
+                  className={`font-bold ${
+                    upstreamStale ? 'text-amber-900' : 'text-emerald-800 dark:text-emerald-300'
+                  }`}
+                >
+                  {upstreamStale
+                    ? '上游步骤已更新，成片配置仍保留 — 请确认同步后重跑合成'
+                    : '🔗 自动化继承上下文 (Step 1 → Step 4)'}
                 </span>
               </div>
               {onSyncFromPrevSteps && (
                 <button
                   onClick={onSyncFromPrevSteps}
-                  className="px-2 py-1 bg-white dark:bg-slate-800 border border-emerald-300 text-emerald-700 dark:text-emerald-300 rounded-lg text-[11px] font-bold hover:bg-emerald-100 dark:hover:bg-slate-700 transition-colors flex items-center gap-1 shadow-sm"
+                  className={`px-2 py-1 bg-white dark:bg-slate-800 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 shadow-sm ${
+                    upstreamStale
+                      ? 'border border-amber-300 text-amber-800 hover:bg-amber-50'
+                      : 'border border-emerald-300 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-slate-700'
+                  }`}
                   title="一键更新全链路上下文引用"
                 >
                   <RefreshCw className="w-3 h-3" />
@@ -419,6 +518,16 @@ export const Step5Card: React.FC<Step5CardProps> = ({
               <div className="space-y-4 animate-fade-in">
                 {/* Interactive Player Frame */}
                 <div className="relative mx-auto w-full max-w-sm h-80 rounded-2xl bg-slate-950 border border-emerald-500/30 overflow-hidden shadow-2xl flex flex-col justify-between p-4">
+                  {/* Real rendered video when available */}
+                  {output.output?.videoUrl ? (
+                    <video
+                      src={output.output.videoUrl}
+                      className="absolute inset-0 w-full h-full object-cover"
+                      controls
+                      playsInline
+                      poster={step2Output?.previewVideoUrl}
+                    />
+                  ) : null}
                   {/* Background Video Simulation */}
                   <div className="absolute inset-0 z-0 bg-gradient-to-b from-slate-900/60 via-slate-950/80 to-slate-950 flex items-center justify-center">
                     <img

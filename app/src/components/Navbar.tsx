@@ -1,16 +1,26 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { ProductItem } from '../types';
 import {
   PackageCheck,
   Zap,
   PanelLeft,
+  AlertTriangle,
+  X,
+  Info,
 } from 'lucide-react';
 
 interface NavbarProps {
   isSidebarExpanded?: boolean;
   onToggleSidebar?: () => void;
   activeProduct?: ProductItem;
-  useMockMode?: boolean;
+}
+
+interface ReadinessState {
+  yunwu: boolean;
+  seedance: boolean;
+  ffmpeg: boolean;
+  publicBase: boolean;
+  notes: string[];
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -18,10 +28,70 @@ export const Navbar: React.FC<NavbarProps> = ({
   onToggleSidebar,
   activeProduct,
 }) => {
+  const [readiness, setReadiness] = useState<ReadinessState | null>(null);
+  const [dismissPublicTip, setDismissPublicTip] = useState(() => {
+    try {
+      return sessionStorage.getItem('aigc_dismiss_public_tip') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [dismissFfmpegTip, setDismissFfmpegTip] = useState(() => {
+    try {
+      return sessionStorage.getItem('aigc_dismiss_ffmpeg_tip') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/health?probe=1')
+      .then((r) => r.json())
+      .then((json) => {
+        if (cancelled || !json?.readiness) return;
+        const r = json.readiness;
+        setReadiness({
+          yunwu: Boolean(r.yunwu?.configured),
+          seedance: Boolean(
+            r.seedance?.ready === true ||
+              (r.seedance?.configured && r.seedance?.tokenOk === true)
+          ),
+          ffmpeg: Boolean(r.ffmpeg?.installed),
+          publicBase: Boolean(r.publicBaseUrl),
+          notes: Array.isArray(r.notes) ? r.notes : [],
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setReadiness({
+            yunwu: false,
+            seedance: false,
+            ffmpeg: false,
+            publicBase: false,
+            notes: ['无法连接后端 /api/health'],
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const allCoreOk = readiness && readiness.yunwu && readiness.seedance && readiness.ffmpeg;
+  const title =
+    readiness?.notes?.length
+      ? readiness.notes.join('\n')
+      : allCoreOk
+        ? '云雾 / Seedance / FFmpeg 就绪'
+        : '点击查看引擎状态';
+
+  const showPublicTip = readiness && !readiness.publicBase && !dismissPublicTip;
+  const showFfmpegTip = readiness && readiness.ffmpeg === false && !dismissFfmpegTip;
+
   return (
-    <header className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-200/80 px-4 lg:px-8 py-3 text-slate-900 transition-all select-none">
-      <div className="flex items-center justify-between gap-4">
-        {/* Left Side: Sidebar Toggle & Brand Title */}
+    <header className="sticky top-0 z-20 bg-white/90 backdrop-blur-md border-b border-slate-200/80 text-slate-900 transition-all select-none">
+      <div className="px-4 lg:px-8 py-3 flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           {!isSidebarExpanded && onToggleSidebar && (
             <button
@@ -48,9 +118,7 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
-        {/* Right Side: Active Product & Engine Status */}
         <div className="flex items-center gap-2.5">
-          {/* Active Product Badge */}
           {activeProduct && (
             <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100/80 border border-slate-200/80 text-slate-800 text-xs font-medium">
               <PackageCheck className="w-4 h-4 text-blue-600 shrink-0" />
@@ -61,13 +129,100 @@ export const Navbar: React.FC<NavbarProps> = ({
             </div>
           )}
 
-          {/* Engine Mode Badge */}
-          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-emerald-200/80 bg-emerald-50 text-emerald-700">
-            <Zap className="w-3.5 h-3.5 fill-emerald-600 text-emerald-600" />
-            <span>AI 引擎在线</span>
+          <div
+            className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border ${
+              !readiness
+                ? 'border-slate-200 bg-slate-50 text-slate-500'
+                : allCoreOk
+                  ? 'border-emerald-200/80 bg-emerald-50 text-emerald-700'
+                  : 'border-amber-200 bg-amber-50 text-amber-800'
+            }`}
+            title={title}
+          >
+            {allCoreOk ? (
+              <Zap className="w-3.5 h-3.5 fill-emerald-600 text-emerald-600" />
+            ) : (
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+            )}
+            <span>
+              {!readiness
+                ? '检测引擎…'
+                : allCoreOk
+                  ? '引擎就绪'
+                  : `部分未就绪 · 云雾${readiness.yunwu ? '✓' : '✗'} Seedance${readiness.seedance ? '✓' : '✗'} FFmpeg${readiness.ffmpeg ? '✓' : '✗'}${
+                      readiness.publicBase ? '' : ' · 公网URL✗'
+                    }`}
+            </span>
           </div>
         </div>
       </div>
+
+      {(showPublicTip || showFfmpegTip) && (
+        <div className="px-4 lg:px-8 pb-2.5 space-y-2">
+          {showPublicTip && (
+            <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-sky-50 border border-sky-200 text-sky-900 text-[11px] leading-relaxed">
+              <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-sky-600" />
+              <p className="flex-1">
+                <strong className="font-bold">图生视频提示：</strong>
+                未配置{' '}
+                <code className="px-1 py-0.5 rounded bg-white border border-sky-100 font-mono text-[10px]">
+                  PUBLIC_BASE_URL
+                </code>
+                。本地{' '}
+                <code className="px-1 py-0.5 rounded bg-white border border-sky-100 font-mono text-[10px]">
+                  /uploads
+                </code>{' '}
+                素材无法被 Seedance 拉取。请使用 https 公网图作为首帧，或在{' '}
+                <code className="font-mono text-[10px]">.env</code> 设置公网站点根后重启服务。
+              </p>
+              <button
+                type="button"
+                className="p-0.5 rounded hover:bg-sky-100 text-sky-600 shrink-0"
+                title="本次会话不再显示"
+                onClick={() => {
+                  setDismissPublicTip(true);
+                  try {
+                    sessionStorage.setItem('aigc_dismiss_public_tip', '1');
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+          {showFfmpegTip && (
+            <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-violet-50 border border-violet-200 text-violet-950 text-[11px] leading-relaxed">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-violet-600" />
+              <p className="flex-1">
+                <strong className="font-bold">成片合成提示：</strong>
+                未检测到系统 FFmpeg。Step5 / 人工剪辑导出需要本机安装 FFmpeg 并加入 PATH。
+                Windows 可用{' '}
+                <code className="px-1 py-0.5 rounded bg-white border border-violet-100 font-mono text-[10px]">
+                  winget install FFmpeg
+                </code>
+                ，安装后重启 <code className="font-mono text-[10px]">npm run dev</code>。
+              </p>
+              <button
+                type="button"
+                className="p-0.5 rounded hover:bg-violet-100 text-violet-600 shrink-0"
+                title="本次会话不再显示"
+                onClick={() => {
+                  setDismissFfmpegTip(true);
+                  try {
+                    sessionStorage.setItem('aigc_dismiss_ffmpeg_tip', '1');
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </header>
   );
 };

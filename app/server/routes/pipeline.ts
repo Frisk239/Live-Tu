@@ -1,11 +1,22 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
 import { callLlmGateway, callImageGenerationGateway } from '../lib/llm-gateway';
-import { createSeedanceVideo, normalizeSeedanceTask, hasSeedanceConfig } from './seedance';
+import {
+  createSeedanceVideo,
+  normalizeSeedanceTask,
+  hasSeedanceConfig,
+  buildSeedanceGenerationBody,
+} from './seedance';
+import { runFfmpegRender } from './render';
 import fs from 'node:fs';
 import path from 'node:path';
 
 export const pipelineRouter = Router();
+
+/** When true, failed LLM/external calls may return synthetic mock data with source:'mock' */
+function allowMockFallback(): boolean {
+  return process.env.ALLOW_MOCK_FALLBACK === 'true' || process.env.ALLOW_MOCK_FALLBACK === '1';
+}
 
 
 // Helper to fetch active product from DB or fallback
@@ -105,49 +116,42 @@ pipelineRouter.post('/generate-image', async (req, res) => {
     let imageUrl = gatewayRes.imageUrl;
     let source = gatewayRes.source;
 
-    // 如果 API 失败或未返回图像 URL，触发高保真 SVG/质感图形生成器降级
+    // Real path only: no silent SVG fake unless ALLOW_MOCK_FALLBACK
     if (!gatewayRes.success || !imageUrl) {
+      if (!allowMockFallback()) {
+        return res.status(502).json({
+          success: false,
+          error: gatewayRes.error || '文生图失败：请检查画图模型 API Key / 云雾配置',
+          source: gatewayRes.source || 'error',
+        });
+      }
+
       const filename = `gen_img_${Date.now()}.svg`;
       const targetPath = path.join(materialsDir, filename);
-
       const product = getProductContext(productId);
-      const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1440" viewBox="0 0 1080 1440">
-  <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#E8F5E9"/>
-      <stop offset="50%" stop-color="#C8E6C9"/>
-      <stop offset="100%" stop-color="#A5D6A7"/>
-    </linearGradient>
-    <radialGradient id="glow" cx="50%" cy="40%" r="50%">
-      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.8"/>
-      <stop offset="100%" stop-color="#A5D6A7" stop-opacity="0"/>
-    </radialGradient>
-  </defs>
-  <rect width="1080" height="1440" fill="url(#bg)"/>
-  <circle cx="540" cy="580" r="380" fill="url(#glow)"/>
-  <rect x="340" y="400" width="400" height="480" rx="40" fill="#FFFFFF" opacity="0.9" stroke="#81C784" stroke-width="8"/>
-  <rect x="420" y="320" width="240" height="100" rx="20" fill="#66BB6A"/>
-  <text x="540" y="600" text-anchor="middle" fill="#2E7D32" font-size="48" font-family="system-ui, sans-serif" font-weight="bold">${product.name}</text>
-  <text x="540" y="680" text-anchor="middle" fill="#388E3C" font-size="32" font-family="system-ui, sans-serif">AI 生成爆款同款首帧静态图</text>
-  <rect x="240" y="1000" width="600" height="180" rx="24" fill="#2E7D32" opacity="0.95"/>
-  <text x="540" y="1080" text-anchor="middle" fill="#FFFFFF" font-size="36" font-family="system-ui, sans-serif" font-weight="bold">BUV 爆款复刻 · 极简植萃风</text>
-  <text x="540" y="1135" text-anchor="middle" fill="#E8F5E9" font-size="24" font-family="system-ui, sans-serif">${prompt.slice(0, 45)}...</text>
-</svg>`;
-
+      const safeName = String(product.name || 'BUV').replace(/[<>&"']/g, '');
+      const safePrompt = String(prompt).slice(0, 45).replace(/[<>&"']/g, '');
+      const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1440"><rect width="1080" height="1440" fill="#E8F5E9"/><text x="540" y="700" text-anchor="middle" fill="#2E7D32" font-size="40" font-family="sans-serif">${safeName}</text><text x="540" y="780" text-anchor="middle" fill="#388E3C" font-size="24" font-family="sans-serif">演示占位图 (ALLOW_MOCK_FALLBACK)</text><text x="540" y="860" text-anchor="middle" fill="#666" font-size="20" font-family="sans-serif">${safePrompt}</text></svg>`;
       fs.writeFileSync(targetPath, svgContent, 'utf-8');
       imageUrl = `/uploads/materials/${filename}`;
-      source = 'svg-render-engine';
+      source = 'mock';
     }
 
-    // 将生成的素材写入 SQLite materials 表
+    // Persist to materials table (correct schema)
     const id = `mat_gen_${Date.now()}`;
     const name = `AI生成首帧_${Date.now().toString().slice(-4)}`;
+    const filePath = imageUrl.startsWith('/uploads/')
+      ? imageUrl.replace(/^\//, '')
+      : imageUrl;
     try {
-      const stmt = db.prepare(
-        'INSERT INTO materials (id, name, type, url, size, duration, tags, is_preset, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      );
-      stmt.run(id, name, 'image', imageUrl, 1024 * 350, 0, JSON.stringify(['AI生成', '爆款同款首帧']), 0, new Date().toISOString());
-    } catch {}
+      const stmt = db.prepare(`
+        INSERT INTO materials (id, name, file_path, url, media_type, size, duration, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      stmt.run(id, name, filePath, imageUrl, 'image', '0.3 MB', null, new Date().toISOString());
+    } catch (err: any) {
+      console.warn('[generate-image] materials insert skipped:', err.message);
+    }
 
     return res.json({
       success: true,
@@ -235,10 +239,25 @@ ${targetMediaUrl ? '- 请结合所上传的画面素材进行深度视觉解析�
       });
     }
   } catch (err: any) {
-    console.warn('Step 1 LLM Gateway error, falling back to smart mock:', err.message);
+    console.warn('Step 1 LLM Gateway error:', err.message);
+    if (!allowMockFallback()) {
+      return res.status(502).json({
+        success: false,
+        error: err.message || 'Step 1 LLM 调用失败',
+        source: 'error',
+      });
+    }
   }
 
-  // Fallback mock
+  if (!allowMockFallback()) {
+    return res.status(502).json({
+      success: false,
+      error: 'Step 1 未获得有效 LLM 结果。请检查模型 API Key / 云雾配置，或设置 ALLOW_MOCK_FALLBACK=true',
+      source: 'error',
+    });
+  }
+
+  // Explicit mock fallback (only when ALLOW_MOCK_FALLBACK=true)
   const mockResult = {
     scene: platform === 'xiaohongshu' ? `晨间阳光浴室镜前，自然光照射在 ${product.name} 瓶身上` : `高质感极简展台，背景微距呈现 ${product.name} 核心质感`,
     subject: `女性纤手展示 ${product.name}，特写精致管身与膏体质感`,
@@ -307,6 +326,13 @@ pipelineRouter.post('/step2', async (req, res) => {
   }
 
   if (!data) {
+    if (!allowMockFallback()) {
+      return res.status(502).json({
+        success: false,
+        error: 'Step 2 未获得有效运镜 LLM 结果。请检查模型配置或设置 ALLOW_MOCK_FALLBACK=true',
+        source: 'error',
+      });
+    }
     data = {
       motion_type: videoTone === 'douyin_beat' ? 'pan_left' : 'zoom_in',
       motion_intensity: videoTone === 'douyin_beat' ? 'strong' : 'subtle',
@@ -316,6 +342,7 @@ pipelineRouter.post('/step2', async (req, res) => {
       audio_layer: '晨间水滴声与轻柔环境音',
       negative_prompt: '避免无意义旋转、变形、抖动、花式转场',
     };
+    gatewaySource = 'mock';
   }
 
   const seedanceConfigured = hasSeedanceConfig();
@@ -323,34 +350,60 @@ pipelineRouter.post('/step2', async (req, res) => {
 
   if (seedanceConfigured && targetImageUrl) {
     try {
-      const seedanceRes = await createSeedanceVideo({
+      const modelId = String(videoModel || '').includes('Fast')
+        ? 'doubao-seedance-2-0-fast'
+        : 'doubao-seedance-2-0';
+      const duration = clampSeedanceDuration(Number(durationSec) || 5);
+      // duration clamp 5|10 is fine; API allows 4-15
+      const prepared = buildSeedanceGenerationBody({
         prompt: data.video_prompt,
-        model: videoModel.includes('Fast') ? 'doubao-seedance-2-0-fast' : 'doubao-seedance-2-0',
-        duration: clampSeedanceDuration(Number(durationSec) || 5),
+        model: modelId,
+        duration: duration <= 5 ? 5 : 10,
         resolution: '720p',
         aspectRatio: '9:16',
-        materials: [{ type: 'image', url: targetImageUrl }],
+        imageUrl: targetImageUrl,
       });
 
-      const task = normalizeSeedanceTask(seedanceRes);
-      data.seedanceTaskId = task.id;
-      data.seedanceStatus = task.status;
-      data.previewVideoUrl = task.url || undefined;
-      data.seedanceInferenceId = task.inferenceId;
+      if (prepared.warnings.length > 0) {
+        data.seedanceMaterialWarning = prepared.warnings.join('; ');
+      }
 
-      return res.json({
-        success: true,
-        data,
-        source: `${gatewaySource}+seedance-relay`,
-        seedance: task,
-      });
+      if (!prepared.materials.length) {
+        data.seedanceStatus = 'awaiting_public_image';
+        data.seedanceError =
+          prepared.warnings[0] ||
+          '图生视频需要公网可访问的首帧图。请使用 https 图链，或配置 PUBLIC_BASE_URL 暴露 /uploads';
+        data.seedanceHint =
+          '运镜 Prompt 已生成；配置 PUBLIC_BASE_URL 或改用公网素材后可重新运行 Step2 提交 Seedance';
+      } else {
+        const seedanceRes = await createSeedanceVideo(prepared.body);
+        const task = normalizeSeedanceTask(seedanceRes);
+        data.seedanceTaskId = task.id;
+        data.seedanceStatus = task.status;
+        data.previewVideoUrl = task.url || undefined;
+        data.seedanceInferenceId = task.inferenceId;
+        data.seedanceModel = prepared.modelId;
+
+        return res.json({
+          success: true,
+          data,
+          source: `${gatewaySource}+seedance-relay`,
+          seedance: task,
+        });
+      }
     } catch (err: any) {
       console.warn('Seedance task submission warning:', err.message);
       data.seedanceStatus = 'submit_failed';
       data.seedanceError = err.message;
+      if (err.warnings) data.seedanceMaterialWarning = (err.warnings as string[]).join('; ');
     }
   } else {
     data.seedanceStatus = seedanceConfigured ? 'awaiting_image_input' : 'unconfigured';
+    if (!targetImageUrl) {
+      data.seedanceHint = '请先提供 Step1 素材/文生图首帧（imageUrl），再提交图生视频';
+    } else if (!seedanceConfigured) {
+      data.seedanceHint = '请在 .env 配置 SEEDANCE_BASE_URL / SEEDANCE_ACCOUNT / SEEDANCE_PASSWORD';
+    }
   }
 
   return res.json({ success: true, data, source: gatewaySource });
@@ -421,6 +474,13 @@ pipelineRouter.post('/step3', async (req, res) => {
   }
 
   if (!data) {
+    if (!allowMockFallback()) {
+      return res.status(502).json({
+        success: false,
+        error: 'Step 3 未获得有效文案 LLM 结果。请检查模型配置或设置 ALLOW_MOCK_FALLBACK=true',
+        source: 'error',
+      });
+    }
     data = {
       title: targetPlatform === 'douyin' ? `搞定问题肌！${product.name} SGS实测强效体验！🔥` : `早晨的快乐是它给的！${product.name} 沉浸使用感🍃`,
       hook: `你还在为了油光和黑头烦恼？试试【${product.name}】的核心爆款配方！`,
@@ -432,6 +492,7 @@ pipelineRouter.post('/step3', async (req, res) => {
         xiaohongshu: `沉浸式种草！【${product.name}】质地超级治愈🍃 强烈推荐给所有宝子们～`,
       },
     };
+    source = 'mock';
   }
 
   // 执行违禁词合规扫描
@@ -520,24 +581,59 @@ ${JSON.stringify(bgmCandidates, null, 2)}
   }
 
   if (!data || !data.bgm_recommendation) {
-    const matchedBgm = bgmRows.find((b) => b.mood?.includes(tonePreference) || b.track_name?.includes(tonePreference)) || bgmRows[0];
+    // Library-first local match (real, not LLM mock)
+    const matchedBgm =
+      bgmRows.find((b) => b.mood?.includes(tonePreference) || b.track_name?.includes(tonePreference)) ||
+      bgmRows[0];
+
+    if (!matchedBgm) {
+      return res.status(400).json({
+        success: false,
+        error: 'BGM 库为空，请先在库中添加确权曲目',
+        source: 'error',
+      });
+    }
+
+    let styleTags: string[] = [];
+    try {
+      styleTags = JSON.parse(matchedBgm.style_tags || '[]');
+    } catch {
+      styleTags = [];
+    }
 
     data = {
       bgm_recommendation: {
-        track_name: matchedBgm ? matchedBgm.track_name : (tonePreference === '卡点' ? 'Trap Tech Beat 128BPM' : `Morning Breeze - ${product.name} Theme`),
-        artist: matchedBgm ? matchedBgm.artist : (tonePreference === '卡点' ? 'Phonk Master' : 'Chillout SoundLab'),
-        style: matchedBgm ? JSON.parse(matchedBgm.style_tags || '[]') : (tonePreference === '卡点' ? ['卡点Electronic', '重低音Trap'] : ['治愈Lofi', '晨间轻音乐']),
-        bpm: String(matchedBgm ? matchedBgm.bpm : (tonePreference === '卡点' ? 128 : 82)),
-        mood_match: `契合【${product.name}】的${tonePreference}演示场景，音效拉满`,
+        track_name: matchedBgm.track_name,
+        artist: matchedBgm.artist,
+        style: styleTags,
+        bpm: String(matchedBgm.bpm || 90),
+        mood_match: `本地库匹配：契合【${product.name}】的${tonePreference}演示场景`,
         sync_point: tonePreference === '卡点' ? '0.8s（快切镜头）、2.0s（拉丝展示）' : '1.2s（产品特写）、2.8s（成分展示）',
-        license_note: matchedBgm ? matchedBgm.license_type : '抖音/小红书曲库已商业授权',
-        audioSampleUrl: matchedBgm ? matchedBgm.audio_url : 'https://assets.mixkit.co/music/preview/mixkit-tech-house-vibes-130.mp3',
+        license_note: matchedBgm.license_type || '已商业授权',
+        audioSampleUrl: matchedBgm.audio_url || (matchedBgm.audio_path ? `/${matchedBgm.audio_path.replace(/\\/g, '/')}` : undefined),
       },
-      alternatives: [
-        { track_name: 'Soft Ambient Glow', style: '纯水声+轻音乐', when_to_use: '适合小红书沉浸种草 Vlog' },
-        { track_name: 'Rhythmic Energy Pulse', style: '硬核测评 Pulse', when_to_use: '适合抖音高强度测评卡点' },
-      ],
+      alternatives: bgmRows
+        .filter((b) => b.id !== matchedBgm.id)
+        .slice(0, 2)
+        .map((b) => ({
+          track_name: b.track_name,
+          style: b.mood || '备选',
+          when_to_use: `备选曲目 · ${b.mood || b.artist || ''}`,
+        })),
     };
+    source = 'library';
+  } else {
+    // Ensure recommended track exists in library when LLM returned a name
+    const recName = data.bgm_recommendation.track_name;
+    const inLib = bgmRows.find((b) => b.track_name === recName);
+    if (inLib) {
+      data.bgm_recommendation.audioSampleUrl =
+        data.bgm_recommendation.audioSampleUrl ||
+        inLib.audio_url ||
+        (inLib.audio_path ? `/${String(inLib.audio_path).replace(/\\/g, '/')}` : undefined);
+      data.bgm_recommendation.artist = data.bgm_recommendation.artist || inLib.artist;
+      data.bgm_recommendation.bpm = String(data.bgm_recommendation.bpm || inLib.bpm || 90);
+    }
   }
 
   return res.json({ success: true, data, source });
@@ -546,66 +642,114 @@ ${JSON.stringify(bgmCandidates, null, 2)}
 // Step 5: 成品合成 Timeline 构建与 FFmpeg 渲染导出
 pipelineRouter.post('/step5', async (req, res) => {
   const inputs = req.body.inputs || req.body;
-  const { aspectRatio = '9:16', subtitleStyle = '黄字黑边', productId, productInfo } = inputs;
+  const {
+    aspectRatio = '9:16',
+    subtitleStyle = '黄字黑边',
+    productId,
+    productInfo,
+    title = '',
+    hook = '',
+    videoSourceUrl = '',
+    audioSourceUrl = '',
+    previewVideoUrl = '',
+  } = inputs;
   const product = getProductContext(productId, productInfo);
 
   const timestamp = Date.now();
   const filename = `v_${timestamp}.mp4`;
-  const relativeUrl = `/uploads/renders/${filename}`;
-  const rendersDir = path.join(process.cwd(), 'uploads', 'renders');
-  if (!fs.existsSync(rendersDir)) {
-    fs.mkdirSync(rendersDir, { recursive: true });
-  }
 
-  const targetPath = path.join(rendersDir, filename);
+  const resolvedVideo = videoSourceUrl || previewVideoUrl || inputs.videoUrl || '';
+  const resolvedAudio = audioSourceUrl || inputs.bgmUrl || '';
 
-  // 真实 FFmpeg 合成（优先调用 render 端点）
-  const ffmpegRes = await new Promise((resolve) => {
-    const req = { body: { 
-      aspectRatio, 
-      outputFilename: filename,
-      subtitles: [
-        { text: `体验 ${product.name}！`, position: 'bottom_center' },
-        { text: `SGS 实测: ${product.sgsData.split(',')[0] || '8h强效控油'}`, position: 'bottom_center' }
-      ],
-      brandStamp: `${product.name} — 沙利文国货控油洁面销量第一`,
-      videoSourceUrl: '/uploads/materials/test_render_1785200791697.mp4', // 占位真实视频（测试可用）
-      audioSourceUrl: '/uploads/bgm/morning_breeze.mp3'
-    }};
-    renderRouter.handle('post', '/ffmpeg', req, { 
-      json: (data) => resolve(data) 
-    });
-  });
+  const subtitleLines = [
+    title || hook || `体验 ${product.name}！`,
+    product.sgsData ? `SGS: ${String(product.sgsData).split(',')[0]}` : '',
+  ].filter(Boolean);
 
-  const resolutionText = aspectRatio === '9:16' ? '1080x1920' : aspectRatio === '3:4' ? '1080x1440' : '1080x1080';
-
+  const brandStamp = `${product.name}`;
   const timeline = [
-    { at: '0.0s', action: 'video_in', source: `${product.name}_raw_clip.mp4`, text: '首帧高光画面导入' },
-    { at: '0.0s', action: 'audio_in', source: 'bgm_morning_breeze.mp3', volume: 0.3, text: 'BGM 音轨淡入 (30% 音量)' },
-    { at: '0.2s', action: 'subtitle_in', text: `体验 ${product.name}！`, position: 'bottom_center' },
-    { at: '1.2s', action: 'subtitle_in', text: `SGS 实测: ${product.sgsData.split(',')[0] || '8h强效控油'}`, position: 'bottom_center' },
-    { at: '2.8s', action: 'brand_stamp', text: `${product.name} — 沙利文国货控油洁面销量第一`, position: 'top_right' },
+    { at: '0.0s', action: 'video_in', source: resolvedVideo || 'video_step2.mp4', text: 'Step2 视频轨' },
+    {
+      at: '0.0s',
+      action: 'audio_in',
+      source: resolvedAudio || 'bgm.mp3',
+      volume: 0.3,
+      text: 'BGM 音轨',
+    },
+    ...subtitleLines.map((text, i) => ({
+      at: `${(i * 1.2).toFixed(1)}s`,
+      action: 'subtitle_in' as const,
+      text,
+      position: 'bottom_center',
+    })),
+    { at: '2.8s', action: 'brand_stamp', text: brandStamp, position: 'top_right' },
   ];
 
-  const mockStep5 = {
-    timeline,
-    output: {
-      filename,
-      resolution: resolutionText,
-      format: 'mp4_h264',
-      duration_sec: 4,
-      videoUrl: relativeUrl,
-      downloadUrl: relativeUrl,
-    },
-    qa_checklist: [
-      `✓ 画面比例匹配 (${resolutionText} ${aspectRatio})`,
-      '✓ 音画 128BPM 精准卡点对齐',
-      `✓ 字幕样式 [${subtitleStyle}] 位于下方 20% 区域`,
-      '✓ 已嵌入 SGS 权威数据水印背书与品牌角标',
-      '✓ 色彩符合 BUV 薄荷绿品牌调性规范',
-    ],
-    renderEngine: 'Native FFmpeg (Multi-track Filter Chain)',
-  };
+  // Prefer real upstream assets; only use local sample when mock fallback explicitly allowed
+  let videoForRender = resolvedVideo;
+  if (!videoForRender && allowMockFallback()) {
+    const sampleCandidates = [
+      path.join(process.cwd(), 'uploads', 'renders', 'test_render_1785200791697.mp4'),
+      path.join(process.cwd(), 'uploads', 'renders', 'v_1785200791691.mp4'),
+    ];
+    const found = sampleCandidates.find((p) => fs.existsSync(p));
+    if (found) {
+      videoForRender = `/uploads/renders/${path.basename(found)}`;
+    }
+  }
 
-  return res.json({ success: true, data: mockStep5, source: 'server-render-engine' });
+  if (!videoForRender) {
+    return res.status(400).json({
+      success: false,
+      error: 'Step 5 缺少视频源：请先完成 Step2 并等待 Seedance 生成 previewVideoUrl',
+      source: 'error',
+    });
+  }
+
+  const renderResult = await runFfmpegRender({
+    aspectRatio,
+    videoSourceUrl: videoForRender,
+    audioSourceUrl: resolvedAudio,
+    subtitles: subtitleLines.map((text) => ({ text })),
+    brandStamp,
+    outputFilename: filename,
+    durationSec: 4,
+  });
+
+  if (!renderResult.success || !renderResult.data) {
+    return res.status(500).json({
+      success: false,
+      error: renderResult.error || 'FFmpeg 渲染失败',
+      source: 'error',
+      data: {
+        timeline,
+        qa_checklist: [`✗ 渲染失败: ${renderResult.error}`],
+      },
+    });
+  }
+
+  const out = renderResult.data;
+  return res.json({
+    success: true,
+    source: renderResult.source || 'ffmpeg',
+    data: {
+      timeline,
+      output: {
+        filename: out.filename,
+        resolution: out.resolution,
+        format: out.format,
+        duration_sec: out.duration_sec,
+        videoUrl: out.videoUrl,
+        downloadUrl: out.downloadUrl,
+      },
+      qa_checklist: [
+        `✓ 画面比例匹配 (${out.resolution} ${aspectRatio})`,
+        `✓ 字幕样式 [${subtitleStyle}]`,
+        `✓ 视频源: ${videoForRender}`,
+        resolvedAudio ? `✓ BGM: ${resolvedAudio}` : '○ 未附带 BGM（仅视频轨）',
+        `✓ 渲染引擎: ${out.renderEngine}`,
+      ],
+      renderEngine: out.renderEngine,
+    },
+  });
 });

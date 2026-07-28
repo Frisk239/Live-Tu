@@ -1,6 +1,29 @@
 import React from 'react';
 import { StepId, PipelineData } from '../types';
-import { Check, Image, Video, FileText, Music, Film, ArrowRight, Zap, Sparkles, Layers } from 'lucide-react';
+import {
+  Check,
+  Image,
+  Video,
+  FileText,
+  Music,
+  Film,
+  ArrowRight,
+  Zap,
+  Sparkles,
+  Layers,
+  AlertCircle,
+  CloudUpload,
+} from 'lucide-react';
+
+export interface AutoPipelineProgress {
+  step: StepId;
+  /** e.g. llm | seedance_wait | render | done | error */
+  phase: string;
+  message: string;
+  /** Seconds waited on Seedance (if phase is seedance_wait) */
+  seedanceWaitSec?: number;
+  seedanceMaxSec?: number;
+}
 
 interface StepProgressProps {
   currentStep: StepId;
@@ -8,6 +31,13 @@ interface StepProgressProps {
   onSelectStep: (stepId: StepId) => void;
   onRunFullPipelineAuto?: () => void;
   isAutoPipelineRunning?: boolean;
+  autoProgress?: AutoPipelineProgress | null;
+  /** Last auto-draft save time label, e.g. 14:32:01 */
+  draftSavedLabel?: string | null;
+  /** Optional per-step API source (yunwu / seedance / library / ffmpeg / mock) */
+  stepSources?: Partial<Record<StepId, string>>;
+  /** Open task center (draft list) */
+  onOpenTasks?: () => void;
 }
 
 export const STEP_CONFIG: Array<{
@@ -29,6 +59,10 @@ export const StepProgress: React.FC<StepProgressProps> = ({
   onSelectStep,
   onRunFullPipelineAuto,
   isAutoPipelineRunning = false,
+  autoProgress = null,
+  draftSavedLabel = null,
+  stepSources = {},
+  onOpenTasks,
 }) => {
   const getStepStatus = (id: StepId) => {
     const key = `step${id}` as keyof PipelineData;
@@ -36,11 +70,30 @@ export const StepProgress: React.FC<StepProgressProps> = ({
   };
 
   const completedCount = STEP_CONFIG.filter((s) => getStepStatus(s.id) === 'completed').length;
+  const failedCount = STEP_CONFIG.filter((s) => getStepStatus(s.id) === 'failed').length;
+
+  const autoPct = isAutoPipelineRunning
+    ? Math.min(
+        98,
+        ((autoProgress?.step || currentStep) - 1) * 18 +
+          (autoProgress?.phase === 'seedance_wait'
+            ? 8 +
+              Math.min(
+                10,
+                ((autoProgress.seedanceWaitSec || 0) / (autoProgress.seedanceMaxSec || 180)) * 10
+              )
+            : autoProgress?.phase === 'render'
+              ? 14
+              : autoProgress?.phase === 'llm'
+                ? 6
+                : 4)
+      )
+    : completedCount * 20;
 
   return (
     <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-2xs mb-8 transition-all text-slate-900">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4 pb-3.5 border-b border-slate-100">
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 flex-wrap">
           <span className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse" />
           <h2 className="text-xs font-semibold text-slate-900 uppercase tracking-wider flex items-center gap-2">
             <span>BUV 5步内容反推工作台</span>
@@ -49,6 +102,18 @@ export const StepProgress: React.FC<StepProgressProps> = ({
               全自动上下文继承
             </span>
           </h2>
+          {draftSavedLabel && (
+            <button
+              type="button"
+              onClick={onOpenTasks}
+              className="px-2 py-0.5 rounded-full text-[10px] bg-amber-50 text-amber-800 border border-amber-200 font-medium flex items-center gap-1 hover:bg-amber-100 cursor-pointer"
+              title="工作台状态已自动保存；点击打开任务中心"
+            >
+              <CloudUpload className="w-3 h-3" />
+              草稿已保存 {draftSavedLabel}
+              {onOpenTasks && <span className="opacity-70">· 查看</span>}
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-3">
@@ -57,6 +122,11 @@ export const StepProgress: React.FC<StepProgressProps> = ({
             <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 font-semibold text-xs border border-slate-200/80">
               {completedCount} / 5
             </span>
+            {failedCount > 0 && (
+              <span className="px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-bold">
+                {failedCount} 失败
+              </span>
+            )}
           </div>
 
           {onRunFullPipelineAuto && (
@@ -70,7 +140,13 @@ export const StepProgress: React.FC<StepProgressProps> = ({
               {isAutoPipelineRunning ? (
                 <>
                   <Sparkles className="w-4 h-4 animate-spin text-white" />
-                  <span>全自动反推中 (Step {currentStep}/5)...</span>
+                  <span>
+                    Step {autoProgress?.step || currentStep}/5
+                    {autoProgress?.phase === 'seedance_wait'
+                      ? ` · 等视频 ${autoProgress.seedanceWaitSec || 0}s`
+                      : ''}
+                    ...
+                  </span>
                 </>
               ) : (
                 <>
@@ -83,6 +159,29 @@ export const StepProgress: React.FC<StepProgressProps> = ({
         </div>
       </div>
 
+      {/* Auto pipeline progress strip */}
+      {isAutoPipelineRunning && (
+        <div className="mb-4 p-3 rounded-xl bg-blue-50/80 border border-blue-200/70 space-y-2">
+          <div className="flex items-center justify-between gap-2 text-[11px]">
+            <span className="font-bold text-blue-900">
+              {autoProgress?.message || `正在执行 Step ${currentStep}...`}
+            </span>
+            <span className="font-mono text-blue-700">{Math.round(autoPct)}%</span>
+          </div>
+          <div className="h-2 rounded-full bg-blue-100 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-blue-600 transition-all duration-500 ease-out"
+              style={{ width: `${autoPct}%` }}
+            />
+          </div>
+          {autoProgress?.phase === 'seedance_wait' && (
+            <p className="text-[10px] text-blue-800/80">
+              星河 Seedance 异步出片中（最长约 {autoProgress.seedanceMaxSec || 180}s），请勿关闭页面…
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Progress Step Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
         {STEP_CONFIG.map((step, idx) => {
@@ -90,7 +189,9 @@ export const StepProgress: React.FC<StepProgressProps> = ({
           const isCurrent = currentStep === step.id;
           const isCompleted = status === 'completed';
           const isRunning = status === 'running';
+          const isFailed = status === 'failed';
           const Icon = step.icon;
+          const source = stepSources[step.id];
 
           return (
             <button
@@ -98,7 +199,11 @@ export const StepProgress: React.FC<StepProgressProps> = ({
               onClick={() => onSelectStep(step.id)}
               className={`group text-left p-3.5 rounded-xl border transition-all duration-200 cursor-pointer ${
                 isCurrent
-                  ? 'bg-blue-50/90 border-blue-300 text-blue-900 shadow-2xs'
+                  ? isFailed
+                    ? 'bg-rose-50/90 border-rose-300 text-rose-900 shadow-2xs'
+                    : 'bg-blue-50/90 border-blue-300 text-blue-900 shadow-2xs'
+                  : isFailed
+                  ? 'bg-rose-50/50 border-rose-200 text-rose-800 hover:border-rose-300'
                   : isCompleted
                   ? 'bg-slate-50 border-slate-200/90 text-slate-800 hover:border-slate-300'
                   : 'bg-white border-slate-200/80 text-slate-600 hover:border-slate-300 hover:bg-slate-50/50'
@@ -110,12 +215,20 @@ export const StepProgress: React.FC<StepProgressProps> = ({
                     className={`w-6 h-6 rounded-md border flex items-center justify-center font-bold text-xs ${
                       isCompleted
                         ? 'bg-emerald-600 border-emerald-600 text-white'
+                        : isFailed
+                        ? 'bg-rose-600 border-rose-600 text-white'
                         : isCurrent
                         ? 'bg-blue-600 border-blue-600 text-white'
                         : 'bg-slate-100 border-slate-200 text-slate-600'
                     }`}
                   >
-                    {isCompleted ? <Check className="w-3.5 h-3.5 stroke-[2.5]" /> : step.id}
+                    {isCompleted ? (
+                      <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                    ) : isFailed ? (
+                      <AlertCircle className="w-3.5 h-3.5" />
+                    ) : (
+                      step.id
+                    )}
                   </div>
                   <span className={`text-xs font-semibold ${isCurrent ? 'text-blue-900' : 'text-slate-900'}`}>
                     {step.title}
@@ -130,17 +243,29 @@ export const StepProgress: React.FC<StepProgressProps> = ({
               </p>
 
               {/* Status Badge & Arrow */}
-              <div className="mt-2.5 flex items-center justify-between">
+              <div className="mt-2.5 flex items-center justify-between gap-1">
                 <span
-                  className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${
+                  className={`text-[10px] px-2 py-0.5 rounded-full border font-medium truncate ${
                     isRunning
                       ? 'bg-amber-50 border-amber-200 text-amber-700 animate-pulse'
+                      : isFailed
+                      ? 'bg-rose-50 border-rose-200 text-rose-700'
                       : isCompleted
                       ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
                       : 'bg-slate-100 border-slate-200/60 text-slate-500'
                   }`}
                 >
-                  {isRunning ? '生成中...' : isCompleted ? '已就绪' : '待运行'}
+                  {isRunning
+                    ? '生成中...'
+                    : isFailed
+                    ? '失败'
+                    : isCompleted
+                    ? source === 'mock'
+                      ? '演示数据'
+                      : source
+                        ? `就绪 · ${source}`
+                        : '已就绪'
+                    : '待运行'}
                 </span>
 
                 {idx < 4 && (

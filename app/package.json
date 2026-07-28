@@ -4,11 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "tsx --import ./load-env.ts server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
-    "start": "node dist/server.cjs",
+    "start": "node --import ./load-env.ts dist/server.cjs",
     "clean": "rm -rf dist server.cjs",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:e2e:smoke": "playwright test e2e/smoke.spec.ts",
+    "test:e2e:full": "playwright test e2e/full-pipeline.spec.ts e2e/health-and-apis.spec.ts e2e/step5-readiness.spec.ts",
+    "test:e2e:seedance": "playwright test e2e/seedance-video.spec.ts",
+    "test:e2e:all": "playwright test e2e/"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

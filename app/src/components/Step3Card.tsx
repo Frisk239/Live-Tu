@@ -29,7 +29,6 @@ interface Step3CardProps {
   output?: Step3Output;
   step2Output?: Step2Output;
   status: StepStatus;
-  useMockMode: boolean;
   onUpdateInputs: (inputs: Partial<Step3Inputs>) => void;
   onUpdateOutput?: (updatedOutput: Partial<Step3Output>) => void;
   onSyncFromStep2?: () => void;
@@ -37,6 +36,7 @@ interface Step3CardProps {
   onReset: () => void;
   onPrev: () => void;
   onNext: () => void;
+  upstreamStale?: boolean;
 }
 
 export const Step3Card: React.FC<Step3CardProps> = ({
@@ -44,7 +44,6 @@ export const Step3Card: React.FC<Step3CardProps> = ({
   output,
   step2Output,
   status,
-  useMockMode,
   onUpdateInputs,
   onUpdateOutput,
   onSyncFromStep2,
@@ -52,6 +51,7 @@ export const Step3Card: React.FC<Step3CardProps> = ({
   onReset,
   onPrev,
   onNext,
+  upstreamStale = false,
 }) => {
   const [copiedTitle, setCopiedTitle] = useState(false);
   const [copiedFull, setCopiedFull] = useState(false);
@@ -218,21 +218,41 @@ export const Step3Card: React.FC<Step3CardProps> = ({
           </div>
 
           {/* Context Inheritance Banner */}
-          <div className="p-2.5 bg-cyan-50/80 dark:bg-cyan-950/30 border border-cyan-200/80 dark:border-cyan-800/60 rounded-xl flex items-center justify-between text-xs">
+          <div
+            className={`p-2.5 rounded-xl flex items-center justify-between text-xs ${
+              upstreamStale
+                ? 'bg-amber-50 border border-amber-300'
+                : 'bg-cyan-50/80 dark:bg-cyan-950/30 border border-cyan-200/80 dark:border-cyan-800/60'
+            }`}
+          >
             <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" />
-              <span className="font-semibold text-cyan-800 dark:text-cyan-300">
-                🔗 已自动引用 Step 2 运镜 Prompt
+              <span
+                className={`w-2 h-2 rounded-full animate-pulse ${
+                  upstreamStale ? 'bg-amber-500' : 'bg-cyan-500'
+                }`}
+              />
+              <span
+                className={`font-semibold ${
+                  upstreamStale ? 'text-amber-900' : 'text-cyan-800 dark:text-cyan-300'
+                }`}
+              >
+                {upstreamStale
+                  ? '上游 Step 2 已更新，当前文案产物仍保留 — 请同步后重跑'
+                  : '🔗 已自动引用 Step 2 运镜 Prompt'}
               </span>
             </div>
             {onSyncFromStep2 && (
               <button
                 onClick={onSyncFromStep2}
-                className="px-2 py-1 bg-white dark:bg-slate-800 border border-cyan-300 text-cyan-700 dark:text-cyan-300 rounded-lg text-[11px] font-bold hover:bg-cyan-100 dark:hover:bg-slate-700 transition-colors flex items-center gap-1 shadow-sm"
+                className={`px-2 py-1 bg-white dark:bg-slate-800 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-1 shadow-sm ${
+                  upstreamStale
+                    ? 'border border-amber-300 text-amber-800 hover:bg-amber-50'
+                    : 'border border-cyan-300 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-100 dark:hover:bg-slate-700'
+                }`}
                 title="一键拉取 Step 2 最新 video_prompt"
               >
                 <RefreshCw className="w-3 h-3" />
-                <span>同步 Step 2 结果</span>
+                <span>{upstreamStale ? '同步上游产物' : '同步 Step 2 结果'}</span>
               </button>
             )}
           </div>
@@ -401,15 +421,110 @@ export const Step3Card: React.FC<Step3CardProps> = ({
 
                 {/* Prohibited Words Warnings Banner */}
                 {output.warnings && output.warnings.length > 0 && (
-                  <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 space-y-1.5 mb-3">
-                    <div className="flex items-center gap-1.5 font-bold text-amber-400">
-                      <AlertTriangle className="w-4 h-4 shrink-0" />
-                      <span>合规扫描提示：检测到品牌敏感违禁词 ({output.warnings.length} 处)</span>
+                  <div className="p-3.5 rounded-xl bg-amber-500/15 border-2 border-amber-400/50 text-xs text-amber-100 space-y-2 mb-3 shadow-lg shadow-amber-900/20">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5 font-bold text-amber-300 text-sm">
+                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                        <span>合规红线：检测到违禁/极限词 {output.warnings.length} 处</span>
+                      </div>
+                      {onUpdateOutput && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!output.warnings?.length || !onUpdateOutput) return;
+                            const strip = (text: string, word: string) => {
+                              if (!text || !word) return text;
+                              // Replace prohibited token with a compliant soft phrase
+                              return text.split(word).join('口碑热议');
+                            };
+                            let title = output.title;
+                            let hook = output.hook;
+                            let body = output.body;
+                            let cta = output.cta;
+                            let douyin = output.platform_fit?.douyin || '';
+                            let xhs = output.platform_fit?.xiaohongshu || '';
+                            for (const w of output.warnings) {
+                              const f = w.field || '';
+                              if (f.includes('title') || f.includes('标题')) title = strip(title, w.word);
+                              else if (f.includes('hook') || f.includes('钩子')) hook = strip(hook, w.word);
+                              else if (f.includes('body') || f.includes('正文')) body = strip(body, w.word);
+                              else if (f.includes('cta') || f.includes('行动')) cta = strip(cta, w.word);
+                              else if (f.includes('douyin') || f.includes('抖音')) douyin = strip(douyin, w.word);
+                              else if (f.includes('xiaohongshu') || f.includes('小红书')) xhs = strip(xhs, w.word);
+                              else {
+                                title = strip(title, w.word);
+                                hook = strip(hook, w.word);
+                                body = strip(body, w.word);
+                                cta = strip(cta, w.word);
+                              }
+                            }
+                            onUpdateOutput({
+                              title,
+                              hook,
+                              body,
+                              cta,
+                              platform_fit: {
+                                douyin,
+                                xiaohongshu: xhs,
+                              },
+                              warnings: [],
+                            });
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-amber-400 text-slate-950 text-[11px] font-bold hover:bg-amber-300"
+                        >
+                          一键替换为合规表述
+                        </button>
+                      )}
                     </div>
-                    <ul className="list-disc list-inside space-y-1 text-slate-300">
+                    <ul className="space-y-2">
                       {output.warnings.map((w, idx) => (
-                        <li key={idx}>
-                          在 <span className="font-semibold text-amber-300">{w.field}</span> 中检测到敏感词“<span className="text-rose-400 font-bold">{w.word}</span>” — {w.suggestion}
+                        <li
+                          key={idx}
+                          className="p-2.5 rounded-lg bg-slate-950/60 border border-amber-500/20 flex flex-col gap-1.5"
+                        >
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 font-bold border border-rose-500/30">
+                              {w.word}
+                            </span>
+                            <span className="text-slate-400">·</span>
+                            <span className="text-amber-200/90 font-semibold">{w.field}</span>
+                          </div>
+                          <p className="text-slate-300 leading-relaxed">建议：{w.suggestion}</p>
+                          {onUpdateOutput && (
+                            <button
+                              type="button"
+                              className="self-start text-[10px] font-bold text-amber-300 hover:underline"
+                              onClick={() => {
+                                const strip = (text: string) =>
+                                  (text || '').split(w.word).join('口碑热议');
+                                const f = w.field || '';
+                                const patch: Partial<typeof output> = { warnings: output.warnings?.filter((_, i) => i !== idx) };
+                                if (f.includes('title') || f.includes('标题')) patch.title = strip(output.title);
+                                else if (f.includes('hook') || f.includes('钩子')) patch.hook = strip(output.hook);
+                                else if (f.includes('body') || f.includes('正文')) patch.body = strip(output.body);
+                                else if (f.includes('cta') || f.includes('行动')) patch.cta = strip(output.cta);
+                                else if (f.includes('douyin') || f.includes('抖音')) {
+                                  patch.platform_fit = {
+                                    ...output.platform_fit,
+                                    douyin: strip(output.platform_fit?.douyin || ''),
+                                    xiaohongshu: output.platform_fit?.xiaohongshu || '',
+                                  };
+                                } else if (f.includes('xiaohongshu') || f.includes('小红书')) {
+                                  patch.platform_fit = {
+                                    douyin: output.platform_fit?.douyin || '',
+                                    xiaohongshu: strip(output.platform_fit?.xiaohongshu || ''),
+                                  };
+                                } else {
+                                  patch.title = strip(output.title);
+                                  patch.hook = strip(output.hook);
+                                  patch.body = strip(output.body);
+                                }
+                                onUpdateOutput(patch);
+                              }}
+                            >
+                              仅修复这一处
+                            </button>
+                          )}
                         </li>
                       ))}
                     </ul>

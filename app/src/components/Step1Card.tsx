@@ -55,7 +55,6 @@ interface Step1CardProps {
   inputs: Step1Inputs;
   output?: Step1Output;
   status: StepStatus;
-  useMockMode: boolean;
   modelConfig: ModelConfigState;
   materials?: MaterialItem[];
   activeProduct?: ProductItem;
@@ -65,13 +64,14 @@ interface Step1CardProps {
   onReset: () => void;
   onNext: () => void;
   onOpenMaterials?: () => void;
+  /** 文生图成功后同步到 Step2 首帧 */
+  onGeneratedImage?: (payload: { imageUrl: string; promptUsed: string }) => void;
 }
 
 export const Step1Card: React.FC<Step1CardProps> = ({
   inputs,
   output,
   status,
-  useMockMode,
   modelConfig,
   materials = [],
   activeProduct,
@@ -81,6 +81,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
   onReset,
   onNext,
   onOpenMaterials,
+  onGeneratedImage,
 }) => {
   // Mode Switch State: 'single' | 'batch'
   const [executionMode, setExecutionMode] = useState<'single' | 'batch'>('single');
@@ -91,11 +92,68 @@ export const Step1Card: React.FC<Step1CardProps> = ({
   const [copiedJson, setCopiedJson] = useState(false);
   const [activeTab, setActiveTab] = useState<'visual' | 'json'>('visual');
   const [isPromptEditorOpen, setIsPromptEditorOpen] = useState(false);
+  const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoTime, setVideoTime] = useState(0);
+  const [isCapturingFrame, setIsCapturingFrame] = useState(false);
+  /** Keep original video URL while previewing extracted still */
+  const [sourceVideoUrl, setSourceVideoUrl] = useState<string>('');
+
+  const isVideoMedia = (url: string) => {
+    if (!url) return false;
+    const lower = url.toLowerCase().split('?')[0];
+    return (
+      lower.endsWith('.mp4') ||
+      lower.endsWith('.webm') ||
+      lower.endsWith('.mov') ||
+      lower.includes('/video') ||
+      lower.includes('video/')
+    );
+  };
+
+  const showVideoPicker = Boolean(sourceVideoUrl) || isVideoMedia(inputs.mediaUrl);
+  const videoSrc = sourceVideoUrl || (isVideoMedia(inputs.mediaUrl) ? inputs.mediaUrl : '');
+
+  const handleCaptureFrame = async () => {
+    const video = videoRef.current;
+    if (!video || !videoSrc) {
+      alert('请先上传视频素材');
+      return;
+    }
+    setIsCapturingFrame(true);
+    try {
+      if (!sourceVideoUrl && isVideoMedia(inputs.mediaUrl)) {
+        setSourceVideoUrl(inputs.mediaUrl);
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth || 1080;
+      canvas.height = video.videoHeight || 1920;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Canvas 不可用');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob((b) => resolve(b), 'image/png')
+      );
+      if (!blob) throw new Error('抓帧失败');
+      const file = new File([blob], `keyframe_${Date.now()}.png`, { type: 'image/png' });
+      const uploaded = await apiService.materials.uploadMaterial(file);
+      onUpdateInputs({ mediaUrl: uploaded.url });
+      alert('✅ 已抓取当前帧并设为 Step1 分析素材（同时可同步到素材库）');
+    } catch (err: any) {
+      alert(err?.message || '抓帧失败');
+    } finally {
+      setIsCapturingFrame(false);
+    }
+  };
 
   // Ticket 14: 一键生成同款新首帧按钮
   const handleGenerateNewFrame = async () => {
-    if (!pipelineData.step1.inputs.mediaUrl) {
-      alert('请先上传素材或提供文本描述');
+    const prompt =
+      output?.static_image_prompt ||
+      inputs.viralReason ||
+      '高质感爆款小绿泥洁面膏体拉丝特写';
+    if (!prompt.trim()) {
+      alert('请先填写爆款原因或完成 Step 1 拆解以获得静态图 Prompt');
       return;
     }
     try {
@@ -103,64 +161,31 @@ export const Step1Card: React.FC<Step1CardProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: pipelineData.step1.inputs.viralReason || '高质感爆款小绿泥洁面膏体拉丝特写',
+          prompt,
           productId: activeProduct?.id,
+          imageModel: inputs.imageModel,
         }),
       });
       const data = await res.json();
-      if (data.success && data.data.imageUrl) {
-        // 同步到 Step2
-        setPipelineData((prev) => ({
-          ...prev,
-          step2: {
-            ...prev.step2,
-            inputs: {
-              ...prev.step2.inputs,
-              static_image_prompt: data.data.promptUsed || pipelineData.step1.output?.static_image_prompt,
-              imageUrl: data.data.imageUrl,
-            },
-          },
-        }));
+      if (data.success && data.data?.imageUrl) {
+        const imageUrl = data.data.imageUrl as string;
+        const promptUsed = (data.data.promptUsed as string) || prompt;
+        onUpdateInputs({ mediaUrl: imageUrl });
+        if (onUpdateOutput) {
+          onUpdateOutput({ static_image_prompt: promptUsed });
+        }
+        onGeneratedImage?.({ imageUrl, promptUsed });
         alert('✅ 同款新首帧已生成并同步到 Step 2！');
+      } else {
+        alert(data.error || '生成失败，请检查画图模型 API Key 配置');
       }
     } catch (e) {
       alert('生成失败，请检查后端配置');
     }
   };
 
-  // Batch Queue State
-  const [batchQueue, setBatchQueue] = useState<BatchStep1QueueItem[]>([
-    {
-      id: 'batch_demo_1',
-      name: '纯净高质感膏体拉丝.mp4',
-      url: 'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80',
-      type: 'video',
-      size: '2.4 MB',
-      status: 'pending',
-      progress: 0,
-      createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    },
-    {
-      id: 'batch_demo_2',
-      name: '沉浸式晨间洗漱与泡泡揉搓.mp4',
-      url: 'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=600&q=80',
-      type: 'video',
-      size: '4.8 MB',
-      status: 'pending',
-      progress: 0,
-      createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    },
-    {
-      id: 'batch_demo_3',
-      name: '油敏肌高清毛孔对比特写.mp4',
-      url: 'https://images.unsplash.com/photo-1512290900673-7002fffe929a?auto=format&fit=crop&w=600&q=80',
-      type: 'image',
-      size: '3.1 MB',
-      status: 'pending',
-      progress: 0,
-      createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    },
-  ]);
+  // Batch Queue State — empty by default; import from materials or upload
+  const [batchQueue, setBatchQueue] = useState<BatchStep1QueueItem[]>([]);
 
   const [isBatchRunning, setIsBatchRunning] = useState(false);
   const [copiedBatchAll, setCopiedBatchAll] = useState(false);
@@ -170,6 +195,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
 
   const isRunning = status === 'running';
   const isCompleted = status === 'completed' && Boolean(output);
+  const isFailed = status === 'failed';
 
   // Available image models from config
   const enabledImageModels = modelConfig.imageModels.filter((m) => m.enabled);
@@ -279,6 +305,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
           bloggerType: inputs.bloggerType,
           viralReason: inputs.viralReason || item.name,
           imageModel: inputs.imageModel,
+          productId: activeProduct?.id,
           productInfo: activeProduct,
         }),
       });
@@ -301,7 +328,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
           )
         );
       } else {
-        throw new Error(result.message || 'Reverse inference failed');
+        throw new Error(result.error || result.message || 'Reverse inference failed');
       }
     } catch (err: any) {
       setBatchQueue((prev) =>
@@ -314,22 +341,18 @@ export const Step1Card: React.FC<Step1CardProps> = ({
     }
   };
 
-  // Run full batch queue in parallel (多任务并行同步处理)
+  // Run full batch queue serially (PRD: 批量反推队列)
   const runAllBatchParallel = async () => {
     const pendingItems = batchQueue.filter((q) => q.status === 'pending' || q.status === 'failed');
     if (pendingItems.length === 0) return;
 
     setIsBatchRunning(true);
 
-    // Set all pending items to running status simultaneously
-    setBatchQueue((prev) =>
-      prev.map((q) =>
-        q.status === 'pending' || q.status === 'failed' ? { ...q, status: 'running', progress: 20 } : q
-      )
-    );
+    for (const item of pendingItems) {
+      setBatchQueue((prev) =>
+        prev.map((q) => (q.id === item.id ? { ...q, status: 'running', progress: 20 } : q))
+      );
 
-    // Launch parallel HTTP requests concurrently using Promise.allSettled
-    const parallelPromises = pendingItems.map(async (item) => {
       const startTime = Date.now();
       try {
         const res = await fetch('/api/pipeline/step1', {
@@ -341,6 +364,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
             bloggerType: inputs.bloggerType,
             viralReason: inputs.viralReason || item.name,
             imageModel: inputs.imageModel,
+            productId: activeProduct?.id,
             productInfo: activeProduct,
           }),
         });
@@ -363,20 +387,19 @@ export const Step1Card: React.FC<Step1CardProps> = ({
             )
           );
         } else {
-          throw new Error('API return failed');
+          throw new Error(result.error || 'API return failed');
         }
       } catch (err: any) {
         setBatchQueue((prev) =>
           prev.map((q) =>
             q.id === item.id
-              ? { ...q, status: 'failed', progress: 0, errorMessage: '处理失败' }
+              ? { ...q, status: 'failed', progress: 0, errorMessage: err.message || '处理失败' }
               : q
           )
         );
       }
-    });
+    }
 
-    await Promise.allSettled(parallelPromises);
     setIsBatchRunning(false);
   };
 
@@ -534,6 +557,11 @@ export const Step1Card: React.FC<Step1CardProps> = ({
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               视觉深度理解 + 结构化 Prompt 拆解（支持单素材精细拆解与多素材批量反推）
             </p>
+            {isFailed && (
+              <p className="text-[11px] text-rose-600 font-semibold mt-1">
+                本步运行失败 — 请检查素材/模型 Key 后重试
+              </p>
+            )}
           </div>
         </div>
 
@@ -685,7 +713,13 @@ export const Step1Card: React.FC<Step1CardProps> = ({
                   onDrop={async (e) => {
                     e.preventDefault();
                     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                      const uploaded = await apiService.materials.uploadMaterial(e.dataTransfer.files[0]);
+                      const f = e.dataTransfer.files[0];
+                      const uploaded = await apiService.materials.uploadMaterial(f);
+                      if (f.type.startsWith('video')) {
+                        setSourceVideoUrl(uploaded.url);
+                      } else {
+                        setSourceVideoUrl('');
+                      }
                       onUpdateInputs({ mediaUrl: uploaded.url });
                     }
                   }}
@@ -696,7 +730,13 @@ export const Step1Card: React.FC<Step1CardProps> = ({
                     accept="video/*,image/*"
                     onChange={async (e) => {
                       if (e.target.files && e.target.files[0]) {
-                        const uploaded = await apiService.materials.uploadMaterial(e.target.files[0]);
+                        const f = e.target.files[0];
+                        const uploaded = await apiService.materials.uploadMaterial(f);
+                        if (f.type.startsWith('video')) {
+                          setSourceVideoUrl(uploaded.url);
+                        } else {
+                          setSourceVideoUrl('');
+                        }
                         onUpdateInputs({ mediaUrl: uploaded.url });
                       }
                     }}
@@ -705,11 +745,20 @@ export const Step1Card: React.FC<Step1CardProps> = ({
 
                   {inputs.mediaUrl ? (
                     <div className="relative w-full h-44 rounded-lg overflow-hidden group">
-                      <img
-                        src={inputs.mediaUrl}
-                        alt="Uploaded source"
-                        className="w-full h-full object-cover"
-                      />
+                      {isVideoMedia(inputs.mediaUrl) && !sourceVideoUrl ? (
+                        <video
+                          src={inputs.mediaUrl}
+                          className="w-full h-full object-cover"
+                          muted
+                          playsInline
+                        />
+                      ) : (
+                        <img
+                          src={inputs.mediaUrl}
+                          alt="Uploaded source"
+                          className="w-full h-full object-cover"
+                        />
+                      )}
                       <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity pointer-events-none">
                         <span className="text-xs text-white font-medium">点击或拖拽更换画面素材</span>
                       </div>
@@ -724,6 +773,55 @@ export const Step1Card: React.FC<Step1CardProps> = ({
                     </div>
                   )}
                 </div>
+
+                {/* Video keyframe picker */}
+                {showVideoPicker && videoSrc && (
+                  <div className="mt-3 p-3 rounded-xl border border-emerald-200/80 bg-emerald-50/40 space-y-2 relative z-20">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-emerald-800">视频关键帧选择</span>
+                      <span className="text-[10px] text-emerald-700/80">
+                        拖动进度条定位后抓取为分析图
+                      </span>
+                    </div>
+                    <video
+                      ref={videoRef}
+                      src={videoSrc}
+                      className="w-full max-h-48 rounded-lg bg-black object-contain"
+                      controls
+                      playsInline
+                      onLoadedMetadata={(e) => {
+                        setVideoDuration(e.currentTarget.duration || 0);
+                      }}
+                      onTimeUpdate={(e) => setVideoTime(e.currentTarget.currentTime)}
+                    />
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="range"
+                        min={0}
+                        max={videoDuration || 1}
+                        step={0.05}
+                        value={videoTime}
+                        onChange={(e) => {
+                          const t = Number(e.target.value);
+                          setVideoTime(t);
+                          if (videoRef.current) videoRef.current.currentTime = t;
+                        }}
+                        className="flex-1 accent-emerald-600"
+                      />
+                      <span className="text-[10px] font-mono text-slate-500 w-16 text-right">
+                        {videoTime.toFixed(1)}s
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleCaptureFrame()}
+                      disabled={isCapturingFrame}
+                      className="w-full py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold disabled:opacity-50"
+                    >
+                      {isCapturingFrame ? '抓帧上传中…' : '抓取当前帧 → 设为 Step1 素材'}
+                    </button>
+                  </div>
+                )}
 
                 {/* Quick Sample Selector */}
                 <div className="pt-1">

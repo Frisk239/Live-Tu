@@ -43,6 +43,11 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
   const [activeTab, setActiveTab] = useState<'text' | 'image' | 'video'>('text');
   const [saveSuccess, setSaveSuccess] = useState(false);
 
+  // Sync when parent finishes bootstrapping models from API
+  React.useEffect(() => {
+    setLocalConfig(config);
+  }, [config]);
+
   // Edit / Add Form state
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingModel, setEditingModel] = useState<ModelMetadata | null>(null);

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ProductItem, SellingPointsAiModel } from '../types';
-import { PRODUCT_TEMPLATES, INITIAL_PRODUCTS } from '../data/presets';
+import { PRODUCT_TEMPLATES } from '../data/presets';
 import {
   ShieldCheck,
   Award,
@@ -11,7 +11,6 @@ import {
   Plus,
   Trash2,
   Check,
-  RotateCcw,
   Package,
   Cpu,
   Zap,
@@ -38,8 +37,8 @@ export const KnowledgePageView: React.FC<KnowledgePageViewProps> = ({
   const [isOptimizing, setIsOptimizing] = useState<boolean>(false);
   const [showTemplateMenu, setShowTemplateMenu] = useState<boolean>(false);
 
-  const currentProduct = products.find((p) => p.id === selectedProductId) || products[0] || INITIAL_PRODUCTS[0];
-  const isActive = currentProduct.id === activeProductId;
+  const currentProduct = products.find((p) => p.id === selectedProductId) || products[0];
+  const isActive = Boolean(currentProduct && currentProduct.id === activeProductId);
 
   const handleFieldChange = (fieldPath: string, value: any) => {
     const updatedProducts = products.map((p) => {
@@ -119,14 +118,6 @@ export const KnowledgePageView: React.FC<KnowledgePageViewProps> = ({
     }
   };
 
-  const handleResetDefaults = () => {
-    if (confirm('确认重置卖点库为初始品牌产品预设吗？')) {
-      onUpdateProducts(INITIAL_PRODUCTS);
-      setSelectedProductId(INITIAL_PRODUCTS[0].id);
-      onSelectActiveProduct(INITIAL_PRODUCTS[0].id);
-    }
-  };
-
   const handleOptimizeWithAi = async () => {
     setIsOptimizing(true);
     try {
@@ -165,6 +156,26 @@ export const KnowledgePageView: React.FC<KnowledgePageViewProps> = ({
       setIsOptimizing(false);
     }
   };
+
+  if (!products || products.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-2xs flex items-center gap-4">
+          <button
+            onClick={onBackToPipeline}
+            className="p-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200/80 shadow-2xs transition-all flex items-center gap-1.5 text-xs font-semibold shrink-0 cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4 text-slate-500" />
+            <span>返回工作台</span>
+          </button>
+          <div>
+            <h1 className="text-lg font-bold text-slate-900">品牌卖点与知识资产库</h1>
+            <p className="text-sm text-slate-500 mt-1">正在加载产品数据…</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -307,13 +318,6 @@ export const KnowledgePageView: React.FC<KnowledgePageViewProps> = ({
           </div>
 
           <div className="pt-4 border-t border-slate-100">
-            <button
-              onClick={handleResetDefaults}
-              className="w-full px-4 py-2.5 rounded-lg border border-slate-200/80 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-colors flex items-center justify-center gap-2 shadow-2xs cursor-pointer"
-            >
-              <RotateCcw className="w-4 h-4 text-slate-500" />
-              <span>重置为初始爆款卖点库</span>
-            </button>
           </div>
         </div>
 

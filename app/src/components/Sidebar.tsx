@@ -15,9 +15,17 @@ import {
   FolderKanban,
   RotateCcw,
   Workflow,
+  Music2,
 } from 'lucide-react';
 
-export type MainViewType = 'pipeline' | 'materials' | 'tasks' | 'presets' | 'models' | 'knowledge';
+export type MainViewType =
+  | 'pipeline'
+  | 'materials'
+  | 'tasks'
+  | 'presets'
+  | 'models'
+  | 'knowledge'
+  | 'bgm';
 
 interface SidebarProps {
   sidebarWidth?: number;
@@ -28,8 +36,6 @@ interface SidebarProps {
   onChangeView: (view: MainViewType) => void;
   onOpenOnboarding: () => void;
   onResetAll: () => void;
-  useMockMode: boolean;
-  setUseMockMode: (val: boolean) => void;
   activeProduct?: ProductItem;
   products?: ProductItem[];
   onSelectActiveProduct?: (id: string) => void;
@@ -217,6 +223,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
               >
                 <Cpu className="w-4 h-4 shrink-0" />
                 <span className="truncate">模型配置中心</span>
+              </button>
+
+              {/* BGM Library */}
+              <button
+                onClick={() => onChangeView('bgm')}
+                className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
+                  activeView === 'bgm'
+                    ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
+                    : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
+                }`}
+                title="确权 BGM 曲库管理"
+              >
+                <Music2 className="w-4 h-4 shrink-0" />
+                <span className="truncate">BGM 确权曲库</span>
               </button>
             </div>
 

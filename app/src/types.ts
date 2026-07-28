@@ -122,8 +122,11 @@ export interface Step5Output {
     resolution: string;
     format: string;
     duration_sec: number;
+    videoUrl?: string;
+    downloadUrl?: string;
   };
   qa_checklist: string[];
+  renderEngine?: string;
 }
 
 export interface PipelineData {

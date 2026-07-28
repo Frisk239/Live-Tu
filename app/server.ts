@@ -9,7 +9,7 @@ import { pipelineRouter } from './server/routes/pipeline';
 import { modelsRouter } from './server/routes/models';
 import { materialsRouter } from './server/routes/materials';
 import { tasksRouter } from './server/routes/tasks';
-import { productsRouter } from './server/routes/products';
+import { productsRouter, handleSellingPointsOptimize } from './server/routes/products';
 import { bgmRouter } from './server/routes/bgm';
 import { renderRouter } from './server/routes/render';
 
@@ -42,6 +42,7 @@ app.use('/api/models', modelsRouter);
 app.use('/api/materials', materialsRouter);
 app.use('/api/tasks', tasksRouter);
 app.use('/api/products', productsRouter);
+app.use('/api/selling-points/optimize', handleSellingPointsOptimize);
 app.use('/api/bgm', bgmRouter);
 app.use('/api/render', renderRouter);
 

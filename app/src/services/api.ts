@@ -1,5 +1,5 @@
 import { ModelMetadata, ModelConfigState } from '../data/models';
-import { PipelineData, TaskItem, MaterialItem } from '../types';
+import { PipelineData, TaskItem, MaterialItem, ProductItem } from '../types';
 
 /**
  * Standard REST API Client for AIGC Video Processing Pipeline
@@ -21,7 +21,7 @@ export interface ApiGenerateResponse<T> {
   modelUsed: string;
 }
 
-export const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || '/api/v1';
+export const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || '/api';
 
 export const apiService = {
   // --- 1. Model Configuration REST API ---
@@ -81,7 +81,6 @@ export const apiService = {
         };
       } catch (err) {
         const simulatedLatency = Math.floor(Math.random() * 80) + 40;
-        // Check if API key is present
         if (!model.apiKey || model.apiKey.trim().length === 0) {
           return {
             success: false,
@@ -100,7 +99,42 @@ export const apiService = {
     },
   },
 
-  // --- 2. Material & Asset REST API ---
+  // --- 2. Products Knowledge Base REST API ---
+  products: {
+    async fetchProducts(): Promise<ProductItem[]> {
+      const res = await fetch(`${API_BASE_URL}/products`);
+      if (!res.ok) throw new Error('Failed to fetch products');
+      const json = await res.json();
+      return json.data || [];
+    },
+
+    async createProduct(product: Partial<ProductItem>): Promise<{ success: boolean; id: string }> {
+      const res = await fetch(`${API_BASE_URL}/products`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(product),
+      });
+      return await res.json();
+    },
+
+    async updateProduct(id: string, product: Partial<ProductItem>): Promise<{ success: boolean }> {
+      const res = await fetch(`${API_BASE_URL}/products/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(product),
+      });
+      return await res.json();
+    },
+
+    async deleteProduct(id: string): Promise<{ success: boolean }> {
+      const res = await fetch(`${API_BASE_URL}/products/${id}`, {
+        method: 'DELETE',
+      });
+      return await res.json();
+    },
+  },
+
+  // --- 3. Material & Asset REST API ---
   materials: {
     async uploadMaterial(file: File): Promise<MaterialItem> {
       const formData = new FormData();
@@ -114,7 +148,6 @@ export const apiService = {
         if (!res.ok) throw new Error('Upload material failed');
         return await res.json();
       } catch (err) {
-        // High fidelity browser object URL fallback
         const objectUrl = URL.createObjectURL(file);
         const isVideo = file.type.startsWith('video');
         const sizeMb = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
@@ -132,7 +165,7 @@ export const apiService = {
     },
   },
 
-  // --- 3. Pipeline Task Execution REST API ---
+  // --- 4. Pipeline Task Execution REST API ---
   tasks: {
     async createTask(pipelineData: PipelineData, title?: string): Promise<TaskItem> {
       try {

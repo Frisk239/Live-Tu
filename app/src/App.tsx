@@ -21,6 +21,7 @@ import { ModelsPageView } from './views/ModelsPageView';
 import { KnowledgePageView } from './views/KnowledgePageView';
 
 import { PackageCheck, Edit3 } from 'lucide-react';
+import { apiService } from './services/api';
 
 export default function App() {
   // Authentication State (Credentials: haini / 888)
@@ -66,6 +67,41 @@ export default function App() {
   const [products, setProducts] = useState<ProductItem[]>(INITIAL_PRODUCTS);
   const [activeProductId, setActiveProductId] = useState<string>(INITIAL_PRODUCTS[0].id);
   const activeProduct = products.find((p) => p.id === activeProductId) || products[0] || INITIAL_PRODUCTS[0];
+
+  useEffect(() => {
+    apiService.products
+      .fetchProducts()
+      .then((data) => {
+        if (data && data.length > 0) {
+          setProducts(data);
+          setActiveProductId(data[0].id);
+        }
+      })
+      .catch((err) => console.warn('[App] SQLite products fetch fallback:', err));
+  }, []);
+
+  const handleUpdateProducts = (nextProducts: ProductItem[]) => {
+    const prevIds = new Set(products.map((p) => p.id));
+    const nextIds = new Set(nextProducts.map((p) => p.id));
+
+    // Handle deleted items
+    for (const p of products) {
+      if (!nextIds.has(p.id)) {
+        apiService.products.deleteProduct(p.id).catch(() => {});
+      }
+    }
+
+    // Handle created or updated items
+    for (const p of nextProducts) {
+      if (!prevIds.has(p.id)) {
+        apiService.products.createProduct(p).catch(() => {});
+      } else {
+        apiService.products.updateProduct(p.id, p).catch(() => {});
+      }
+    }
+
+    setProducts(nextProducts);
+  };
 
   const [modelConfig, setModelConfig] = useState<ModelConfigState>(DEFAULT_MODEL_CONFIG);
   const [userRole, setUserRole] = useState<'admin' | 'user'>('admin');
@@ -739,7 +775,7 @@ export default function App() {
               products={products}
               activeProductId={activeProductId}
               onSelectActiveProduct={(id) => setActiveProductId(id)}
-              onUpdateProducts={(updated) => setProducts(updated)}
+              onUpdateProducts={handleUpdateProducts}
               onBackToPipeline={() => setActiveView('pipeline')}
             />
           )}

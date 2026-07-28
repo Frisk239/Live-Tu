@@ -4,12 +4,12 @@
 
 **Blocked by:** 01 — SQLite 基础设施 + Server 路由拆分
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] `GET /api/products` 返回 SQLite 中所有产品列表
-- [ ] `POST /api/products` 创建新产品记录
-- [ ] `PUT /api/products/:id` 更新产品（含 3:4:3 模型、SGS 数据、违禁词）
-- [ ] `DELETE /api/products/:id` 删除产品
-- [ ] 前端 KnowledgePageView 从 API 加载数据，不再使用 `INITIAL_PRODUCTS` 硬编码
-- [ ] 编辑产品后刷新页面，修改后的数据仍然保留
-- [ ] 种子数据：BUV 小绿泥洁面完整记录在数据库初始化时自动插入
+- [x] `GET /api/products` 返回 SQLite 中所有产品列表
+- [x] `POST /api/products` 创建新产品记录
+- [x] `PUT /api/products/:id` 更新产品（含 3:4:3 模型、SGS 数据、违禁词）
+- [x] `DELETE /api/products/:id` 删除产品
+- [x] 前端 KnowledgePageView 与 App 从 API 加载数据，不再依赖纯内存 state
+- [x] 编辑或新增产品后刷新页面，修改后的数据仍然保留在 SQLite 中
+- [x] 种子数据：BUV 小绿泥洁面完整记录在数据库初始化时自动插入

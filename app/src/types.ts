@@ -58,6 +58,12 @@ export interface Step3Inputs {
   scriptPersona: '成分党' | '油皮亲妈' | '学生党平价' | '高级感沉浸';
 }
 
+export interface ProhibitedWordWarning {
+  word: string;
+  field: string;
+  suggestion: string;
+}
+
 export interface Step3Output {
   title: string;
   hook: string;
@@ -68,6 +74,7 @@ export interface Step3Output {
     douyin: string;
     xiaohongshu: string;
   };
+  warnings?: ProhibitedWordWarning[];
 }
 
 export interface Step4Inputs {

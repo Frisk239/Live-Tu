@@ -7,31 +7,43 @@ export const pipelineRouter = Router();
 
 // Helper to fetch active product from DB or fallback
 function getProductContext(productId?: string, bodyProductInfo?: any) {
+  let prohibitedWords: string[] = ['震惊', '必看', '第一名', '绝对', '医用级', '100%根除', '全网第一', '极限词'];
+
   if (productId) {
     const stmt = db.prepare('SELECT * FROM products WHERE id = ?');
     const r = stmt.get(productId) as any;
     if (r) {
+      try {
+        const parsedWords = JSON.parse(r.prohibited_words || '[]');
+        if (Array.isArray(parsedWords) && parsedWords.length > 0) {
+          prohibitedWords = parsedWords;
+        }
+      } catch {}
       return {
+        id: r.id,
         name: r.name,
         category: r.category,
         positioning: r.positioning,
         model343: `${r.model343_clays} | ${r.model343_extracts} | ${r.model343_surfactants}`,
-        sgsData: `${r.sgs_oil_8h}, ${r.sgs_oil_14d}`,
+        sgsData: `8h控油: ${r.sgs_oil_8h}, 14d出油: ${r.sgs_oil_14d}, 14d黑头: ${r.sgs_blackhead_14d}`,
         customSellingPoints: r.custom_selling_points,
+        prohibitedWords,
       };
     }
   }
   return {
+    id: 'prod_buv_cleanser',
     name: bodyProductInfo?.name || 'BUV 笔薇 小绿泥洁面',
     category: bodyProductInfo?.category || '美妆护肤/洁面',
     positioning: bodyProductInfo?.positioning || '油皮专研 · 温和净澈 · 植萃护肤',
     model343: bodyProductInfo?.model343
-      ? `${bodyProductInfo.model343.clays} | ${bodyProductInfo.model343.extracts}`
-      : '3重天然泥+4重植萃',
+      ? `${bodyProductInfo.model343.clays} | ${bodyProductInfo.model343.extracts} | ${bodyProductInfo.model343.surfactants}`
+      : '3重天然矿物泥 + 4重植萃复配 + 氨基酸温和表活',
     sgsData: bodyProductInfo?.sgsData
-      ? `${bodyProductInfo.sgsData.oil8h}, ${bodyProductInfo.sgsData.oil14d}`
-      : 'SGS权威实测: 8h控油-66.87%',
-    customSellingPoints: bodyProductInfo?.customSellingPoints || '一润二修三控油，膏体薄荷绿质感拉丝',
+      ? `8h控油 ${bodyProductInfo.sgsData.oil8h}, 14d改善 ${bodyProductInfo.sgsData.oil14d}`
+      : 'SGS权威实测: 8h控油 -66.87%, 14d黑头 -35.92%',
+    customSellingPoints: bodyProductInfo?.customSellingPoints || '一润二修三控油，膏体薄荷绿质感拉丝，自然清爽不紧绷',
+    prohibitedWords: bodyProductInfo?.prohibitedWords || prohibitedWords,
   };
 }
 
@@ -39,6 +51,34 @@ function clampSeedanceDuration(duration: number): number {
   if (duration <= 5) return 5;
   if (duration <= 10) return 10;
   return 10;
+}
+
+// 辅助工具：违禁词合规扫描
+function scanProhibitedWords(data: any, prohibitedWords: string[]) {
+  const warnings: Array<{ word: string; field: string; suggestion: string }> = [];
+  if (!Array.isArray(prohibitedWords) || prohibitedWords.length === 0) return warnings;
+
+  const checkText = (text: string | undefined, fieldName: string) => {
+    if (!text || typeof text !== 'string') return;
+    for (const word of prohibitedWords) {
+      if (word && text.includes(word)) {
+        warnings.push({
+          word,
+          field: fieldName,
+          suggestion: `建议替换“${word}”为更加合规、客观的描述（如“口碑热议”、“权威实测”）`,
+        });
+      }
+    }
+  };
+
+  checkText(data.title, '标题 (title)');
+  checkText(data.hook, '前置钩子 (hook)');
+  checkText(data.body, '正文文案 (body)');
+  checkText(data.cta, '行动号召 (cta)');
+  checkText(data.platform_fit?.douyin, '抖音定制口播 (platform_fit.douyin)');
+  checkText(data.platform_fit?.xiaohongshu, '小红书定制文案 (platform_fit.xiaohongshu)');
+
+  return warnings;
 }
 
 // Step 1: 多模态视觉拆解与静态图 Prompt 生成
@@ -196,7 +236,6 @@ pipelineRouter.post('/step2', async (req, res) => {
     };
   }
 
-  // Check and trigger Seedance relay task if configured
   const seedanceConfigured = hasSeedanceConfig();
   data.seedanceConfigured = seedanceConfigured;
 
@@ -235,24 +274,91 @@ pipelineRouter.post('/step2', async (req, res) => {
   return res.json({ success: true, data, source: gatewaySource });
 });
 
-// Step 3
+// Step 3: 爆款文案撰写 + 品牌知识库注入 + 违禁词合规扫描
 pipelineRouter.post('/step3', async (req, res) => {
   const inputs = req.body.inputs || req.body;
-  const { videoPrompt = '', targetPlatform = 'douyin', scriptPersona = '成分党', productId, productInfo } = inputs;
+  const {
+    videoPrompt = '',
+    targetPlatform = 'douyin',
+    scriptPersona = '成分党',
+    textModel,
+    productId,
+    productInfo,
+  } = inputs;
+
   const product = getProductContext(productId, productInfo);
 
-  const mockStep3 = {
-    title: targetPlatform === 'douyin' ? `搞定问题肌！${product.name} SGS实测强效体验！🔥` : `早晨的快乐是它给的！${product.name} 沉浸使用感🍃`,
-    hook: `你还在为了皮肤烦恼？试试【${product.name}】的核心爆款配方！`,
-    body: `来看 SGS 权威报告！【${product.name}】凭什么口碑风靡全网？\n\n核心就在它的科学配方体系：${product.model343}！实测数据：${product.sgsData}。体验感直接拉满！`,
-    hashtags: [`#${product.name.split(' ')[0] || 'BUV'}`, `#${product.name}`, '#美妆爆款', '#SGS实测'],
-    cta: '点击下方链接，领专属限时体验福利！',
-    platform_fit: {
-      douyin: `宝藏好物推荐！【${product.name}】实测效果直接拉满！点击下方小黄车领专属优惠～`,
-      xiaohongshu: `沉浸式种草！【${product.name}】质地超级治愈🍃 强烈推荐给所有宝子们～`,
-    },
-  };
-  return res.json({ success: true, data: mockStep3, source: 'mock' });
+  const systemPrompt = `你是一个顶级短视频带货文案主创与品牌广告合规官。
+你需要为品牌产品【${product.name}】撰写爆款带货脚本文案。
+
+【品牌知识库权威依据】
+- 核心定位：${product.positioning}
+- 3:4:3配方架构：${product.model343}
+- SGS权威检测数据：${product.sgsData}
+- 核心卖点：${product.customSellingPoints}
+
+【合规红线要求】
+绝对严禁在文案中使用任何虚假宣传或违禁极限词（如：绝对、第一名、医用级、100%根除、震惊、必看）。
+
+必须返回合法 JSON 对象，包含以下字段：
+- title (吸睛标题, 15-25字)
+- hook (3秒黄金 Hook 吸睛句)
+- body (正文口播脚本，自然植入 3:4:3 成分与 SGS 实测数据)
+- hashtags (话题标签数组, 3-4个)
+- cta (引导转化行动 Call-to-Action)
+- platform_fit: {
+    douyin: "抖音卡点节奏口播完整版本",
+    xiaohongshu: "小红书图文种草与体验笔记版本"
+  }`;
+
+  const userPrompt = `【文案生成任务】
+- 目标产品：${product.name}
+- 目标平台：${targetPlatform}
+- 脚本人设：${scriptPersona}
+- 镜头运镜描述：${videoPrompt || `镜头推进展示 ${product.name}`}
+请生成包含 SGS 权威数据的爆款脚本文案 JSON。`;
+
+  let data: any = null;
+  let source = 'mock';
+  let modelUsed = 'Default Text Model';
+
+  try {
+    const gatewayRes = await callLlmGateway({
+      system: systemPrompt,
+      user: userPrompt,
+      modelId: textModel,
+    });
+
+    if (gatewayRes.success && gatewayRes.data) {
+      data = gatewayRes.data;
+      source = gatewayRes.source;
+      modelUsed = gatewayRes.modelUsed;
+    }
+  } catch (err: any) {
+    console.warn('Step 3 LLM Gateway error, falling back to mock copywriting:', err.message);
+  }
+
+  if (!data) {
+    data = {
+      title: targetPlatform === 'douyin' ? `搞定问题肌！${product.name} SGS实测强效体验！🔥` : `早晨的快乐是它给的！${product.name} 沉浸使用感🍃`,
+      hook: `你还在为了油光和黑头烦恼？试试【${product.name}】的核心爆款配方！`,
+      body: `来看 SGS 权威报告！【${product.name}】凭什么口碑风靡全网？\n\n核心就在它的科学配方体系：${product.model343}！SGS权威实测数据：${product.sgsData}。洗完一润二修三控油，膏体薄荷绿质感拉丝，自然清爽不紧绷！`,
+      hashtags: [`#${product.name.split(' ')[0] || 'BUV'}`, `#${product.name}`, '#美妆爆款', '#SGS实测'],
+      cta: '点击下方链接，领专属限时体验福利！',
+      platform_fit: {
+        douyin: `宝藏好物推荐！【${product.name}】实测效果直接拉满！点击下方小黄车领专属优惠～`,
+        xiaohongshu: `沉浸式种草！【${product.name}】质地超级治愈🍃 强烈推荐给所有宝子们～`,
+      },
+    };
+  }
+
+  // 执行违禁词合规扫描
+  const warnings = scanProhibitedWords(data, product.prohibitedWords);
+  if (warnings.length > 0) {
+    data.warnings = warnings;
+  }
+
+  return res.json({ success: true, data, source, modelUsed });
 });
 
 // Step 4

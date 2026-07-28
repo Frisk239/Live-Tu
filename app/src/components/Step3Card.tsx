@@ -20,6 +20,7 @@ import {
   RefreshCw,
   Maximize2,
   Minimize2,
+  AlertTriangle,
 } from 'lucide-react';
 import { PromptEditorModal } from './PromptEditorModal';
 
@@ -397,6 +398,23 @@ export const Step3Card: React.FC<Step3CardProps> = ({
                     </button>
                   </div>
                 </div>
+
+                {/* Prohibited Words Warnings Banner */}
+                {output.warnings && output.warnings.length > 0 && (
+                  <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 space-y-1.5 mb-3">
+                    <div className="flex items-center gap-1.5 font-bold text-amber-400">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span>合规扫描提示：检测到品牌敏感违禁词 ({output.warnings.length} 处)</span>
+                    </div>
+                    <ul className="list-disc list-inside space-y-1 text-slate-300">
+                      {output.warnings.map((w, idx) => (
+                        <li key={idx}>
+                          在 <span className="font-semibold text-amber-300">{w.field}</span> 中检测到敏感词“<span className="text-rose-400 font-bold">{w.word}</span>” — {w.suggestion}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
                 {/* Phone Post Mockup Frame */}
                 <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 relative space-y-3">

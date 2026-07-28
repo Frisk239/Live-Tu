@@ -1,0 +1,241 @@
+- generic [ref=e43]:
+  - complementary [ref=e44]:
+    - generic [ref=e45]:
+      - generic [ref=e46]:
+        - generic [ref=e47]:
+          - generic [ref=e48]:
+            - generic [ref=e50]: BUV
+            - generic [ref=e51]:
+              - generic [ref=e52]: AI 爆款反推工作台
+              - generic [ref=e53]: v2.5 PRO
+          - button "隐藏侧边栏" [ref=e54] [cursor=pointer]:
+            - img [ref=e55]
+        - generic [ref=e58]:
+          - generic [ref=e59]:
+            - generic [ref=e60]:
+              - generic [ref=e61]: 核心工程
+              - img [ref=e62]
+            - button "5步反推生成工作台" [ref=e66] [cursor=pointer]:
+              - img [ref=e67]
+              - generic [ref=e71]: 5步反推生成工作台
+          - generic [ref=e72]:
+            - generic [ref=e73]:
+              - generic [ref=e74]: 品牌与卖点库
+              - img [ref=e75]
+            - generic [ref=e78]:
+              - generic [ref=e79]:
+                - generic [ref=e80]:
+                  - img [ref=e81]
+                  - text: 绑定产品
+                - generic [ref=e86]: 洁面护肤
+              - combobox [ref=e87] [cursor=pointer]:
+                - option "BUV 笔薇 小绿泥洁面膏" [selected]
+                - option "BUV 蓝铜胜肽急救修护精华液"
+                - option "BUV 咖啡因微米蓬松洗发水"
+            - button "卖点库 & AI润色" [ref=e88] [cursor=pointer]:
+              - img [ref=e89]
+              - generic [ref=e91]: 卖点库 & AI润色
+          - generic [ref=e92]:
+            - generic [ref=e93]:
+              - generic [ref=e94]: 创作中心
+              - img [ref=e95]
+            - button "视频素材库" [ref=e97] [cursor=pointer]:
+              - img [ref=e98]
+              - generic [ref=e100]: 视频素材库
+            - button "任务中心" [ref=e101] [cursor=pointer]:
+              - img [ref=e102]
+              - generic [ref=e105]: 任务中心
+            - button "爆款模版库" [ref=e106] [cursor=pointer]:
+              - img [ref=e107]
+              - generic [ref=e111]: 爆款模版库
+            - button "模型配置中心" [ref=e112] [cursor=pointer]:
+              - img [ref=e113]
+              - generic [ref=e116]: 模型配置中心
+          - generic [ref=e117]:
+            - generic [ref=e118]:
+              - generic [ref=e119]: 帮助与系统
+              - img [ref=e120]
+            - button "新手上手指南" [ref=e123] [cursor=pointer]:
+              - img [ref=e124]
+              - generic [ref=e127]: 新手上手指南
+            - generic "企业级多模型 (DeepSeek / Gemini / GPT)" [ref=e128]:
+              - img [ref=e129]
+              - generic [ref=e131]: 全量 AI 引擎在线
+      - button "重置工作台工程" [ref=e133] [cursor=pointer]:
+        - img [ref=e134]
+        - generic [ref=e137]: 重置工作台工程
+  - generic [ref=e138]:
+    - banner [ref=e139]:
+      - generic [ref=e140]:
+        - generic [ref=e142]:
+          - generic [ref=e143]:
+            - heading "AI 爆款视频反推与生成工作台" [level=1] [ref=e144]
+            - generic [ref=e145]: PRO WORKBENCH
+          - paragraph [ref=e146]: 短视频解析 → 静态Prompt → 运镜轨迹 → 爆款文案 → BGM卡点 → 合成导出
+        - generic [ref=e147]:
+          - generic [ref=e148]:
+            - img [ref=e149]
+            - generic [ref=e154]: "当前商品:"
+            - generic [ref=e155]: BUV 笔薇 小绿泥洁面膏
+          - generic [ref=e156]:
+            - img [ref=e157]
+            - generic [ref=e159]: AI 引擎在线
+    - main [ref=e160]:
+      - generic [ref=e161]:
+        - generic [ref=e162]:
+          - generic [ref=e163]:
+            - img [ref=e165]
+            - generic [ref=e170]:
+              - generic [ref=e171]:
+                - generic [ref=e172]: "工作台绑定卖点:"
+                - generic [ref=e173]: BUV 笔薇 小绿泥洁面膏
+                - generic [ref=e174]: 洁面护肤
+              - paragraph [ref=e175]: 油皮专研 · 温和净澈 · 植萃控油 · 连续2年沙利文【国货控油洁面销量第一】 / 全网爆售 3000万支 / 央视推荐
+          - generic [ref=e176]:
+            - combobox [ref=e177] [cursor=pointer]:
+              - 'option "切换产品: BUV 笔薇 小绿泥洁面膏" [selected]'
+              - 'option "切换产品: BUV 蓝铜胜肽急救修护精华液"'
+              - 'option "切换产品: BUV 咖啡因微米蓬松洗发水"'
+            - button "切换到卖点库页面" [ref=e178]:
+              - img [ref=e179]
+              - generic [ref=e181]: 切换到卖点库页面
+        - generic [ref=e182]:
+          - generic [ref=e183]:
+            - heading "BUV 5步内容反推工作台 全自动上下文继承" [level=2] [ref=e186]:
+              - generic [ref=e187]: BUV 5步内容反推工作台
+              - generic [ref=e188]:
+                - img [ref=e189]
+                - text: 全自动上下文继承
+            - generic [ref=e193]:
+              - generic [ref=e194]:
+                - generic [ref=e195]: 完成度
+                - generic [ref=e196]: 0 / 5
+              - button "一键全自动贯通反推 (Step 1→5)" [ref=e197] [cursor=pointer]:
+                - img [ref=e198]
+                - generic [ref=e200]: 一键全自动贯通反推 (Step 1→5)
+          - generic [ref=e201]:
+            - button "1 第 1 步 视频/Live图 → 静态图Prompt 待运行" [ref=e202] [cursor=pointer]:
+              - generic [ref=e203]:
+                - generic [ref=e204]:
+                  - generic [ref=e205]: "1"
+                  - generic [ref=e206]: 第 1 步
+                - img [ref=e207]
+              - paragraph [ref=e211]: 视频/Live图 → 静态图Prompt
+              - generic [ref=e212]:
+                - generic [ref=e213]: 待运行
+                - img [ref=e214]
+            - button "2 第 2 步 静态图 → 视频生成Prompt 待运行" [active] [ref=e216] [cursor=pointer]:
+              - generic [ref=e217]:
+                - generic [ref=e218]:
+                  - generic [ref=e219]: "2"
+                  - generic [ref=e220]: 第 2 步
+                - img [ref=e221]
+              - paragraph [ref=e224]: 静态图 → 视频生成Prompt
+              - generic [ref=e225]:
+                - generic [ref=e226]: 待运行
+                - img [ref=e227]
+            - button "3 第 3 步 视频 → 爆款文案 待运行" [ref=e229] [cursor=pointer]:
+              - generic [ref=e230]:
+                - generic [ref=e231]:
+                  - generic [ref=e232]: "3"
+                  - generic [ref=e233]: 第 3 步
+                - img [ref=e234]
+              - paragraph [ref=e237]: 视频 → 爆款文案
+              - generic [ref=e238]:
+                - generic [ref=e239]: 待运行
+                - img [ref=e240]
+            - button "4 第 4 步 文案+视频 → 匹配 BGM 待运行" [ref=e242] [cursor=pointer]:
+              - generic [ref=e243]:
+                - generic [ref=e244]:
+                  - generic [ref=e245]: "4"
+                  - generic [ref=e246]: 第 4 步
+                - img [ref=e247]
+              - paragraph [ref=e251]: 文案+视频 → 匹配 BGM
+              - generic [ref=e252]:
+                - generic [ref=e253]: 待运行
+                - img [ref=e254]
+            - button "5 第 5 步 合成输出成品 待运行" [ref=e256] [cursor=pointer]:
+              - generic [ref=e257]:
+                - generic [ref=e258]:
+                  - generic [ref=e259]: "5"
+                  - generic [ref=e260]: 第 5 步
+                - img [ref=e261]
+              - paragraph [ref=e263]: 合成输出成品
+              - generic [ref=e265]: 待运行
+        - generic [ref=e435]:
+          - generic [ref=e436]:
+            - generic [ref=e437]:
+              - generic [ref=e438]: "2"
+              - generic [ref=e439]:
+                - heading "第 2 步：静态图 → 视频生成提示词" [level=3] [ref=e440]
+                - paragraph [ref=e441]: 运镜控制 + 动态强度与视频 Prompt 生成（兼容 Veo 3.1 / Seedance / Omni Flash 等模型）
+            - generic [ref=e442]:
+              - button "全屏沉浸" [ref=e443] [cursor=pointer]:
+                - img [ref=e444]
+                - generic [ref=e449]: 全屏沉浸
+              - button "上一步" [ref=e450] [cursor=pointer]:
+                - img [ref=e451]
+                - generic [ref=e453]: 上一步
+              - button "重置" [ref=e454] [cursor=pointer]:
+                - img [ref=e455]
+                - generic [ref=e458]: 重置
+              - button "运行" [ref=e459] [cursor=pointer]:
+                - img [ref=e460]
+                - generic [ref=e462]: 运行
+              - button "下一步" [ref=e463] [cursor=pointer]:
+                - generic [ref=e464]: 下一步
+                - img [ref=e465]
+          - generic [ref=e467]:
+            - generic [ref=e468]:
+              - generic [ref=e470]:
+                - img [ref=e471]
+                - generic [ref=e474]: 1. 继承第 1 步 Prompt & 视频控制参数
+              - generic [ref=e475]:
+                - generic [ref=e478]: 已自动引用 Step 1 产物
+                - button "同步 Step 1 结果" [ref=e479] [cursor=pointer]:
+                  - img [ref=e480]
+                  - generic [ref=e485]: 同步 Step 1 结果
+              - generic [ref=e486]:
+                - generic [ref=e487]: 第 1 步生成的 static_image_prompt (自动接入)
+                - textbox "来自于第 1 步的静态图提示词..." [ref=e488]
+              - generic [ref=e489]:
+                - generic [ref=e490]:
+                  - generic [ref=e491]: 视频调性
+                  - combobox [ref=e492] [cursor=pointer]:
+                    - option "小红书治愈（缓慢沉浸推镜）" [selected]
+                    - option "抖音卡点（强冲击横移）"
+                    - option "品牌 TVC（大牌柔影）"
+                - generic [ref=e493]:
+                  - generic [ref=e494]: 目标时长 (秒)
+                  - combobox [ref=e495] [cursor=pointer]:
+                    - option "3 秒（快节奏卡点）"
+                    - option "4 秒（标准种草）" [selected]
+                    - option "5 秒（硬核测评）"
+                    - option "6 秒（深度长质感）"
+              - generic [ref=e496]:
+                - generic [ref=e497]:
+                  - generic [ref=e498]:
+                    - img [ref=e499]
+                    - text: 目标视频生成 AI 模型 (Video Model)
+                  - generic [ref=e502]: SOTA 运镜引擎
+                - combobox [ref=e503] [cursor=pointer]:
+                  - option "Seedance 2.0 Fast — 默认中转方案：快节奏卡点、抖音前3秒冲击力 (极快)" [selected]
+                  - option "Seedance 2.0 — 商业级物理运镜，膏体拉丝与质感镜头 (精细)"
+                - generic [ref=e504]:
+                  - generic [ref=e505]:
+                    - generic [ref=e506]: "推荐场景:"
+                    - generic [ref=e507]: 默认中转方案：快节奏卡点、抖音前3秒冲击力
+                  - generic [ref=e508]:
+                    - generic [ref=e509]: "预估速度:"
+                    - generic [ref=e510]: 极快 (3.2s)
+                  - generic [ref=e511]:
+                    - generic [ref=e512]: "动态质量:"
+                    - generic [ref=e513]: 高清
+            - generic [ref=e515]:
+              - generic [ref=e517]:
+                - img [ref=e518]
+                - generic [ref=e521]: 2. 视频运动 PROMPT 结构化产物
+              - generic [ref=e522]:
+                - img [ref=e524]
+                - paragraph [ref=e526]: 点击【运行 ▶】启动第 2 步视频 Prompt 生成引擎
+                - paragraph [ref=e527]: （系统将计算运镜轨迹、运动强度、音轨建议与 Veo 3.1 / Seedance 提示词）

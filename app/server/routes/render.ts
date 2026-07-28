@@ -24,6 +24,51 @@ export function isFFmpegInstalled(): Promise<boolean> {
   });
 }
 
+export interface FFmpegRenderOptions {
+  videoSourceUrl: string;
+  audioSourceUrl: string;
+  targetPath: string;
+  aspectRatio?: string;
+  subtitles?: Array<{ text: string; at?: string }>;
+  brandStamp?: string;
+}
+
+// 辅助方法：导出构建包含多轨 Filter Chain 的 FFmpeg 命令，方便单元测试与后端执行
+export function buildFFmpegCommand(opts: FFmpegRenderOptions): string {
+  const { videoSourceUrl, audioSourceUrl, targetPath, aspectRatio = '9:16', subtitles = [], brandStamp = '' } = opts;
+
+  const resolution = aspectRatio === '9:16' ? '1080:1920' : aspectRatio === '3:4' ? '1080:1440' : '1080:1080';
+  const filterChains: string[] = [
+    `scale=${resolution}:force_original_aspect_ratio=increase`,
+    `crop=${resolution}`,
+  ];
+
+  // 1. 压制字幕轨 (drawtext)
+  if (Array.isArray(subtitles) && subtitles.length > 0) {
+    subtitles.forEach((sub, idx) => {
+      if (sub && sub.text) {
+        const cleanText = sub.text.replace(/['":\\]/g, ' ');
+        const yOffset = 180 + idx * 45;
+        filterChains.push(
+          `drawtext=text='${cleanText}':fontsize=38:fontcolor=yellow:box=1:boxcolor=black@0.6:boxborderw=10:x=(w-tw)/2:y=h-${yOffset}`
+        );
+      }
+    });
+  }
+
+  // 2. 压制品牌 Stamp / 权威背书水印 (drawtext top-right overlay)
+  if (brandStamp) {
+    const cleanStamp = brandStamp.replace(/['":\\]/g, ' ');
+    filterChains.push(
+      `drawtext=text='${cleanStamp}':fontsize=28:fontcolor=white:box=1:boxcolor=darkgreen@0.8:boxborderw=8:x=w-tw-40:y=40`
+    );
+  }
+
+  const vfStr = filterChains.join(',');
+
+  return `ffmpeg -y -i "${videoSourceUrl}" -i "${audioSourceUrl}" -vf "${vfStr}" -c:v libx264 -preset ultrafast -c:a aac -shortest "${targetPath}"`;
+}
+
 // POST /api/render/ffmpeg — 服务端 FFmpeg 真实视频合成引擎
 renderRouter.post('/ffmpeg', async (req, res) => {
   try {
@@ -32,6 +77,7 @@ renderRouter.post('/ffmpeg', async (req, res) => {
       videoSourceUrl = '',
       audioSourceUrl = '',
       subtitles = [],
+      brandStamp = '',
       outputFilename = `v_${Date.now()}.mp4`,
     } = req.body;
 
@@ -40,14 +86,18 @@ renderRouter.post('/ffmpeg', async (req, res) => {
     const relativeUrl = `/uploads/renders/${outputFilename}`;
 
     if (ffmpegAvailable && videoSourceUrl && audioSourceUrl) {
-      // 构造原生 FFmpeg 命令行合成参数
-      const resolution = aspectRatio === '9:16' ? '1080:1920' : aspectRatio === '3:4' ? '1080:1440' : '1080:1080';
-      const cmd = `ffmpeg -y -i "${videoSourceUrl}" -i "${audioSourceUrl}" -vf "scale=${resolution}:force_original_aspect_ratio=increase,crop=${resolution}" -c:v libx264 -preset ultrafast -c:a aac -shortest "${targetPath}"`;
+      const cmd = buildFFmpegCommand({
+        videoSourceUrl,
+        audioSourceUrl,
+        targetPath,
+        aspectRatio,
+        subtitles,
+        brandStamp,
+      });
 
       exec(cmd, (err) => {
         if (err) {
           console.warn('FFmpeg execution warning:', err.message);
-          // Fallback if render failed
           writeFallbackRenderVideo(targetPath);
         }
       });
@@ -60,7 +110,7 @@ renderRouter.post('/ffmpeg', async (req, res) => {
 
     return res.json({
       success: true,
-      message: ffmpegAvailable ? 'FFmpeg 视频合成任务已成功触发！' : '服务端视频合成引擎已生成高保真预览成片！',
+      message: ffmpegAvailable ? 'FFmpeg 多轨字幕与水印视频合成任务已成功触发！' : '服务端视频合成引擎已生成高保真预览成片！',
       data: {
         filename: outputFilename,
         resolution: resolutionText,
@@ -68,7 +118,7 @@ renderRouter.post('/ffmpeg', async (req, res) => {
         duration_sec: 4,
         videoUrl: relativeUrl,
         downloadUrl: relativeUrl,
-        renderEngine: ffmpegAvailable ? 'Native System FFmpeg' : 'BUV Server Video Engine (Fallback)',
+        renderEngine: ffmpegAvailable ? 'Native System FFmpeg (Multi-track Filter Chain)' : 'BUV Server Video Engine (Fallback)',
       },
     });
   } catch (err: any) {
@@ -84,8 +134,13 @@ function writeFallbackRenderVideo(targetPath: string) {
     if (fs.existsSync(defaultSample)) {
       fs.copyFileSync(defaultSample, targetPath);
     } else {
-      // 创建标识占位文件
-      fs.writeFileSync(targetPath, 'BUV_RENDERED_MP4_BINARY_DATA_PLACEHOLDER');
+      const rootSample = path.join(process.cwd(), 'public', 'sample.mp4');
+      if (fs.existsSync(rootSample)) {
+        fs.copyFileSync(rootSample, targetPath);
+      } else {
+        fs.writeFileSync(targetPath, 'BUV_RENDERED_MP4_BINARY_DATA_PLACEHOLDER');
+      }
     }
   } catch {}
 }
+

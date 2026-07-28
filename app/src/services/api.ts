@@ -251,6 +251,20 @@ export const apiService = {
         return null;
       }
     },
+
+    async generateImage(prompt: string, productId?: string, imageModel?: string): Promise<{ success: boolean; data?: { imageUrl: string; materialId: string; promptUsed: string }; error?: string }> {
+      try {
+        const res = await fetch(`${API_BASE_URL}/pipeline/generate-image`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, productId, imageModel }),
+        });
+        if (!res.ok) throw new Error('Generate image API failed');
+        return await res.json();
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    },
   },
 
   // --- 5. Presets Preset Templates REST API ---

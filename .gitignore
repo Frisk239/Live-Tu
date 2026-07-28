@@ -1,10 +1,41 @@
-node_modules
-dist
+node_modules/
+dist/
+build/
 .env
+*.env
+*.log
+*.log.*
 *.db
 uploads/
 
-# Exclude docs, context and prototype per user decision
+# Test results and coverage
+test-results/
+**/.last-run.json
+coverage/
+.nyc_output/
+
+# Playwright
+.playwright/
+.playwright-cli/
+playwright-report/
+
+# Scratch temporary files
+.scratch/
+
+# E2E (uncomment if you want to ignore e2e tests)
+# app/e2e/
+
+# Docs and generated
 CONTEXT.md
-yuanxing/
 docs/
+yuanxing/
+
+# VS Code
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

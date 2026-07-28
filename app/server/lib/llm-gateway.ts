@@ -153,3 +153,108 @@ export async function callLlmGateway(params: LlmGatewayParams): Promise<LlmGatew
 
   throw lastError || new Error('LLM Gateway 请求异常');
 }
+
+export interface ImageGenParams {
+  prompt: string;
+  size?: string;
+  modelId?: string;
+}
+
+export interface ImageGenResponse {
+  success: boolean;
+  imageUrl: string;
+  modelUsed: string;
+  source: 'direct' | 'yunwu' | 'mock' | 'svg-render-engine';
+  error?: string;
+}
+
+export async function callImageGenerationGateway(params: ImageGenParams): Promise<ImageGenResponse> {
+  const { prompt, size = '1024x1024', modelId } = params;
+
+  let targetModel: any = null;
+  if (modelId) {
+    const stmt = db.prepare('SELECT * FROM model_config WHERE id = ? OR name = ?');
+    targetModel = stmt.get(modelId, modelId);
+  }
+  if (!targetModel) {
+    const stmt = db.prepare("SELECT * FROM model_config WHERE category = 'image' AND is_default = 1");
+    targetModel = stmt.get();
+  }
+  if (!targetModel) {
+    const stmt = db.prepare("SELECT * FROM model_config WHERE category = 'image' LIMIT 1");
+    targetModel = stmt.get();
+  }
+
+  let baseUrl = targetModel?.base_url || process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1';
+  let apiKey = targetModel?.api_key || process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
+  let modelCode = targetModel?.model_code || 'dall-e-3';
+  let modelName = targetModel?.name || 'Default Image Model';
+
+  baseUrl = baseUrl.replace(/\/$/, '');
+  const envYunwuKey = process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY;
+  let isYunwuFallback = false;
+  if ((!apiKey || apiKey.startsWith('sk-ds-') || apiKey.startsWith('sk-google-') || apiKey.startsWith('sk-proj-')) && envYunwuKey && envYunwuKey !== 'MY_GEMINI_API_KEY') {
+    apiKey = envYunwuKey;
+    baseUrl = (process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1').replace(/\/$/, '');
+    isYunwuFallback = true;
+  }
+
+  if (!apiKey) {
+    return {
+      success: false,
+      imageUrl: '',
+      modelUsed: modelName,
+      source: 'mock',
+      error: '未配置有效画图 API Key',
+    };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+    const response = await fetch(`${baseUrl}/images/generations`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: modelCode,
+        prompt,
+        n: 1,
+        size,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`HTTP ${response.status} from image API: ${errText.slice(0, 200)}`);
+    }
+
+    const resJson = (await response.json()) as any;
+    const generatedUrl = resJson?.data?.[0]?.url || resJson?.data?.[0]?.b64_json;
+    if (!generatedUrl) {
+      throw new Error('画图 API 未返回有效的图片 URL');
+    }
+
+    return {
+      success: true,
+      imageUrl: generatedUrl,
+      modelUsed: `${modelName} (${modelCode})`,
+      source: isYunwuFallback ? 'yunwu' : 'direct',
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      imageUrl: '',
+      modelUsed: modelName,
+      source: 'mock',
+      error: err.message,
+    };
+  }
+}
+

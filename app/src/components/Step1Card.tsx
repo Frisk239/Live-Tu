@@ -92,6 +92,42 @@ export const Step1Card: React.FC<Step1CardProps> = ({
   const [activeTab, setActiveTab] = useState<'visual' | 'json'>('visual');
   const [isPromptEditorOpen, setIsPromptEditorOpen] = useState(false);
 
+  // Ticket 14: 一键生成同款新首帧按钮
+  const handleGenerateNewFrame = async () => {
+    if (!pipelineData.step1.inputs.mediaUrl) {
+      alert('请先上传素材或提供文本描述');
+      return;
+    }
+    try {
+      const res = await fetch('/api/pipeline/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: pipelineData.step1.inputs.viralReason || '高质感爆款小绿泥洁面膏体拉丝特写',
+          productId: activeProduct?.id,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.data.imageUrl) {
+        // 同步到 Step2
+        setPipelineData((prev) => ({
+          ...prev,
+          step2: {
+            ...prev.step2,
+            inputs: {
+              ...prev.step2.inputs,
+              static_image_prompt: data.data.promptUsed || pipelineData.step1.output?.static_image_prompt,
+              imageUrl: data.data.imageUrl,
+            },
+          },
+        }));
+        alert('✅ 同款新首帧已生成并同步到 Step 2！');
+      }
+    } catch (e) {
+      alert('生成失败，请检查后端配置');
+    }
+  };
+
   // Batch Queue State
   const [batchQueue, setBatchQueue] = useState<BatchStep1QueueItem[]>([
     {

@@ -109,6 +109,17 @@ export const Step5Card: React.FC<Step5CardProps> = ({
     }
   };
 
+  const handleRealDownload = () => {
+    if (output?.output?.downloadUrl) {
+      const link = document.createElement('a');
+      link.href = output.output.downloadUrl;
+      link.download = output.output.filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  };
+
   // Find active subtitle at current time
   const currentSubtitle = output?.timeline.find((item) => {
     if (item.action !== 'subtitle_in') return false;

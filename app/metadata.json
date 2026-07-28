@@ -1,0 +1,6 @@
+{
+  "name": "BUV 小绿泥爆款视频反推流水线",
+  "description": "抖音电商爆款短视频/Live图5步结构化反推与同款内容生产流水线（BUV笔薇小绿泥洁面）",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

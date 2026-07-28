@@ -1,0 +1,10 @@
+node_modules
+dist
+.env
+*.db
+uploads/
+
+# Exclude docs, context and prototype per user decision
+CONTEXT.md
+yuanxing/
+docs/

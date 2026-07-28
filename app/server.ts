@@ -12,6 +12,7 @@ import { tasksRouter } from './server/routes/tasks';
 import { productsRouter, handleSellingPointsOptimize } from './server/routes/products';
 import { bgmRouter } from './server/routes/bgm';
 import { renderRouter } from './server/routes/render';
+import { presetsRouter } from './server/routes/presets';
 
 dotenv.config();
 
@@ -45,6 +46,7 @@ app.use('/api/products', productsRouter);
 app.use('/api/selling-points/optimize', handleSellingPointsOptimize);
 app.use('/api/bgm', bgmRouter);
 app.use('/api/render', renderRouter);
+app.use('/api/presets', presetsRouter);
 
 // Vite Middleware for dev / Static serving for production
 async function startServer() {

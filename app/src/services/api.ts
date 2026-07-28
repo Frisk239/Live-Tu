@@ -1,5 +1,5 @@
 import { ModelMetadata, ModelConfigState } from '../data/models';
-import { PipelineData, TaskItem, MaterialItem, ProductItem } from '../types';
+import { PipelineData, TaskItem, MaterialItem, ProductItem, StepId } from '../types';
 
 /**
  * Standard REST API Client for AIGC Video Processing Pipeline
@@ -188,33 +188,58 @@ export const apiService = {
     },
   },
 
-  // --- 4. Pipeline Task Execution REST API ---
+  // --- 4. Pipeline Task Execution & History REST API ---
   tasks: {
-    async createTask(pipelineData: PipelineData, title?: string): Promise<TaskItem> {
+    async fetchTasks(): Promise<TaskItem[]> {
+      try {
+        const res = await fetch(`${API_BASE_URL}/tasks`);
+        if (!res.ok) throw new Error('Fetch tasks failed');
+        const json = await res.json();
+        return json.data || [];
+      } catch (err) {
+        return [];
+      }
+    },
+
+    async createTask(taskData: { id?: string; title?: string; status?: string; currentStep?: number; pipelineData: any; thumbnailUrl?: string }): Promise<{ success: boolean; data: TaskItem }> {
       try {
         const res = await fetch(`${API_BASE_URL}/tasks`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ title, pipelineData }),
+          body: JSON.stringify(taskData),
         });
         if (!res.ok) throw new Error('Task creation failed');
         return await res.json();
       } catch (err) {
         return {
-          id: 'TASK-' + Math.floor(100000 + Math.random() * 900000),
-          title: title || '视频爆款反推任务 #' + Math.floor(Math.random() * 100),
-          createdAt: new Date().toLocaleString(),
-          status: 'completed',
-          currentStep: 5,
-          pipelineData,
-          thumbnailUrl: pipelineData.step1.inputs.mediaUrl,
+          success: true,
+          data: {
+            id: taskData.id || 'TASK-' + Math.floor(100000 + Math.random() * 900000),
+            title: taskData.title || '视频爆款反推任务 #' + Math.floor(Math.random() * 100),
+            createdAt: new Date().toLocaleString(),
+            status: (taskData.status as any) || 'completed',
+            currentStep: (taskData.currentStep as StepId) || 5,
+            pipelineData: taskData.pipelineData,
+            thumbnailUrl: taskData.thumbnailUrl,
+          },
         };
       }
     },
 
-    async runPipelineStep(stepId: number, inputs: any, modelInfo?: any): Promise<any> {
+    async deleteTask(id: string): Promise<{ success: boolean }> {
       try {
-        const res = await fetch(`${API_BASE_URL}/pipeline/step-${stepId}`, {
+        const res = await fetch(`${API_BASE_URL}/tasks/${id}`, {
+          method: 'DELETE',
+        });
+        return await res.json();
+      } catch (err) {
+        return { success: false };
+      }
+    },
+
+    async runPipelineStep(stepId: StepId, inputs: any, modelInfo?: any): Promise<any> {
+      try {
+        const res = await fetch(`${API_BASE_URL}/pipeline/step${stepId}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ inputs, modelInfo }),
@@ -224,6 +249,44 @@ export const apiService = {
       } catch (err) {
         console.log(`[API Client] Step ${stepId} fallback execution`);
         return null;
+      }
+    },
+  },
+
+  // --- 5. Presets Preset Templates REST API ---
+  presets: {
+    async fetchPresets(): Promise<any[]> {
+      try {
+        const res = await fetch(`${API_BASE_URL}/presets`);
+        if (!res.ok) throw new Error('Fetch presets failed');
+        const json = await res.json();
+        return json.data || [];
+      } catch (err) {
+        return [];
+      }
+    },
+
+    async createPreset(preset: { title: string; tag?: string; description?: string; coverImage?: string; pipelineData: any }): Promise<{ success: boolean; data: any }> {
+      try {
+        const res = await fetch(`${API_BASE_URL}/presets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(preset),
+        });
+        return await res.json();
+      } catch (err) {
+        return { success: false, data: null };
+      }
+    },
+
+    async deletePreset(id: string): Promise<{ success: boolean }> {
+      try {
+        const res = await fetch(`${API_BASE_URL}/presets/${id}`, {
+          method: 'DELETE',
+        });
+        return await res.json();
+      } catch (err) {
+        return { success: false };
       }
     },
   },

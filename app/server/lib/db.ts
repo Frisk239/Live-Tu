@@ -213,4 +213,108 @@ export function initDatabase() {
       insertBgm.run(...bgm);
     }
   }
+
+  // Seed default presets if empty
+  const presetsCountStmt = db.prepare('SELECT COUNT(*) as count FROM presets');
+  const presetsCount = (presetsCountStmt.get() as { count: number }).count;
+  if (presetsCount === 0) {
+    const insertPreset = db.prepare(`
+      INSERT INTO presets (id, title, tag, description, cover_image, pipeline_data)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    const defaultPresets = [
+      [
+        'preset_xhs_healing',
+        '小红书治愈生活风 (美妆/护肤)',
+        '治愈种草',
+        '适用于晨间自然光、高润泽肌感与生活Vlog，强调沉浸感与治愈情绪',
+        'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80',
+        JSON.stringify({
+          step1: { platform: 'xiaohongshu', bloggerType: 'daily_seeding' },
+          step2: { videoTone: 'xiaohongshu_healing', durationSec: 4 },
+          step3: { targetPlatform: 'xiaohongshu', scriptPersona: '高级感沉浸' },
+          step4: { tonePreference: '治愈' },
+          step5: { aspectRatio: '3:4', subtitleStyle: '极简小绿红书体' },
+        }),
+      ],
+      [
+        'preset_douyin_card',
+        '抖音卡点硬核测评 (美妆/控油)',
+        '卡点冲击',
+        '适用于SGS数据硬核对比、重低音卡点与强转化挂车口播',
+        'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=600&q=80',
+        JSON.stringify({
+          step1: { platform: 'douyin', bloggerType: 'ingredients_pro' },
+          step2: { videoTone: 'douyin_beat', durationSec: 4 },
+          step3: { targetPlatform: 'douyin', scriptPersona: '成分党' },
+          step4: { tonePreference: '卡点' },
+          step5: { aspectRatio: '9:16', subtitleStyle: '黄字黑边' },
+        }),
+      ],
+      [
+        'preset_shipin_quality',
+        '视频号高端品质质感 (国货/成分)',
+        '品质信任',
+        '适用于沙利文销量背书、成分党硬核解析与高客单转化',
+        'https://images.unsplash.com/photo-1617897903246-719242758050?auto=format&fit=crop&w=600&q=80',
+        JSON.stringify({
+          step1: { platform: 'shipinhao', bloggerType: 'ingredients_pro' },
+          step2: { videoTone: 'tvc_luxury', durationSec: 5 },
+          step3: { targetPlatform: 'shipinhao', scriptPersona: '油皮亲妈' },
+          step4: { tonePreference: '高级' },
+          step5: { aspectRatio: '9:16', subtitleStyle: '白字柔影' },
+        }),
+      ],
+    ];
+
+    for (const p of defaultPresets) {
+      insertPreset.run(...p);
+    }
+  }
+
+  // Seed default tasks if empty
+  const tasksCountStmt = db.prepare('SELECT COUNT(*) as count FROM tasks');
+  const tasksCount = (tasksCountStmt.get() as { count: number }).count;
+  if (tasksCount === 0) {
+    const insertTask = db.prepare(`
+      INSERT INTO tasks (id, title, status, current_step, pipeline_data, thumbnail_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    const defaultTasks = [
+      [
+        'task_seed_01',
+        'BUV 小红书爆款晨间沉浸反推工程',
+        'completed',
+        5,
+        JSON.stringify({
+          step1: { inputs: { platform: 'xiaohongshu' }, status: 'completed' },
+          step2: { inputs: { videoTone: 'xiaohongshu_healing' }, status: 'completed' },
+          step3: { inputs: { targetPlatform: 'xiaohongshu' }, status: 'completed' },
+          step4: { inputs: { tonePreference: '治愈' }, status: 'completed' },
+          step5: { inputs: { aspectRatio: '3:4' }, status: 'completed' },
+        }),
+        'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80',
+      ],
+      [
+        'task_seed_02',
+        'BUV 抖音卡点左右脸对比测评工程',
+        'processing',
+        3,
+        JSON.stringify({
+          step1: { inputs: { platform: 'douyin' }, status: 'completed' },
+          step2: { inputs: { videoTone: 'douyin_beat' }, status: 'completed' },
+          step3: { inputs: { targetPlatform: 'douyin' }, status: 'running' },
+          step4: { inputs: {}, status: 'idle' },
+          step5: { inputs: {}, status: 'idle' },
+        }),
+        'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=600&q=80',
+      ],
+    ];
+
+    for (const t of defaultTasks) {
+      insertTask.run(...t);
+    }
+  }
 }

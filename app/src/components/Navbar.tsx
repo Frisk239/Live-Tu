@@ -7,6 +7,8 @@ import {
   AlertTriangle,
   X,
   Info,
+  Plus,
+  ListTodo,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -138,10 +140,32 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
 
         <div className="flex items-center gap-2.5">
+          {onCreateNewWorkspace && (
+            <button
+              onClick={onCreateNewWorkspace}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-2xs transition-all flex items-center gap-1 cursor-pointer"
+              title="新建全新的工作区草稿"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>新建工作区</span>
+            </button>
+          )}
+
+          {onOpenSessionManager && (
+            <button
+              onClick={onOpenSessionManager}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200/80 shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
+              title="查看与加载历史会话"
+            >
+              <ListTodo className="w-3.5 h-3.5 text-blue-600" />
+              <span>历史会话</span>
+            </button>
+          )}
+
           {activeProduct && (
             <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100/80 border border-slate-200/80 text-slate-800 text-xs font-medium">
               <PackageCheck className="w-4 h-4 text-blue-600 shrink-0" />
-              <span className="text-slate-500 text-[11px] hidden sm:inline">当前商品:</span>
+              <span className="text-slate-500 text-[11px] hidden sm:inline">商品:</span>
               <span className="truncate max-w-[120px] md:max-w-[180px] text-slate-900 font-semibold">
                 {activeProduct.name}
               </span>

@@ -1616,6 +1616,7 @@ export default function App() {
         activeProduct={activeProduct}
         products={products}
         onSelectActiveProduct={(id) => setActiveProductId(id)}
+        onOpenSessionManager={() => setIsSessionManagerOpen(true)}
       />
 
       {/* Main Content Area */}

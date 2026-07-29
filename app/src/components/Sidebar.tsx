@@ -40,6 +40,7 @@ interface SidebarProps {
   activeProduct?: ProductItem;
   products?: ProductItem[];
   onSelectActiveProduct?: (id: string) => void;
+  onOpenSessionManager?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -52,6 +53,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeProduct,
   products = [],
   onSelectActiveProduct,
+  onOpenSessionManager,
 }) => {
   const currentWidthClass = isExpanded ? 'w-[240px]' : 'w-[68px]';
 
@@ -180,6 +182,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <FolderKanban className="w-3.5 h-3.5 text-slate-400" />
               </div>
 
+              {/* Workspace Sessions Modal Trigger */}
+              {onOpenSessionManager && (
+                <button
+                  onClick={onOpenSessionManager}
+                  className="flex items-center gap-2.5 rounded-lg text-xs font-semibold transition-all w-full px-3 py-2 cursor-pointer bg-blue-50/70 text-blue-700 hover:bg-blue-100/80 border border-blue-200/60"
+                  title="查看与恢复历史工作区会话"
+                >
+                  <ListTodo className="w-4 h-4 shrink-0 text-blue-600" />
+                  <span className="truncate">会话与历史工作区</span>
+                </button>
+              )}
+
               {/* Materials Library */}
               <button
                 onClick={() => onChangeView('materials')}
@@ -202,10 +216,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
                     : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
                 }`}
-                title="后台任务中心页面"
+                title="后台历史任务与工作区"
               >
-                <ListTodo className="w-4 h-4 shrink-0" />
-                <span className="truncate">任务中心</span>
+                <FolderKanban className="w-4 h-4 shrink-0" />
+                <span className="truncate">历史会话全集</span>
               </button>
 
               {/* Presets Library */}

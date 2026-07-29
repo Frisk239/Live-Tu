@@ -13,6 +13,9 @@ interface NavbarProps {
   isSidebarExpanded?: boolean;
   onToggleSidebar?: () => void;
   activeProduct?: ProductItem;
+  activeSessionTitle?: string;
+  onOpenSessionManager?: () => void;
+  onCreateNewWorkspace?: () => void;
 }
 
 interface ReadinessState {
@@ -29,6 +32,9 @@ export const Navbar: React.FC<NavbarProps> = ({
   isSidebarExpanded,
   onToggleSidebar,
   activeProduct,
+  activeSessionTitle,
+  onOpenSessionManager,
+  onCreateNewWorkspace,
 }) => {
   const [readiness, setReadiness] = useState<ReadinessState | null>(null);
   const [dismissPublicTip, setDismissPublicTip] = useState(() => {
@@ -114,9 +120,16 @@ export const Navbar: React.FC<NavbarProps> = ({
               <h1 className="text-sm md:text-base font-semibold text-slate-900 tracking-tight">
                 AI 爆款视频反推与生成工作台
               </h1>
-              <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-blue-50 text-blue-700 border border-blue-200/60 hidden sm:inline-block">
-                PRO WORKBENCH
-              </span>
+              {activeSessionTitle && onOpenSessionManager && (
+                <button
+                  onClick={onOpenSessionManager}
+                  className="px-2.5 py-0.5 text-xs font-semibold rounded-full bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200/80 transition-colors flex items-center gap-1.5 cursor-pointer max-w-[200px] sm:max-w-[260px] truncate"
+                  title="点击管理/切换工作区会话"
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                  <span className="truncate">工作区: {activeSessionTitle}</span>
+                </button>
+              )}
             </div>
             <p className="text-xs text-slate-500 hidden lg:block mt-0.5">
               短视频解析 → 静态Prompt → 运镜轨迹 → 爆款文案 → BGM卡点 → 合成导出

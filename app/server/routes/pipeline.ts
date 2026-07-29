@@ -2,6 +2,17 @@ import { Router } from 'express';
 import { db } from '../lib/db';
 import { callLlmGateway, callImageGenerationGateway } from '../lib/llm-gateway';
 import {
+  Step1OutputSchema,
+  Step2OutputSchema,
+  Step3OutputSchema,
+  Step4OutputSchema,
+  validateStepOutput,
+  Step1Output,
+  Step2Output,
+  Step3Output,
+  Step4Output,
+} from '../lib/schema-validators';
+import {
   createSeedanceVideo,
   normalizeSeedanceTask,
   hasSeedanceConfig,
@@ -10,6 +21,7 @@ import {
 import { runFfmpegRender } from './render';
 import fs from 'node:fs';
 import path from 'node:path';
+import { z } from 'zod';
 
 export const pipelineRouter = Router();
 
@@ -20,26 +32,25 @@ function allowMockFallback(): boolean {
 
 // ==================== GLOBAL HARNESS CONSTRAINTS ====================
 export const HARNESS_CONSTRAINTS = {
-  JSON_ONLY: '必须只输出纯合法 JSON 对象，无任何 Markdown、解释、代码块或额外文本。',
-  STRUCTURED_OUTPUT: '输出必须严格包含所有指定字段，字段值必须具体、视觉化、专业、高质量。',
+  JSON_ONLY: '必须只输出纯合法 JSON 对象，无任何 Markdown 标记、代码块、解释或额外文本。',
+  STRUCTURED_OUTPUT: '输出必须严格包含所有指定 Schema 字段，字段值必须具体、视觉化、专业、高质量。',
   LENGTH_CONSTRAINTS: {
     title: '15-25字吸睛标题',
-    hook: '3秒黄金 Hook（情感+痛点+产品+转化暗示）',
+    hook: '3秒黄金 Hook（包含痛点引入、反差或认知颠覆）',
     scene: '15-30字场景描述',
     subject: '15-30字主体动作描述',
-    static_image_prompt: '详细英文 Prompt，包含 8k、cinematic、ultra-realistic texture、viral keywords',
-    video_prompt: '详细英文结构化 Prompt，包含 60fps、natural lighting、product texture',
-    body: '80-120字口播脚本，自然植入成分与SGS数据',
+    static_image_prompt: '详细英文 Prompt，包含 8k, cinematic lighting, ultra-realistic product texture, commercial photography',
+    video_prompt: '详细英文结构化运镜 Prompt，包含 60fps, natural smooth lighting, focus transition, product texture',
+    body: '80-120字口播脚本，自然植入核心成分与SGS数据',
     hashtags: '3-4个真实话题标签',
-    sync_point: '卡点秒数描述（如 "1.2s (镜头推进特写), 2.8s (成分展示)"）',
+    sync_point: '精准卡点秒数描述（如 "1.2s (镜头推进特写), 2.8s (成分效果)"）',
     negative_prompt: '强制包含避免旋转、变形、抖动、花式转场等',
   },
-  SAFETY: '禁止任何虚假宣传、违禁极限词（如：绝对、第一名、100%根除、震惊、必看）。',
-  SELF_CRITIQUE: '在输出前自我批判：内容质量、格式正确性、产品特色融入度、SEO/转化潜力。',
-  FEW_SHOT: '始终参考以下示例输出格式。',
-  PRODUCT_INJECT: '必须融入品牌产品特色、定位、3:4:3配方、SGS数据。',
+  SAFETY: '严禁虚假宣传与违禁词。绝对不可使用非法极限词（如：绝对、第一名、100%根除、震惊、必看、医用级）。',
+  SELF_CRITIQUE: '生成前进行自我审查：检查格式合法性、产品契合度、语句流畅性及合规性。',
+  FEW_SHOT: '请参考通用 Few-Shot 示例格式进行规范化输出。',
+  PRODUCT_INJECT: '必须深度融合目标产品的特色定位、配方体系与SGS实测数据。',
 };
-
 
 // Helper to fetch active product from DB or fallback
 function getProductContext(productId?: string, bodyProductInfo?: any) {
@@ -111,11 +122,63 @@ function scanProhibitedWords(data: any, prohibitedWords: string[]) {
   checkText(data.hook, '前置钩子 (hook)');
   checkText(data.body, '正文文案 (body)');
   checkText(data.cta, '行动号召 (cta)');
-  checkText(data.platform_fit?.douyin, '抖音定制口播 (platform_fit.douyin)');
-  checkText(data.platform_fit?.xiaohongshu, '小红书定制文案 (platform_fit.xiaohongshu)');
+  if (data.platform_fit) {
+    checkText(data.platform_fit.douyin, '抖音定制口播 (platform_fit.douyin)');
+    checkText(data.platform_fit.xiaohongshu, '小红书定制文案 (platform_fit.xiaohongshu)');
+  }
 
   return warnings;
 }
+
+/**
+ * 通用 Harness 自愈与结构校验 Loop
+ */
+async function executeWithSelfCorrection<T>(
+  stepName: string,
+  systemPrompt: string,
+  userPrompt: string,
+  imageUrl: string | undefined,
+  modelId: string | undefined,
+  schema: z.ZodSchema<T>,
+  maxCorrectionAttempts = 2
+): Promise<{ success: boolean; data: T | null; source: string; modelUsed: string; error?: string }> {
+  let currentSystem = systemPrompt;
+  let currentUser = userPrompt;
+  let lastSource = 'direct';
+  let lastModelUsed = '';
+  let lastError = '';
+
+  for (let attempt = 0; attempt <= maxCorrectionAttempts; attempt++) {
+    try {
+      const res = await callLlmGateway({
+        system: currentSystem,
+        user: currentUser,
+        imageUrl,
+        modelId,
+      });
+
+      lastSource = res.source;
+      lastModelUsed = res.modelUsed;
+
+      if (res.success && res.data) {
+        const validation = validateStepOutput(schema, res.data);
+        if (validation.success) {
+          return { success: true, data: validation.data, source: lastSource, modelUsed: lastModelUsed };
+        }
+        const errStr = 'error' in validation ? validation.error : 'Schema 校验未通过';
+        console.warn(`[Harness ${stepName}] Zod 结构校验未通过 (尝试 ${attempt + 1}/${maxCorrectionAttempts + 1}): ${errStr}`);
+        lastError = errStr;
+        currentUser = `${userPrompt}\n\n【Harness 自动纠错反馈】上一次返回的 JSON 不完全符合结构规范：\n${errStr}\n请严格修正后只返回纯 JSON 对象。`;
+      }
+    } catch (err: any) {
+      lastError = err.message || 'LLM 调用异常';
+      console.warn(`[Harness ${stepName}] Gateway 请求异常 (尝试 ${attempt + 1}):`, lastError);
+    }
+  }
+
+  return { success: false, data: null, source: lastSource, modelUsed: lastModelUsed, error: lastError };
+}
+
 
 // Ticket 11: 文生图 API / 质感静态图生成
 pipelineRouter.post('/generate-image', async (req, res) => {
@@ -138,7 +201,6 @@ pipelineRouter.post('/generate-image', async (req, res) => {
     let imageUrl = gatewayRes.imageUrl;
     let source = gatewayRes.source;
 
-    // Real path only: no silent SVG fake unless ALLOW_MOCK_FALLBACK
     if (!gatewayRes.success || !imageUrl) {
       if (!allowMockFallback()) {
         return res.status(502).json({
@@ -158,7 +220,6 @@ pipelineRouter.post('/generate-image', async (req, res) => {
       imageUrl = `/uploads/materials/${filename}`;
       source = 'mock';
     } else if (imageUrl.startsWith('data:image/')) {
-      // 云雾 gpt-image-* 返回 b64：落盘为本地 PNG
       const match = imageUrl.match(/^data:image\/(\w+);base64,(.+)$/);
       if (!match) {
         return res.status(502).json({ success: false, error: '文生图返回了无法解析的 data URL', source });
@@ -169,7 +230,6 @@ pipelineRouter.post('/generate-image', async (req, res) => {
       fs.writeFileSync(targetPath, Buffer.from(match[2], 'base64'));
       imageUrl = `/uploads/materials/${filename}`;
     } else if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
-      // 远程 URL：尽量下载缓存到本地，失败则保留外链
       try {
         const remote = await fetch(imageUrl);
         if (remote.ok) {
@@ -186,7 +246,6 @@ pipelineRouter.post('/generate-image', async (req, res) => {
       }
     }
 
-    // Persist to materials table (correct schema)
     const id = `mat_gen_${Date.now()}`;
     const name = `AI生成首帧_${Date.now().toString().slice(-4)}`;
     const filePath = imageUrl.startsWith('/uploads/')
@@ -227,102 +286,77 @@ pipelineRouter.post('/step1', async (req, res) => {
     bloggerType = 'daily_seeding',
     viralReason = '',
     textModel,
-    imageModel,
     productId,
     productInfo,
   } = inputs;
 
   const targetMediaUrl = mediaUrl || imageUrl || req.body.mediaUrl || req.body.imageUrl || '';
   const product = getProductContext(productId, productInfo);
-  // 多模态拆解走文本模型；imageModel 仅用于文生图，勿混用
   const visionModelId = textModel || 'Gemini 3.6 Flash';
 
-  const systemPrompt = `你是一个顶级美妆电商爆款视觉拆解专家。严格遵守以下规则：
+  const systemPrompt = `你是一个顶级美妆电商爆款视觉拆解专家。严格遵守以下 Harness 约束：
 
-1. **只输出纯JSON**，无任何前言、Markdown、解释或额外字符。
-2. **输出必须包含所有10个字段**，字段值必须具体、视觉化、专业、高质量。
-3. 场景、主体等描述字段：15-30字，英文或中文均可，优先中文。
-4. palette：3-4个颜色描述（如 "薄荷绿 #A8D5BA, 纯白 #FFFFFF, 柔光白 #F5F5F0"）。
-5. 所有描述必须融入产品特色、SGS暗示、爆款种草力。
-6. 禁止任何虚假宣传或违禁词。
-7. 静态_image_prompt必须是详细英文Prompt，包含高保真描述（8k、cinematic、product texture、viral keywords）。
+${HARNESS_CONSTRAINTS.JSON_ONLY}
+${HARNESS_CONSTRAINTS.STRUCTURED_OUTPUT}
+${HARNESS_CONSTRAINTS.SAFETY}
+${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
+${HARNESS_CONSTRAINTS.FEW_SHOT}
 
-示例输出：
+【目标产品品牌上下文】
+- 产品名称：${product.name}
+- 品牌定位：${product.positioning}
+- 核心卖点特色：${product.customSellingPoints}
+
+【通用 Few-Shot 输出示例】
 {
-  "scene": "晨间阳光浴室镜前，自然光照射在膏体瓶子上，柔和光影突出质感",
-  "subject": "女性纤手展示产品膏体细腻拉丝动作，特写高清",
+  "scene": "晨间阳光浴室镜前，自然柔光照射在瓶身上，光影通透富有生活氛围感",
+  "subject": "女性纤手展示产品膏体质感，镜头微距特写高清细致",
   "style": "小红书治愈生活风",
   "palette": ["#A8D5BA 薄荷绿", "#FFFFFF 纯白", "#F5F5F0 柔光白"],
   "lighting": "自然柔光，高光润泽，透光感十足",
   "composition": "三分法构图，主体居中偏右下，层次感分明",
   "mood": "清爽高质感晨间仪式感",
   "camera": "45度俯拍特写 + 微距大光圈虚化",
-  "static_image_prompt": "A high-end product photography shot of [product] in a bright minimalist aesthetic setting, soft morning sunlight, 8k resolution, ultra-realistic texture, perfect composition, viral skincare aesthetic",
+  "static_image_prompt": "A high-end product photography shot of [Product] in a bright minimalist aesthetic setting, soft morning sunlight, 8k resolution, ultra-realistic texture, perfect commercial lighting",
   "rationale": "通过真实高光质感与纯净配色，强化点击转化率"
-}
+}`;
 
-针对品牌产品【${product.name}】（定位：${product.positioning}，卖点特色：${product.customSellingPoints}），
-你需要对用户提供的首帧图片/爆款视频画面进行多模态视觉反推与拆解。`;
-
-  const userPrompt = `【拆解任务】
+  const userPrompt = `【视觉拆解任务】
 - 目标产品：${product.name} (${product.positioning})
 - 目标平台：${platform}
 - 博主类型：${bloggerType}
-- 爆款原因描述：${viralReason || '膏体质感高清拉丝，光影透润极具治愈种草力'}
+- 爆款原因：${viralReason || '膏体质感高清拉丝，光影透润极具治愈种草力'}
 ${targetMediaUrl ? '- 请结合所上传的画面素材进行深度视觉解析。' : '- 当前无画面素材，请基于文本上下文进行构想拆解。'}
-请严格按照示例格式输出纯JSON。`;
+请严格按照规范输出纯 JSON 对象。`;
 
-  try {
-    const gatewayRes = await callLlmGateway({
-      system: systemPrompt,
-      user: userPrompt,
-      imageUrl: targetMediaUrl || undefined,
-      modelId: visionModelId,
+  const hRes = await executeWithSelfCorrection<Step1Output>(
+    'Step1',
+    systemPrompt,
+    userPrompt,
+    targetMediaUrl || undefined,
+    visionModelId,
+    Step1OutputSchema
+  );
+
+  if (hRes.success && hRes.data) {
+    return res.json({
+      success: true,
+      data: hRes.data,
+      source: hRes.source,
+      modelUsed: hRes.modelUsed,
     });
-
-    if (gatewayRes.success && gatewayRes.data) {
-      const d = gatewayRes.data;
-      const normalizedData = {
-        scene: d.scene || `${product.name} 极简清爽场景`,
-        subject: d.subject || `展示 ${product.name} 膏体细腻拉丝质感`,
-        style: d.style || (platform === 'xiaohongshu' ? '小红书治愈生活风' : '抖音硬核测评风'),
-        palette: Array.isArray(d.palette) && d.palette.length > 0 ? d.palette : ['#A8D5BA 薄荷绿', '#FFFFFF 纯白', '#F5F5F0 柔光白'],
-        lighting: d.lighting || '自然柔光，高光润泽，透光感十足',
-        composition: d.composition || '三分法构图，主体居中偏右下，层次感分明',
-        mood: d.mood || '清爽高质感晨间仪式感',
-        camera: d.camera || '45度俯拍特写 + 微距大光圈虚化',
-        static_image_prompt: d.static_image_prompt || `A high-end product photography shot of ${product.name} in a bright minimalist aesthetic setting, soft morning sunlight, 8k resolution`,
-        rationale: d.rationale || `针对【${product.name}】的特色，通过真实高光质感与纯净配色，强化点击转化率。`,
-      };
-
-      return res.json({
-        success: true,
-        data: normalizedData,
-        source: gatewayRes.source,
-        modelUsed: gatewayRes.modelUsed,
-      });
-    }
-  } catch (err: any) {
-    console.warn('Step 1 LLM Gateway error:', err.message);
-    if (!allowMockFallback()) {
-      return res.status(502).json({
-        success: false,
-        error: err.message || 'Step 1 LLM 调用失败',
-        source: 'error',
-      });
-    }
   }
 
   if (!allowMockFallback()) {
     return res.status(502).json({
       success: false,
-      error: 'Step 1 未获得有效 LLM 结果。请检查模型 API Key / 云雾配置，或设置 ALLOW_MOCK_FALLBACK=true',
+      error: `Step 1 拆解失败: ${hRes.error || '未能生成合规 JSON'}。请检查模型 API Key 配置。`,
       source: 'error',
     });
   }
 
   // Explicit mock fallback (only when ALLOW_MOCK_FALLBACK=true)
-  const mockResult = {
+  const mockResult: Step1Output = {
     scene: platform === 'xiaohongshu' ? `晨间阳光浴室镜前，自然光照射在 ${product.name} 瓶身上` : `高质感极简展台，背景微距呈现 ${product.name} 核心质感`,
     subject: `女性纤手展示 ${product.name}，特写精致管身与膏体质感`,
     style: platform === 'xiaohongshu' ? '小红书治愈生活风' : '抖音硬核测评风',
@@ -355,55 +389,54 @@ pipelineRouter.post('/step2', async (req, res) => {
 
   const targetImageUrl = imageUrl || mediaUrl || '';
   const product = getProductContext(productId, productInfo);
-  // 运镜 Prompt 走文本模型；videoModel 仅给 Seedance 图生视频
   const motionLlmId = textModel || 'Gemini 3.6 Flash';
 
-  let data: any = null;
-  let gatewaySource = 'mock';
+  const systemPrompt = `你是一个专业 AIGC 短视频运镜专家。严格遵守以下 Harness 约束：
 
-  try {
-    const gatewayRes = await callLlmGateway({
-      system: `你是一个专业 AIGC 短视频运镜专家。严格遵守以下规则：
-1. **只输出纯JSON**，无任何额外文本。
-2. 输出必须包含 motion_type / motion_intensity / motion_description / duration_sec / video_prompt / audio_layer / negative_prompt 所有字段。
-3. motion_description：中文，具体镜头推进描述（15-40字），融入产品质感。
-4. video_prompt：详细英文结构化 Prompt，包含 60fps、cinematic、product texture、viral motion keywords。
-5. negative_prompt：强制包含避免旋转、变形、抖动、花式转场等。
-6. motion_intensity 与调性匹配（strong / subtle）。
-7. 自我批判：确保运镜强度与视频调性（${videoTone}）匹配。
+${HARNESS_CONSTRAINTS.JSON_ONLY}
+${HARNESS_CONSTRAINTS.STRUCTURED_OUTPUT}
+${HARNESS_CONSTRAINTS.LENGTH_CONSTRAINTS.video_prompt}
+${HARNESS_CONSTRAINTS.LENGTH_CONSTRAINTS.negative_prompt}
+${HARNESS_CONSTRAINTS.SAFETY}
+${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
+${HARNESS_CONSTRAINTS.FEW_SHOT}
 
-示例输出：
+【通用 Few-Shot 输出示例】
 {
   "motion_type": "zoom_in",
   "motion_intensity": "strong",
-  "motion_description": "镜头由中景平滑推进至产品膏体瓶身特写，展示细腻拉丝质感与光影透润",
+  "motion_description": "镜头由中景平滑推进至产品瓶身特写，展示细腻膏体质感与光影透润",
   "duration_sec": "4",
-  "video_prompt": "A smooth slow zoom-in camera motion focusing on ${product.name}, 60fps cinematic quality, natural morning lighting, ultra-realistic texture, viral skincare motion",
+  "video_prompt": "A smooth slow zoom-in camera motion focusing on [Product], 60fps cinematic quality, natural morning lighting, ultra-realistic texture, viral skincare motion",
   "audio_layer": "晨间水滴声与轻柔环境音",
-  "negative_prompt": "avoid meaningless rotation, deformation, jitter, flashy transitions"
-}`,
-      user: `【运镜生成任务】
+  "negative_prompt": "avoid meaningless rotation, deformation, jitter, flashy transitions, blur",
+  "camera_description": "45度俯拍转前切推镜头"
+}`;
+
+  const userPrompt = `【运镜生成任务】
 - 目标产品：${product.name}
 - 静态图首帧描述：${static_image_prompt || `A high-end commercial shot of ${product.name}`}
 - 目标调性：${videoTone}
 - 期望时长：${durationSec}秒
-请严格按照示例格式输出纯JSON。`,
-      modelId: motionLlmId,
-    });
+请严格按照示例 Schema 输出纯 JSON 对象。`;
 
-    if (gatewayRes.success && gatewayRes.data) {
-      data = gatewayRes.data;
-      gatewaySource = gatewayRes.source;
-    }
-  } catch (err: any) {
-    console.warn('Step 2 LLM Gateway error, using fallback motion generator:', err.message);
-  }
+  const hRes = await executeWithSelfCorrection<Step2Output>(
+    'Step2',
+    systemPrompt,
+    userPrompt,
+    undefined,
+    motionLlmId,
+    Step2OutputSchema
+  );
+
+  let data: any = hRes.data;
+  let gatewaySource = hRes.source;
 
   if (!data) {
     if (!allowMockFallback()) {
       return res.status(502).json({
         success: false,
-        error: 'Step 2 未获得有效运镜 LLM 结果。请检查模型配置或设置 ALLOW_MOCK_FALLBACK=true',
+        error: `Step 2 运镜生成失败: ${hRes.error || '未生成有效运镜描述'}。请检查模型配置。`,
         source: 'error',
       });
     }
@@ -415,6 +448,7 @@ pipelineRouter.post('/step2', async (req, res) => {
       video_prompt: `A smooth slow zoom-in camera motion focusing on ${product.name}, 60fps cinematic quality, natural lighting`,
       audio_layer: '晨间水滴声与轻柔环境音',
       negative_prompt: '避免无意义旋转、变形、抖动、花式转场',
+      camera_description: '平滑推进镜头',
     };
     gatewaySource = 'mock';
   }
@@ -428,7 +462,6 @@ pipelineRouter.post('/step2', async (req, res) => {
         ? 'doubao-seedance-2-0-fast'
         : 'doubao-seedance-2-0';
       const duration = clampSeedanceDuration(Number(durationSec) || 5);
-      // duration clamp 5|10 is fine; API allows 4-15
       const reqHost = `${req.protocol}://${req.get('host')}`;
       const prepared = buildSeedanceGenerationBody({
         prompt: data.video_prompt,
@@ -484,7 +517,7 @@ pipelineRouter.post('/step2', async (req, res) => {
   return res.json({ success: true, data, source: gatewaySource });
 });
 
-// Step 3: 爆款文案撰写 + 品牌知识库注入 + 违禁词合规扫描
+// Step 3: 爆款文案撰写 + 品牌知识库注入 + 违禁词合规扫描与自纠错
 pipelineRouter.post('/step3', async (req, res) => {
   const inputs = req.body.inputs || req.body;
   const {
@@ -498,7 +531,7 @@ pipelineRouter.post('/step3', async (req, res) => {
 
   const product = getProductContext(productId, productInfo);
 
-  const systemPrompt = `你是一个顶级短视频带货文案主创与品牌广告合规官。严格遵守以下规则：
+  const systemPrompt = `你是一个顶级短视频带货文案主创与品牌广告合规官。严格遵守以下 Harness 约束：
 
 ${HARNESS_CONSTRAINTS.JSON_ONLY}
 ${HARNESS_CONSTRAINTS.STRUCTURED_OUTPUT}
@@ -507,22 +540,26 @@ ${HARNESS_CONSTRAINTS.SAFETY}
 ${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
 ${HARNESS_CONSTRAINTS.FEW_SHOT}
 
+【合规绝对红线 - 禁止使用以下违禁词】
+${JSON.stringify(product.prohibitedWords)}
+
 【品牌知识库权威依据】
+- 目标产品：${product.name}
 - 核心定位：${product.positioning}
 - 3:4:3配方架构：${product.model343}
 - SGS权威检测数据：${product.sgsData}
 - 核心卖点：${product.customSellingPoints}
 
-示例输出：
+【通用 Few-Shot 输出示例】
 {
-  "title": "搞定油光黑头！${product.name} SGS实测强效修复膏体",
-  "hook": "还在为油光黑头烦恼？试试【${product.name}】的3:4:3配方，SGS权威实测后立即见效！",
-  "body": "来看 SGS 权威报告！${product.name} 凭什么口碑爆款？核心就在它的洗完一润二修三控油体系。洗完一润二修三控油，膏体薄荷绿质感拉丝，自然清爽不紧绷！",
-  "hashtags": ["#${product.name}", "#${product.name.split(' ')[0]}", "#美妆爆款", "#SGS实测"],
+  "title": "搞定油光黑头！[产品名] SGS实测强效修复",
+  "hook": "还在为油光黑头烦恼？试试【[产品名]】的3:4:3配方，SGS权威实测见效！",
+  "body": "来看 SGS 权威报告！[产品名] 凭什么口碑爆款？核心就在它的洗完一润二修三控油体系。膏体质感拉丝，自然清爽不紧绷！",
+  "hashtags": ["#[产品名]", "#美妆爆款", "#SGS实测"],
   "cta": "点击下方链接，领专属限时体验福利！",
   "platform_fit": {
-    "douyin": "宝藏好物！${product.name} SGS实测效果拉满！点击领优惠～",
-    "xiaohongshu": "沉浸式种草！${product.name} 质地超级治愈，强烈推荐给所有宝子们～"
+    "douyin": "宝藏好物！[产品名] SGS实测效果拉满！点击领优惠～",
+    "xiaohongshu": "沉浸式种草！[产品名] 质地超级治愈，强烈推荐给所有宝子们～"
   }
 }`;
 
@@ -531,38 +568,60 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
 - 目标平台：${targetPlatform}
 - 脚本人设：${scriptPersona}
 - 镜头运镜描述：${videoPrompt || `镜头推进展示 ${product.name}`}
-请严格按照示例格式输出纯JSON。`;
+请严格按照示例 Schema 输出纯 JSON 对象。`;
 
-  let data: any = null;
-  let source = 'mock';
-  let modelUsed = 'Default Text Model';
+  // 包含违禁词检测自纠错 Loop (最多 2 次)
+  let hRes = await executeWithSelfCorrection<Step3Output>(
+    'Step3',
+    systemPrompt,
+    userPrompt,
+    undefined,
+    textModel,
+    Step3OutputSchema
+  );
 
-  try {
-    const gatewayRes = await callLlmGateway({
-      system: systemPrompt,
-      user: userPrompt,
-      modelId: textModel,
-    });
+  let data: any = hRes.data;
+  let source = hRes.source;
+  let modelUsed = hRes.modelUsed;
 
-    if (gatewayRes.success && gatewayRes.data) {
-      data = gatewayRes.data;
-      source = gatewayRes.source;
-      modelUsed = gatewayRes.modelUsed;
+  if (data) {
+    const warnings = scanProhibitedWords(data, product.prohibitedWords);
+    if (warnings.length > 0) {
+      console.warn('[Harness Step3] 触发违禁词自纠错重试，检测到的违规项:', warnings.map(w => w.word).join(', '));
+      // 追加违规词自纠错 Prompt
+      const retryUser = `${userPrompt}\n\n【合规拦截警示】你上一次生成的文案包含了违禁极限词：[${warnings.map(w => w.word).join(', ')}]！请务必替换为更加客观合规的描述重试！`;
+      const retryRes = await executeWithSelfCorrection<Step3Output>(
+        'Step3-ComplianceRetry',
+        systemPrompt,
+        retryUser,
+        undefined,
+        textModel,
+        Step3OutputSchema,
+        1
+      );
+      if (retryRes.data) {
+        data = retryRes.data;
+        source = retryRes.source;
+        modelUsed = retryRes.modelUsed;
+      }
+      // 再次扫描并记录 warnings 标记
+      const finalWarnings = scanProhibitedWords(data, product.prohibitedWords);
+      if (finalWarnings.length > 0) {
+        data.warnings = finalWarnings;
+      }
     }
-  } catch (err: any) {
-    console.warn('Step 3 LLM Gateway error, falling back to mock copywriting:', err.message);
   }
 
   if (!data) {
     if (!allowMockFallback()) {
       return res.status(502).json({
         success: false,
-        error: 'Step 3 未获得有效文案 LLM 结果。请检查模型配置或设置 ALLOW_MOCK_FALLBACK=true',
+        error: `Step 3 文案生成失败: ${hRes.error || '未能生成符合合规要求的文案'}。请检查模型配置。`,
         source: 'error',
       });
     }
     data = {
-      title: targetPlatform === 'douyin' ? `搞定问题肌！${product.name} SGS实测强效体验！🔥` : `早晨的快乐是它给的！${product.name} 沉浸使用感🍃`,
+      title: targetPlatform === 'douyin' ? `搞定问题肌！${product.name} SGS实测体验！🔥` : `早晨的快乐是它给的！${product.name} 沉浸使用感🍃`,
       hook: `你还在为了油光和黑头烦恼？试试【${product.name}】的核心爆款配方！`,
       body: `来看 SGS 权威报告！【${product.name}】凭什么口碑风靡全网？\n\n核心就在它的科学配方体系：${product.model343}！SGS权威实测数据：${product.sgsData}。洗完一润二修三控油，膏体薄荷绿质感拉丝，自然清爽不紧绷！`,
       hashtags: [`#${product.name.split(' ')[0] || 'BUV'}`, `#${product.name}`, '#美妆爆款', '#SGS实测'],
@@ -573,12 +632,6 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
       },
     };
     source = 'mock';
-  }
-
-  // 执行违禁词合规扫描
-  const warnings = scanProhibitedWords(data, product.prohibitedWords);
-  if (warnings.length > 0) {
-    data.warnings = warnings;
   }
 
   return res.json({ success: true, data, source, modelUsed });
@@ -600,11 +653,17 @@ pipelineRouter.post('/step4', async (req, res) => {
 
   const product = getProductContext(productId, productInfo);
 
-  // 从 SQLite 读取候选 BGM 库
+  // 从 SQLite 按调性智能筛选前 15 条候选 BGM
   let bgmRows: any[] = [];
   try {
-    const bgmStmt = db.prepare('SELECT * FROM bgm_library ORDER BY created_at DESC');
-    bgmRows = bgmStmt.all() as any[];
+    if (tonePreference && tonePreference.trim().length > 0) {
+      const stmt = db.prepare('SELECT * FROM bgm_library WHERE mood LIKE ? OR style_tags LIKE ? ORDER BY created_at DESC LIMIT 15');
+      bgmRows = stmt.all(`%${tonePreference}%`, `%${tonePreference}%`) as any[];
+    }
+    if (!bgmRows || bgmRows.length === 0) {
+      const stmt = db.prepare('SELECT * FROM bgm_library ORDER BY created_at DESC LIMIT 15');
+      bgmRows = stmt.all() as any[];
+    }
   } catch (err: any) {
     console.warn('Failed to query bgm_library from DB:', err.message);
   }
@@ -619,20 +678,18 @@ pipelineRouter.post('/step4', async (req, res) => {
     audio_url: r.audio_url,
   }));
 
-  const systemPrompt = `你是一个专业的电商短视频音乐总监与音画匹配算法专家。严格遵守以下规则：
+  const systemPrompt = `你是一个专业的电商短视频音乐总监与音画匹配算法专家。严格遵守以下 Harness 约束：
 
-1. **只输出纯JSON**，无任何额外文本。
-2. 输出必须包含 bgm_recommendation 和 alternatives 所有字段。
-3. bgm_recommendation：必须包含 track_name / artist / style / bpm / mood_match / sync_point / license_note / audioSampleUrl。
-4. mood_match：严格按照文案标题和调性【${tonePreference}】描述契合度。
-5. sync_point：建议卡点秒数（与镜头匹配，如 "1.2s (镜头推进特写), 2.8s (成分效果)"）。
-6. alternatives：提供 2 首备选曲目说明。
-7. 自我批判：确保 BGM 与产品定位、视频调性高度匹配，授权合规。
+${HARNESS_CONSTRAINTS.JSON_ONLY}
+${HARNESS_CONSTRAINTS.STRUCTURED_OUTPUT}
+${HARNESS_CONSTRAINTS.SAFETY}
+${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
+${HARNESS_CONSTRAINTS.FEW_SHOT}
 
-【候选 BGM 音乐库】
+【候选 BGM 音乐库（前15条筛选推荐）】
 ${JSON.stringify(bgmCandidates, null, 2)}
 
-示例输出：
+【通用 Few-Shot 输出示例】
 {
   "bgm_recommendation": {
     "track_name": "晨光治愈",
@@ -645,32 +702,29 @@ ${JSON.stringify(bgmCandidates, null, 2)}
     "audioSampleUrl": "https://example.com/audio/xxx.mp3"
   },
   "alternatives": [
-    {"track_name": "自然光影", "style": "轻快", "when_to_use": "备选，适合更明亮的早晨场景"},
-    {"track_name": "晨间水滴", "style": "治愈", "when_to_use": "备选，适合更柔和的种草氛围"}
+    {"track_name": "自然光影", "artist": "Soft Ambient", "rationale": "备选，适合更明亮的早晨场景", "sync_point": "0.8s 快切"},
+    {"track_name": "晨间水滴", "artist": "Chill Lab", "rationale": "备选，适合更柔和的种草氛围", "sync_point": "1.5s 推进"}
   ]
 }`;
 
-  let data: any = null;
-  let source = 'mock';
-
-  try {
-    const gatewayRes = await callLlmGateway({
-      system: systemPrompt,
-      user: `【BGM匹配任务】
+  const userPrompt = `【BGM匹配任务】
 - 目标产品：${product.name}
+- 视频文案标题：${copywritingTitle || product.name}
 - 视频调性偏好：${tonePreference}
 - 商业授权场景：${commercialScenario}
-请进行语义最佳匹配。`,
-      modelId: bgmLlmId,
-    });
+请结合候选库进行语义最佳匹配，并输出规范 JSON。`;
 
-    if (gatewayRes.success && gatewayRes.data && gatewayRes.data.bgm_recommendation) {
-      data = gatewayRes.data;
-      source = gatewayRes.source;
-    }
-  } catch (err: any) {
-    console.warn('Step 4 LLM Gateway error, falling back to local database match:', err.message);
-  }
+  const hRes = await executeWithSelfCorrection<Step4Output>(
+    'Step4',
+    systemPrompt,
+    userPrompt,
+    undefined,
+    bgmLlmId,
+    Step4OutputSchema
+  );
+
+  let data: any = hRes.data;
+  let source = hRes.source;
 
   if (!data || !data.bgm_recommendation) {
     // Library-first local match (real, not LLM mock)
@@ -709,13 +763,13 @@ ${JSON.stringify(bgmCandidates, null, 2)}
         .slice(0, 2)
         .map((b) => ({
           track_name: b.track_name,
-          style: b.mood || '备选',
-          when_to_use: `备选曲目 · ${b.mood || b.artist || ''}`,
+          artist: b.artist || '未知艺人',
+          rationale: `备选曲目 · ${b.mood || b.artist || ''}`,
+          sync_point: '1.0s 节奏点',
         })),
     };
     source = 'library';
   } else {
-    // Ensure recommended track exists in library when LLM returned a name
     const recName = data.bgm_recommendation.track_name;
     const inLib = bgmRows.find((b) => b.track_name === recName);
     if (inLib) {
@@ -732,7 +786,6 @@ ${JSON.stringify(bgmCandidates, null, 2)}
 });
 
 // Step 5: 成品合成 Timeline 构建与 FFmpeg 渲染导出
-// 使用全局 HARNESS_CONSTRAINTS 确保所有合成提示词一致
 pipelineRouter.post('/step5', async (req, res) => {
   const inputs = req.body.inputs || req.body;
   const {
@@ -778,7 +831,6 @@ pipelineRouter.post('/step5', async (req, res) => {
     { at: '2.8s', action: 'brand_stamp', text: brandStamp, position: 'top_right' },
   ];
 
-  // Prefer real upstream assets; only use local sample when mock fallback explicitly allowed
   let videoForRender = resolvedVideo;
   if (!videoForRender && allowMockFallback()) {
     const sampleCandidates = [

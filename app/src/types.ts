@@ -173,15 +173,22 @@ export interface MaterialItem {
   dimensions?: string;
 }
 
-export interface TaskItem {
+export interface WorkspaceSession {
   id: string;
   title: string;
   createdAt: string;
-  status: 'completed' | 'generating' | 'failed' | 'queued';
+  updatedAt?: string;
+  status: 'completed' | 'generating' | 'failed' | 'queued' | 'draft';
   currentStep: StepId;
   pipelineData: PipelineData;
+  productId?: string;
   thumbnailUrl?: string;
+  version?: number;
+  notes?: string;
 }
+
+export type TaskItem = WorkspaceSession;
+export type SessionItem = WorkspaceSession;
 
 export interface ProductItem {
   id: string;
@@ -218,16 +225,4 @@ export interface PresetTemplate {
   /** Full 5-step snapshot; aligned with backend `/api/presets` field name */
   pipelineData: PipelineData;
   createdAt?: string;
-}
-
-export interface SessionItem {
-  id: string;
-  title: string;
-  createdAt: string;
-  status: 'completed' | 'generating' | 'failed' | 'queued';
-  currentStep: StepId;
-  pipelineData: PipelineData;
-  thumbnailUrl?: string;
-  version?: number; // 版本控制，用于提示词调优对比
-  notes?: string;
 }

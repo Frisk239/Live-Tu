@@ -15,6 +15,20 @@ export const PresetsPageView: React.FC<PresetsPageViewProps> = ({
   onBackToPipeline,
   onDeletePreset,
 }) => {
+  const [categoryFilter, setCategoryFilter] = React.useState<string>('all');
+  const [searchQuery, setSearchQuery] = React.useState<string>('');
+
+  const filteredPresets = presets.filter((p) => {
+    const matchesSearch =
+      p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.tag.toLowerCase().includes(searchQuery.toLowerCase());
+    if (!matchesSearch) return false;
+
+    if (categoryFilter === 'all') return true;
+    const cat = (p as any).category || (p.tag.includes('抖音') ? 'douyin' : p.tag.includes('小红书') ? 'xiaohongshu' : p.tag.includes('视频号') ? 'shipinhao' : 'universal');
+    return cat === categoryFilter;
+  });
   return (
     <div className="space-y-6">
       {/* Header Banner */}
@@ -48,10 +62,40 @@ export const PresetsPageView: React.FC<PresetsPageViewProps> = ({
       </div>
 
       {/* Presets Grid */}
-      <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-2xs">
-        {presets.length === 0 ? (
+      <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-2xs space-y-4">
+        {/* Category Filters */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pb-4 border-b border-slate-100">
+          <div className="flex items-center gap-2 overflow-x-auto w-full sm:w-auto pb-1 sm:pb-0">
+            <span className="text-xs font-semibold text-slate-500 mr-1 shrink-0">平台赛道:</span>
+            {['all', 'douyin', 'xiaohongshu', 'shipinhao', 'kuaishou'].map((cat) => (
+              <button
+                key={cat}
+                onClick={() => setCategoryFilter(cat)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold shrink-0 transition-all cursor-pointer ${
+                  categoryFilter === cat
+                    ? 'bg-blue-600 text-white shadow-2xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {cat === 'all' ? '全部模版' : cat === 'douyin' ? '抖音爆款' : cat === 'xiaohongshu' ? '小红书种草' : cat === 'shipinhao' ? '视频号品质' : '快手素人'}
+              </button>
+            ))}
+          </div>
+
+          <div className="relative w-full sm:w-64">
+            <input
+              type="text"
+              placeholder="搜索爆款模版关键词..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 focus:bg-white focus:outline-hidden focus:border-blue-500"
+            />
+          </div>
+        </div>
+
+        {filteredPresets.length === 0 ? (
           <div className="text-center py-12 text-slate-400">
-            <p className="text-sm">暂无预设模板，请先在工作台中创建并保存。</p>
+            <p className="text-sm">未找到匹配的预设模版</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

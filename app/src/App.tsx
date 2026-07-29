@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { StepId, PipelineData, PresetTemplate, MaterialItem, TaskItem, ProductItem } from './types';
+import { StepId, PipelineData, PresetTemplate, MaterialItem, TaskItem, ProductItem, WorkspaceSession } from './types';
 import { ModelConfigState, DEFAULT_MODEL_CONFIG } from './data/models';
 import { Navbar } from './components/Navbar';
 import { Sidebar, MainViewType } from './components/Sidebar';
@@ -11,6 +11,7 @@ import { Step3Card } from './components/Step3Card';
 import { Step4Card } from './components/Step4Card';
 import { Step5Card } from './components/Step5Card';
 import { OnboardingModal } from './components/OnboardingModal';
+import { SessionManagerModal } from './components/SessionManagerModal';
 
 // Full View Pages for Direct View Switching
 import { MaterialsPageView } from './views/MaterialsPageView';
@@ -146,10 +147,7 @@ export default function App() {
               const sanitized = { ...draft.pipelineData };
               (['step1', 'step2', 'step3', 'step4', 'step5'] as const).forEach((sKey) => {
                 if (sanitized[sKey] && sanitized[sKey].status === 'running') {
-                  sanitized[sKey] = {
-                    ...sanitized[sKey],
-                    status: sanitized[sKey].output ? 'completed' : 'pending',
-                  };
+                  sanitized[sKey].status = sanitized[sKey].output ? 'completed' : 'pending';
                 }
               });
               setPipelineData(sanitized);
@@ -215,19 +213,10 @@ export default function App() {
     setMaterials((prev) => prev.filter((m) => m.id !== id));
   };
 
-  const [tasks, setTasks] = useState<TaskItem[]>([]);
-  const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [tasks, setTasks] = useState<WorkspaceSession[]>([]);
+  const [isSessionManagerOpen, setIsSessionManagerOpen] = useState(false);
 
-  const handleDeleteSession = async (id: string) => {
-    try {
-      await apiService.sessions.deleteSession(id); // 注意：需要后端支持 /api/sessions
-    } catch (err) {
-      console.warn('[App] deleteSession failed:', err);
-    }
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-  };
-
-  const handleDeleteTask = async (id: string) => {
+  const handleDeleteWorkspace = async (id: string) => {
     try {
       await apiService.tasks.deleteTask(id);
     } catch (err) {
@@ -235,6 +224,8 @@ export default function App() {
     }
     setTasks((prev) => prev.filter((t) => t.id !== id));
   };
+
+  const handleDeleteTask = handleDeleteWorkspace;
 
   // Auto-draft: refresh-safe working copy with ref sync for silent, non-disruptive saving
   const [draftTaskId, setDraftTaskId] = useState<string>(
@@ -333,6 +324,48 @@ export default function App() {
     }
     return null;
   };
+
+  const handleCreateNewWorkspace = useCallback(() => {
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+      activeAbortControllerRef.current = null;
+    }
+    setIsAutoPipelineRunning(false);
+    setAutoProgress(null);
+    setStepSources({});
+    setDraftSavedLabel(null);
+    setStaleUpstream({ step2: false, step3: false, step4: false, step5: false });
+
+    const freshData: PipelineData = {
+      step1: { inputs: { mediaUrl: '', platform: 'douyin', bloggerType: 'daily_seeding', viralReason: '' }, status: 'pending' },
+      step2: { inputs: { static_image_prompt: '', imageUrl: '', videoTone: 'douyin_beat', durationSec: 4 }, status: 'pending' },
+      step3: { inputs: { videoPrompt: '', targetPlatform: 'douyin', scriptPersona: '成分党' }, status: 'pending' },
+      step4: { inputs: { copywritingTitle: '', tonePreference: '治愈', commercialScenario: '个人' }, status: 'pending' },
+      step5: { inputs: { aspectRatio: '9:16', subtitleStyle: '黄字黑边' }, status: 'pending' },
+    };
+    setPipelineData(freshData);
+    setCurrentStep(1);
+
+    const newDraftId = `task_draft_${Date.now()}`;
+    setDraftTaskIdSynced(newDraftId);
+    lastSavedSnapshotRef.current = '';
+
+    try {
+      localStorage.removeItem('aigc_cached_pipeline_data');
+      localStorage.setItem('aigc_cached_current_step', '1');
+    } catch {}
+    setActiveView('pipeline');
+  }, [setDraftTaskIdSynced]);
+
+  const handleLoadWorkspace = useCallback((session: WorkspaceSession) => {
+    if (session.pipelineData) {
+      setPipelineData(session.pipelineData);
+      setCurrentStep(session.currentStep || 1);
+      setDraftTaskIdSynced(session.id);
+      lastSavedSnapshotRef.current = JSON.stringify({ currentStep: session.currentStep, pipelineData: session.pipelineData });
+      setActiveView('pipeline');
+    }
+  }, [setDraftTaskIdSynced]);
 
   const handleSaveAsPreset = async () => {
     const title = window.prompt('预设名称', pipelineData.step3.output?.title || '自定义爆款模版');
@@ -1591,6 +1624,9 @@ export default function App() {
           isSidebarExpanded={isSidebarExpanded}
           onToggleSidebar={handleToggleSidebar}
           activeProduct={activeProduct}
+          activeSessionTitle={tasks.find((t) => t.id === draftTaskId)?.title || (draftTaskId ? `草稿会话 (${draftTaskId.slice(-4)})` : '新建工作区')}
+          onOpenSessionManager={() => setIsSessionManagerOpen(true)}
+          onCreateNewWorkspace={handleCreateNewWorkspace}
         />
 
         <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6">
@@ -1859,6 +1895,17 @@ export default function App() {
         onClose={() => setIsOnboardingOpen(false)}
         onStartAutoPipeline={runFullPipelineAuto}
         onOpenKnowledge={() => handleSetActiveView('knowledge')}
+      />
+
+      {/* Session / Workspace Manager Modal */}
+      <SessionManagerModal
+        isOpen={isSessionManagerOpen}
+        onClose={() => setIsSessionManagerOpen(false)}
+        sessions={tasks}
+        currentSessionId={draftTaskId}
+        onSelectSession={handleLoadWorkspace}
+        onDeleteSession={handleDeleteWorkspace}
+        onCreateNewWorkspace={handleCreateNewWorkspace}
       />
     </div>
   );

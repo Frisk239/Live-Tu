@@ -126,6 +126,16 @@ export function initDatabase() {
     )
   `);
 
+  try {
+    db.exec(`ALTER TABLE presets ADD COLUMN category TEXT DEFAULT 'universal';`);
+  } catch (_e) {}
+  try {
+    db.exec(`ALTER TABLE presets ADD COLUMN formula TEXT DEFAULT 'hook_demo_cta';`);
+  } catch (_e) {}
+  try {
+    db.exec(`ALTER TABLE materials ADD COLUMN tags TEXT DEFAULT '[]';`);
+  } catch (_e) {}
+
   // WAL mode & busy timeout
   try {
     db.exec('PRAGMA journal_mode = WAL;');
@@ -137,6 +147,7 @@ export function initDatabase() {
     db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);');
     db.exec('CREATE INDEX IF NOT EXISTS idx_bgm_mood ON bgm_library(mood);');
     db.exec('CREATE INDEX IF NOT EXISTS idx_bgm_bpm ON bgm_library(bpm);');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_presets_category ON presets(category);');
   } catch (e) {
     console.warn('[db] Pragma/Index setup notice:', e);
   }
@@ -263,10 +274,16 @@ export function initDatabase() {
     `);
 
     const initialBgmList = [
-      ['bgm_morning_breeze', 'Morning Breeze (BUV 晨间清爽主题曲)', 'Chillout SoundLab', JSON.stringify(['治愈Lofi', '晨间轻音乐']), 82, '治愈清爽', '已商业授权', 'uploads/bgm/morning_breeze.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'],
-      ['bgm_trap_beat', 'Trap Tech Beat 128BPM (抖音卡点神曲)', 'Phonk Master', JSON.stringify(['卡点Electronic', '重低音Trap']), 128, '卡点冲击', '已商业授权', 'uploads/bgm/trap_beat.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3'],
-      ['bgm_pure_ambient', 'Pure Water Ambient Glow (小红书沉浸种草)', 'Soft Ambient', JSON.stringify(['纯水声', '高级轻音乐']), 75, '高级沉浸', '已商业授权', 'uploads/bgm/pure_ambient.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3'],
-      ['bgm_energy_pulse', 'Rhythmic Energy Pulse (硬核测评节奏)', 'Dynamic Sound', JSON.stringify(['节奏Pulse', '商业卡点']), 120, '硬核测评', '已商业授权', 'uploads/bgm/energy_pulse.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3'],
+      ['bgm_morning_breeze', 'Morning Breeze (BUV 晨间清爽)', 'Chillout SoundLab', JSON.stringify(['治愈Lofi', '晨间轻音乐']), 82, '治愈', '已商业授权', 'uploads/bgm/morning_breeze.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'],
+      ['bgm_trap_beat', 'Trap Tech Beat 128BPM (抖音卡点神曲)', 'Phonk Master', JSON.stringify(['卡点Electronic', '重低音Trap']), 128, '卡点', '已商业授权', 'uploads/bgm/trap_beat.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3'],
+      ['bgm_pure_ambient', 'Pure Water Ambient Glow (小红书沉浸种草)', 'Soft Ambient', JSON.stringify(['品质Ambient', '纯水声']), 75, '高级', '已商业授权', 'uploads/bgm/pure_ambient.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3'],
+      ['bgm_energy_pulse', 'Rhythmic Energy Pulse (硬核测评节奏)', 'Dynamic Sound', JSON.stringify(['节奏R&B', '商业卡点']), 120, '反差', '已商业授权', 'uploads/bgm/energy_pulse.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3'],
+      ['bgm_lofi_rain', 'Lofi Rain Coffee & Skincare', 'Lofi Beats Co.', JSON.stringify(['治愈Lofi', '舒缓氛围']), 78, '治愈', '已商业授权', 'uploads/bgm/lofi_rain.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3'],
+      ['bgm_pop_sunshine', 'Sunshine Pop Upbeat Vibe', 'Bright Music', JSON.stringify(['轻快Pop', '阳光活力']), 115, '活泼', '已商业授权', 'uploads/bgm/pop_sunshine.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3'],
+      ['bgm_edm_drop', 'Electro Drop Bass Boost 130BPM', 'Cyber Synth', JSON.stringify(['卡点Electronic', '强音卡点']), 130, '卡点', '已商业授权', 'uploads/bgm/edm_drop.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3'],
+      ['bgm_deep_focus', 'Deep Focus Luxury Ambient', 'Zenith Sound', JSON.stringify(['品质Ambient', '高级清透']), 65, '高级', '已商业授权', 'uploads/bgm/deep_focus.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3'],
+      ['bgm_chill_rnb', 'Chill Sunset R&B Routine', 'Smooth Grooves', JSON.stringify(['节奏R&B', '生活方式']), 95, '舒适', '已商业授权', 'uploads/bgm/chill_rnb.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3'],
+      ['bgm_asmr_water', 'ASMR Pure Water Droplets & Texture', 'Sound Nature Lab', JSON.stringify(['ASMR/纯音效', '极致沉浸']), 0, '沉浸', '已商业授权', 'uploads/bgm/asmr_water.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3'],
     ];
 
     for (const bgm of initialBgmList) {
@@ -279,8 +296,8 @@ export function initDatabase() {
   const presetsCount = (presetsCountStmt.get() as { count: number }).count;
   if (presetsCount === 0) {
     const insertPreset = db.prepare(`
-      INSERT INTO presets (id, title, tag, description, cover_image, pipeline_data)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO presets (id, title, tag, description, cover_image, pipeline_data, category, formula)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const defaultPresets = [
@@ -297,6 +314,8 @@ export function initDatabase() {
           step4: { status: 'completed', inputs: { copywritingTitle: '大油田的晨间快乐水！挤出来是冰淇淋泥膏🍃', tonePreference: '治愈', commercialScenario: '抖音/小红书商业化' }, output: { bgm_recommendation: { track_name: 'Morning Dew & Mint Breeze', artist: 'Chillout SoundLab', style: ['治愈Lofi', '晨间轻音乐', '环境音润饰'], bpm: '82', mood_match: '柔和的钢琴伴以低沉Lofi鼓点，完美契合晨间舒缓沉浸的洗脸场景', sync_point: '1.2s（挤出膏体瞬间）、2.8s（泡沫展现特写）', license_note: '抖音/小红书音效库免版权商业授权（CC0认证）' }, alternatives: [{ track_name: 'Soft Waterdrops', style: '纯水声+轻音乐', when_to_use: '适合小红书Vlog原声感配音' }, { track_name: 'Fresh Start Piano', style: '清爽钢琴曲', when_to_use: '适合偏大牌TVC质感短视频' }] } },
           step5: { status: 'completed', inputs: { aspectRatio: '9:16', subtitleStyle: '黄字黑边' }, output: { timeline: [{ at: '0.0s', action: 'video_in', source: 'video_step2.mp4' }, { at: '0.0s', action: 'audio_in', source: 'morning_dew.mp3', volume: 0.3 }, { at: '0.2s', action: 'subtitle_in', text: '夏天早上起来脸像喷油池？', position: 'bottom_center' }, { at: '1.5s', action: 'subtitle_in', text: 'BUV小绿泥 SGS实测8小时控油-66.87%', position: 'bottom_center' }, { at: '2.8s', action: 'brand_stamp', text: '沙利文国货控油洁面销量第一', position: 'top_right' }, { at: '3.8s', action: 'subtitle_in', text: '点击左下角领油皮福利！', position: 'bottom_center' }], output: { filename: 'buv_v_20260723_morning.mp4', resolution: '1080x1920', format: 'mp4_h264', duration_sec: 4 }, qa_checklist: ['✓ 音画精准卡点（1.2s膏体拉丝音效到位）', '✓ SGS 8小时控油数据字幕明显高亮', '✓ 字幕位于下方20%区域，不挡产品管身', '✓ 结尾带右上方沙利文第一品牌认证角标'] } },
         }),
+        'xiaohongshu',
+        'routine',
       ],
       [
         'preset_douyin_card',
@@ -311,6 +330,8 @@ export function initDatabase() {
           step4: { status: 'completed', inputs: { copywritingTitle: '油皮别瞎洗了！SGS实测8小时控油-66.87%！🔥', tonePreference: '卡点', commercialScenario: '抖音/小红书商业化' }, output: { bgm_recommendation: { track_name: 'Trap Tech Beat 128BPM', artist: 'Phonk Master', style: ['卡点Electronic', '重低音Trap', '高节奏打击'], bpm: '128', mood_match: '强节奏低音震感，极其适合抖音前3秒冲击力与硬核测评卡点', sync_point: '0.8s（吸油纸撕开）、2.2s（SGS报告弹出）、4.0s（领优惠卡点）', license_note: '抖音短视频曲库已商业授权' }, alternatives: [{ track_name: 'Future Bass Rush', style: '电音节奏', when_to_use: '适合年轻学生人群卡点' }, { track_name: 'Cyber Attack', style: '科技节奏', when_to_use: '适合实验室测评风' }] } },
           step5: { status: 'completed', inputs: { aspectRatio: '9:16', subtitleStyle: '黄字黑边' }, output: { timeline: [{ at: '0.0s', action: 'video_in', source: 'video_step2.mp4' }, { at: '0.0s', action: 'audio_in', source: 'trap_tech.mp3', volume: 0.35 }, { at: '0.0s', action: 'subtitle_in', text: '吸油纸一压全是油？你洗脸洗对了吗？', position: 'bottom_center' }, { at: '2.0s', action: 'subtitle_in', text: 'BUV小绿泥 SGS实测：8小时控油-66.87%', position: 'bottom_center' }, { at: '3.5s', action: 'brand_stamp', text: '沙利文国货控油洁面销量第一', position: 'top_right' }, { at: '4.2s', action: 'subtitle_in', text: '点击左下角，领买一送一活动！', position: 'bottom_center' }], output: { filename: 'buv_v_20260723_hardcore.mp4', resolution: '1080x1920', format: 'mp4_h264', duration_sec: 5 }, qa_checklist: ['✓ 强低音卡点精准触发', '✓ 黄字黑边高对比字幕保障完播与可读性', '✓ SGS 权威数据文字大字高亮', '✓ 左下角引导挂车箭头指引明确'] } },
         }),
+        'douyin',
+        'before_after',
       ],
       [
         'preset_shipin_quality',
@@ -325,6 +346,8 @@ export function initDatabase() {
           step4: { status: 'completed', inputs: { copywritingTitle: '鼻翼黑头真的被"吸"走了！14天黑头-35.92%！✨', tonePreference: '高级', commercialScenario: '抖音/小红书商业化' }, output: { bgm_recommendation: { track_name: 'Crystal Clear Water Ambience', artist: 'Pure Zen Audio', style: ['水感轻音乐', '治愈ASMR', '高质感背景音'], bpm: '90', mood_match: '清澈透亮的音色，完美衬托黑头净澈与毛孔水润收敛过程', sync_point: '1.0s（泡沫展示）、2.5s（SGS黑头报告）', license_note: '小红书音效库免版权商业授权' }, alternatives: [{ track_name: 'Pure Skin Vibe', style: '轻快Lofi', when_to_use: '适合日常 Vlog 种草' }] } },
           step5: { status: 'completed', inputs: { aspectRatio: '9:16', subtitleStyle: '白字柔影' }, output: { timeline: [{ at: '0.0s', action: 'video_in', source: 'video_step2.mp4' }, { at: '0.0s', action: 'audio_in', source: 'crystal_water.mp3', volume: 0.3 }, { at: '0.2s', action: 'subtitle_in', text: '别再用撕拉面膜伤害皮肤了！', position: 'bottom_center' }, { at: '1.8s', action: 'subtitle_in', text: 'BUV小绿泥 SGS实测：14天黑头-35.92%', position: 'bottom_center' }, { at: '3.6s', action: 'subtitle_in', text: '洗出哑光透亮好皮肤！', position: 'bottom_center' }], output: { filename: 'buv_v_20260723_pores.mp4', resolution: '1080x1920', format: 'mp4_h264', duration_sec: 4 }, qa_checklist: ['✓ SGS 14天黑头数据卡点清晰', '✓ 高清微距画面极具说服力', '✓ 音效轻盈质感高级'] } },
         }),
+        'shipinhao',
+        'ingredient_intro',
       ],
     ];
 

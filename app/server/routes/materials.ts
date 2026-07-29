@@ -148,6 +148,65 @@ materialsRouter.post('/', (req, res) => {
   }
 });
 
+// POST /api/materials/sync-viral — 一键同步根目录 [爆款视频] 中的参考视频素材入库
+materialsRouter.post('/sync-viral', (req, res) => {
+  try {
+    const viralDir = path.join(process.cwd(), '爆款视频');
+    if (!fs.existsSync(viralDir)) {
+      return res.status(404).json({ success: false, error: '未找到本地 [爆款视频] 目录' });
+    }
+
+    const files = fs.readdirSync(viralDir);
+    const mediaFiles = files.filter((f) => f.match(/\.(mp4|mov|webm|png|jpg|jpeg)$/i));
+
+    let importedCount = 0;
+    const stmtCheck = db.prepare('SELECT id FROM materials WHERE name = ?');
+    const stmtInsert = db.prepare(`
+      INSERT INTO materials (id, name, file_path, url, media_type, size, duration, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const filename of mediaFiles) {
+      const existing = stmtCheck.get(filename);
+      if (existing) continue;
+
+      const fullPath = path.join(viralDir, filename);
+      const stat = fs.statSync(fullPath);
+      const sizeMb = (stat.size / (1024 * 1024)).toFixed(1) + ' MB';
+      const isVideo = filename.match(/\.(mp4|mov|webm)$/i);
+      const id = 'mat_viral_' + Math.random().toString(36).substring(2, 8);
+
+      const targetMaterialsPath = path.join(uploadsMaterialsDir, filename);
+      if (!fs.existsSync(targetMaterialsPath)) {
+        fs.copyFileSync(fullPath, targetMaterialsPath);
+      }
+
+      const webUrl = `/uploads/materials/${encodeURIComponent(filename)}`;
+      const relFilePath = `uploads/materials/${filename}`;
+
+      stmtInsert.run(
+        id,
+        filename,
+        relFilePath,
+        webUrl,
+        isVideo ? 'video' : 'image',
+        sizeMb,
+        isVideo ? '00:15' : null,
+        new Date().toISOString()
+      );
+      importedCount++;
+    }
+
+    return res.json({
+      success: true,
+      message: `成功同步 [爆款视频] 目录！新增 ${importedCount} 条参考物料。`,
+      importedCount,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // DELETE /api/materials/:id — 删除素材（兼删磁盘文件与 SQLite 记录）
 materialsRouter.delete('/:id', (req, res) => {
   try {

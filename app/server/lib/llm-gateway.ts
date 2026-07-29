@@ -92,13 +92,14 @@ export async function callLlmGateway(params: LlmGatewayParams): Promise<LlmGatew
     userMessageContent = user;
   }
 
-  const payload = {
+  const payload: any = {
     model: modelCode,
     temperature,
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessageContent },
     ],
+    response_format: { type: 'json_object' },
   };
 
   // 3. Execute HTTP Call with Timeout & Retry (with exponential backoff for 429 rate limit)
@@ -110,13 +111,18 @@ export async function callLlmGateway(params: LlmGatewayParams): Promise<LlmGatew
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s timeout
 
+      // If previous attempt failed on response_format, try sending without response_format
+      const requestBody = (attempt > 0 && lastError?.message?.includes('response_format'))
+        ? JSON.stringify({ ...payload, response_format: undefined })
+        : JSON.stringify(payload);
+
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(payload),
+        body: requestBody,
         signal: controller.signal,
       });
 

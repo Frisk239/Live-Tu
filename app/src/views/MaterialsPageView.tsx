@@ -54,10 +54,29 @@ export const MaterialsPageView: React.FC<MaterialsPageViewProps> = ({
     return matchesTab && matchesSearch;
   });
 
+  const handleSyncViralVideos = async () => {
+    setIsUploading(true);
+    try {
+      const res = await fetch('/api/materials/sync-viral', { method: 'POST' });
+      const json = await res.json();
+      if (json.success) {
+        alert(`✅ ${json.message}`);
+        const updated = await apiService.materials.fetchMaterials();
+        onAddMaterials(updated);
+      } else {
+        alert(`同步失败: ${json.error}`);
+      }
+    } catch (err: any) {
+      alert(`同步失败: ${err.message}`);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
-      {/* Top Banner & Header */}
-      <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-2xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      {/* Header Banner */}
+      <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-2xs flex items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           <button
             onClick={onBackToPipeline}
@@ -76,17 +95,28 @@ export const MaterialsPageView: React.FC<MaterialsPageViewProps> = ({
             <div className="flex items-center gap-2">
               <h1 className="text-lg font-bold text-slate-900">爆款短视频与图片素材库</h1>
               <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200/60 text-[11px] font-semibold">
-                MEDIA ASSETS
+                MATERIALS
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              可批量上传并在线预览短视频真素材，一键选定导入 5 步反推流水线。
+              集中管理爆款对标视频、首帧截图与美妆素材，支持一键载入 Step 1 执行 AI 多模态拆解。
             </p>
           </div>
         </div>
 
-        <div className="text-right text-xs font-medium text-slate-500 hidden sm:block bg-slate-50 border border-slate-200/80 px-3 py-1.5 rounded-xl shadow-2xs">
-          已纳管 <span className="text-slate-900 font-bold text-sm">{materials.length}</span> 个灵感素材
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleSyncViralVideos}
+            disabled={isUploading}
+            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            title="自动扫描并同步本地 [爆款视频] 文件夹"
+          >
+            <Film className="w-3.5 h-3.5" />
+            <span>同步【爆款视频】目录</span>
+          </button>
+          <div className="text-right text-xs font-medium text-slate-500 hidden sm:block bg-slate-50 border border-slate-200/80 px-3 py-1.5 rounded-xl shadow-2xs">
+            已纳管 <span className="text-slate-900 font-bold text-sm">{materials.length}</span> 个灵感素材
+          </div>
         </div>
       </div>
 

@@ -207,6 +207,23 @@ export const BgmPageView: React.FC<BgmPageViewProps> = ({ onBackToPipeline }) =>
           {uploading ? '上传中…' : '入库'}
         </button>
       </form>
+      {/* Category Filter */}
+      <div className="flex items-center gap-2 overflow-x-auto pb-1">
+        <span className="text-xs font-semibold text-slate-500 shrink-0">情绪/风格:</span>
+        {['all', '治愈', '卡点', '高级', '反差', '活泼', '沉浸', '舒适'].map((m) => (
+          <button
+            key={m}
+            onClick={() => setSelectedMood(m)}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold shrink-0 transition-all cursor-pointer ${
+              selectedMood === m
+                ? 'bg-violet-600 text-white shadow-2xs'
+                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+            }`}
+          >
+            {m === 'all' ? '全部情绪' : m}
+          </button>
+        ))}
+      </div>
 
       {/* List */}
       <div className="p-5 rounded-2xl bg-white border border-slate-200/80 shadow-2xs">

@@ -19,7 +19,9 @@ interface ReadinessState {
   yunwu: boolean;
   seedance: boolean;
   ffmpeg: boolean;
+  minio: boolean;
   publicBase: boolean;
+  hasPublicStorage: boolean;
   notes: string[];
 }
 
@@ -58,7 +60,9 @@ export const Navbar: React.FC<NavbarProps> = ({
               (r.seedance?.configured && r.seedance?.tokenOk === true)
           ),
           ffmpeg: Boolean(r.ffmpeg?.installed),
+          minio: Boolean(r.minio?.configured),
           publicBase: Boolean(r.publicBaseUrl),
+          hasPublicStorage: Boolean(r.hasPublicStorage || r.publicBaseUrl || r.minio?.configured),
           notes: Array.isArray(r.notes) ? r.notes : [],
         });
       })
@@ -68,7 +72,9 @@ export const Navbar: React.FC<NavbarProps> = ({
             yunwu: false,
             seedance: false,
             ffmpeg: false,
+            minio: false,
             publicBase: false,
+            hasPublicStorage: false,
             notes: ['无法连接后端 /api/health'],
           });
         }
@@ -78,15 +84,15 @@ export const Navbar: React.FC<NavbarProps> = ({
     };
   }, []);
 
-  const allCoreOk = readiness && readiness.yunwu && readiness.seedance && readiness.ffmpeg;
+  const allCoreOk = readiness && readiness.yunwu && readiness.seedance && readiness.ffmpeg && readiness.hasPublicStorage;
   const title =
     readiness?.notes?.length
       ? readiness.notes.join('\n')
       : allCoreOk
-        ? '云雾 / Seedance / FFmpeg 就绪'
+        ? '云雾 / Seedance / FFmpeg / MinIO 就绪'
         : '点击查看引擎状态';
 
-  const showPublicTip = readiness && !readiness.publicBase && !dismissPublicTip;
+  const showPublicTip = readiness && !readiness.hasPublicStorage && !dismissPublicTip;
   const showFfmpegTip = readiness && readiness.ffmpeg === false && !dismissFfmpegTip;
 
   return (
@@ -149,8 +155,8 @@ export const Navbar: React.FC<NavbarProps> = ({
                 ? '检测引擎…'
                 : allCoreOk
                   ? '引擎就绪'
-                  : `部分未就绪 · 云雾${readiness.yunwu ? '✓' : '✗'} Seedance${readiness.seedance ? '✓' : '✗'} FFmpeg${readiness.ffmpeg ? '✓' : '✗'}${
-                      readiness.publicBase ? '' : ' · 公网URL✗'
+                  : `部分未就绪 · 云雾${readiness.yunwu ? '✓' : '✗'} Seedance${readiness.seedance ? '✓' : '✗'} FFmpeg${readiness.ffmpeg ? '✓' : '✗'} MinIO${
+                      readiness.minio ? '✓' : readiness.publicBase ? ' (BaseURL)' : '✗'
                     }`}
             </span>
           </div>
@@ -163,17 +169,12 @@ export const Navbar: React.FC<NavbarProps> = ({
             <div className="flex items-start gap-2 px-3 py-2 rounded-xl bg-sky-50 border border-sky-200 text-sky-900 text-[11px] leading-relaxed">
               <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-sky-600" />
               <p className="flex-1">
-                <strong className="font-bold">图生视频提示：</strong>
-                未配置{' '}
+                <strong className="font-bold">图生视频存储提示：</strong>
+                未检测到 MinIO 对象存储或{' '}
                 <code className="px-1 py-0.5 rounded bg-white border border-sky-100 font-mono text-[10px]">
                   PUBLIC_BASE_URL
                 </code>
-                。本地{' '}
-                <code className="px-1 py-0.5 rounded bg-white border border-sky-100 font-mono text-[10px]">
-                  /uploads
-                </code>{' '}
-                素材无法被 Seedance 拉取。请使用 https 公网图作为首帧，或在{' '}
-                <code className="font-mono text-[10px]">.env</code> 设置公网站点根后重启服务。
+                。建议通过 Docker 运行 MinIO 容器或在 <code className="font-mono text-[10px]">.env</code> 配置存储。
               </p>
               <button
                 type="button"
@@ -197,7 +198,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5 text-violet-600" />
               <p className="flex-1">
                 <strong className="font-bold">成片合成提示：</strong>
-                未检测到系统 FFmpeg。Step5 / 人工剪辑导出需要本机安装 FFmpeg 并加入 PATH。
+                未检测到系统 FFmpeg。Step5 成片渲染与导出需要本机安装 FFmpeg 并加入 PATH。
                 Windows 可用{' '}
                 <code className="px-1 py-0.5 rounded bg-white border border-violet-100 font-mono text-[10px]">
                   winget install FFmpeg

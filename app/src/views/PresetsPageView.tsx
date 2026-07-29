@@ -1,17 +1,19 @@
 import React from 'react';
+import { ArrowRight, ArrowLeft, Layers, Trash2 } from 'lucide-react';
 import { PresetTemplate } from '../types';
-import { ArrowRight, ArrowLeft, Layers } from 'lucide-react';
 
 interface PresetsPageViewProps {
   presets: PresetTemplate[];
   onSelectPreset: (preset: PresetTemplate) => void;
   onBackToPipeline: () => void;
+  onDeletePreset?: (presetId: string) => void;
 }
 
 export const PresetsPageView: React.FC<PresetsPageViewProps> = ({
   presets,
   onSelectPreset,
   onBackToPipeline,
+  onDeletePreset,
 }) => {
   return (
     <div className="space-y-6">
@@ -90,10 +92,26 @@ export const PresetsPageView: React.FC<PresetsPageViewProps> = ({
                       含完整 5 步反推链 Prompt
                     </span>
 
-                    <button className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 group-hover:translate-x-0.5 transition-all cursor-pointer">
-                      <span>载入流水线</span>
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-3">
+                      {onDeletePreset && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (window.confirm(`确定要删除预设「${preset.title}」吗？`)) {
+                              onDeletePreset(preset.id);
+                            }
+                          }}
+                          className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                          title="删除此预设"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                      <button className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 group-hover:translate-x-0.5 transition-all cursor-pointer">
+                        <span>载入流水线</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

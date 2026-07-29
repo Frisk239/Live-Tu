@@ -35,6 +35,7 @@ import {
 } from 'lucide-react';
 import { ModelConfigState } from '../data/models';
 import { PromptEditorModal } from './PromptEditorModal';
+import { StepModelPicker } from './StepModelPicker';
 import { apiService } from '../services/api';
 
 export interface BatchStep1QueueItem {
@@ -61,6 +62,7 @@ interface Step1CardProps {
   onUpdateInputs: (inputs: Partial<Step1Inputs>) => void;
   onUpdateOutput?: (updatedOutput: Partial<Step1Output>) => void;
   onRun: () => void;
+  onAbort?: () => void;
   onReset: () => void;
   onNext: () => void;
   onOpenMaterials?: () => void;
@@ -68,7 +70,7 @@ interface Step1CardProps {
   onGeneratedImage?: (payload: { imageUrl: string; promptUsed: string }) => void;
 }
 
-export const Step1Card: React.FC<Step1CardProps> = ({
+export const Step1Card: React.FC<Step1CardProps> = React.memo(({
   inputs,
   output,
   status,
@@ -78,6 +80,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
   onUpdateInputs,
   onUpdateOutput,
   onRun,
+  onAbort,
   onReset,
   onNext,
   onOpenMaterials,
@@ -111,8 +114,17 @@ export const Step1Card: React.FC<Step1CardProps> = ({
     );
   };
 
-  const showVideoPicker = Boolean(sourceVideoUrl) || isVideoMedia(inputs.mediaUrl);
-  const videoSrc = sourceVideoUrl || (isVideoMedia(inputs.mediaUrl) ? inputs.mediaUrl : '');
+  const safeInputs = inputs || {
+    mediaUrl: '',
+    platform: 'douyin',
+    bloggerType: 'skincare_expert',
+    viralReason: '',
+    textModel: 'Gemini 3.6 Flash',
+    imageModel: 'GPT Image 1',
+  };
+
+  const showVideoPicker = Boolean(sourceVideoUrl) || isVideoMedia(safeInputs.mediaUrl || '');
+  const videoSrc = sourceVideoUrl || (isVideoMedia(safeInputs.mediaUrl || '') ? safeInputs.mediaUrl : '');
 
   const handleCaptureFrame = async () => {
     const video = videoRef.current;
@@ -122,8 +134,8 @@ export const Step1Card: React.FC<Step1CardProps> = ({
     }
     setIsCapturingFrame(true);
     try {
-      if (!sourceVideoUrl && isVideoMedia(inputs.mediaUrl)) {
-        setSourceVideoUrl(inputs.mediaUrl);
+      if (!sourceVideoUrl && isVideoMedia(safeInputs.mediaUrl || '')) {
+        setSourceVideoUrl(safeInputs.mediaUrl);
       }
       const canvas = document.createElement('canvas');
       canvas.width = video.videoWidth || 1080;
@@ -197,30 +209,50 @@ export const Step1Card: React.FC<Step1CardProps> = ({
   const isCompleted = status === 'completed' && Boolean(output);
   const isFailed = status === 'failed';
 
-  // Available image models from config
-  const enabledImageModels = modelConfig.imageModels.filter((m) => m.enabled);
-
-  // Auto-recommendation logic based on platform and blogger type
+  // Auto-pick defaults when model config loads
   useEffect(() => {
-    if (modelConfig.autoRecommendationEnabled && !inputs.imageModel) {
-      if (inputs.platform === 'xiaohongshu') {
-        onUpdateInputs({ imageModel: 'Imagen 4 Ultra' });
-      } else if (inputs.bloggerType === 'skincare_expert') {
-        onUpdateInputs({ imageModel: 'Nano Banana Pro' });
-      } else {
-        onUpdateInputs({ imageModel: 'Imagen 4 Fast' });
-      }
+    if (!modelConfig.autoRecommendationEnabled) return;
+    const patch: Partial<Step1Inputs> = {};
+    if (!inputs.textModel) {
+      patch.textModel =
+        modelConfig.defaultTextModel ||
+        modelConfig.textModels.find((m) => m.enabled && m.isDefault)?.id ||
+        modelConfig.textModels.find((m) => m.enabled)?.id ||
+        'Gemini 3.6 Flash';
     }
-  }, [inputs.platform, inputs.bloggerType, modelConfig.autoRecommendationEnabled]);
+    if (!inputs.imageModel) {
+      patch.imageModel =
+        modelConfig.defaultImageModel ||
+        modelConfig.imageModels.find((m) => m.enabled && m.isDefault)?.id ||
+        modelConfig.imageModels.find((m) => m.enabled)?.id ||
+        'GPT Image 1';
+    }
+    if (Object.keys(patch).length) onUpdateInputs(patch);
+  }, [
+    modelConfig.autoRecommendationEnabled,
+    modelConfig.defaultTextModel,
+    modelConfig.defaultImageModel,
+    modelConfig.textModels.length,
+    modelConfig.imageModels.length,
+  ]);
 
-  const sampleImages = [
+  const sampleImages: Array<{
+    name: string;
+    url: string;
+    platform: 'xiaohongshu' | 'douyin' | 'shipinhao' | 'general';
+    bloggerType: 'skincare_expert' | 'daily_seeding' | 'ingredient_geek' | 'review_beauty';
+  }> = [
     {
       name: '晨间阳光浴室（小红书爆款）',
       url: 'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80',
+      platform: 'xiaohongshu',
+      bloggerType: 'daily_seeding',
     },
     {
       name: '左右脸对比测评（抖音卡点）',
       url: 'https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?auto=format&fit=crop&w=600&q=80',
+      platform: 'douyin',
+      bloggerType: 'review_beauty',
     },
   ];
 
@@ -348,7 +380,8 @@ export const Step1Card: React.FC<Step1CardProps> = ({
 
     setIsBatchRunning(true);
 
-    for (const item of pendingItems) {
+    const CONCURRENCY = 3; // 3并发请求池
+    const processItem = async (item: typeof pendingItems[0]) => {
       setBatchQueue((prev) =>
         prev.map((q) => (q.id === item.id ? { ...q, status: 'running', progress: 20 } : q))
       );
@@ -398,6 +431,12 @@ export const Step1Card: React.FC<Step1CardProps> = ({
           )
         );
       }
+    };
+
+    // Process items in chunks of CONCURRENCY
+    for (let i = 0; i < pendingItems.length; i += CONCURRENCY) {
+      const chunk = pendingItems.slice(i, i + CONCURRENCY);
+      await Promise.all(chunk.map((item) => processItem(item)));
     }
 
     setIsBatchRunning(false);
@@ -411,7 +450,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
     const formattedText = completedItems
       .map(
         (item, index) =>
-          `【任务 #${index + 1} - ${item.name}】\nModel: ${inputs.imageModel || 'Imagen 4 Ultra'}\nPrompt: ${
+          `【任务 #${index + 1} - ${item.name}】\nModel: ${inputs.imageModel || 'GPT Image 1'}\nPrompt: ${
             item.output?.static_image_prompt
           }\n`
       )
@@ -515,10 +554,6 @@ export const Step1Card: React.FC<Step1CardProps> = ({
     setIsImportModalOpen(false);
   };
 
-  const currentSelectedModelMeta = enabledImageModels.find(
-    (m) => m.id === (inputs.imageModel || 'Imagen 4 Ultra')
-  );
-
   // Queue Statistics
   const totalTasks = batchQueue.length;
   const pendingTasks = batchQueue.filter((q) => q.status === 'pending').length;
@@ -593,6 +628,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
         {/* Mode Switcher Tabs */}
         <div className="flex items-center gap-1.5 p-1 bg-slate-200/80 dark:bg-slate-800 rounded-xl border border-slate-300/60 dark:border-slate-700/60 shrink-0">
           <button
+            type="button"
             onClick={() => setExecutionMode('single')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
               executionMode === 'single'
@@ -605,6 +641,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={() => setExecutionMode('batch')}
             className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all relative ${
               executionMode === 'batch'
@@ -629,6 +666,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
           {/* Action Bar for Single Mode */}
           <div className="px-6 py-2.5 bg-slate-100/60 dark:bg-slate-900/60 border-b border-slate-200/60 dark:border-slate-800 flex items-center justify-end gap-2">
             <button
+              type="button"
               onClick={onReset}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors shadow-surface-sm"
             >
@@ -638,6 +676,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
 
             {isCompleted && (
               <button
+                type="button"
                 onClick={() => downloadJsonFile(output, 'step1_static_prompt.json')}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors shadow-surface-sm"
               >
@@ -646,25 +685,40 @@ export const Step1Card: React.FC<Step1CardProps> = ({
               </button>
             )}
 
-            <button
-              onClick={onRun}
-              disabled={isRunning}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 transition-all shadow-md shadow-emerald-600/20"
-            >
-              {isRunning ? (
-                <>
+            {isRunning ? (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600/80 cursor-wait shadow-md"
+                >
                   <Sparkles className="w-3.5 h-3.5 animate-spin" />
                   <span>AI 拆解中...</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>运行 </span>
-                </>
-              )}
-            </button>
+                </button>
+                {onAbort && (
+                  <button
+                    type="button"
+                    onClick={onAbort}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 transition-all shadow-md cursor-pointer"
+                    title="中断并终止当前 AI 拆解阶段"
+                  >
+                    <span>终止阶段</span>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={onRun}
+                className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 transition-all shadow-md shadow-emerald-600/20"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>运行 </span>
+              </button>
+            )}
 
             <button
+              type="button"
               onClick={onNext}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors shadow-surface-sm"
             >
@@ -827,102 +881,142 @@ export const Step1Card: React.FC<Step1CardProps> = ({
                 <div className="pt-1">
                   <span className="text-[11px] text-slate-500 block mb-1.5">或选择内置爆款素材：</span>
                   <div className="grid grid-cols-2 gap-2">
-                    {sampleImages.map((sample, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => onUpdateInputs({ mediaUrl: sample.url })}
-                        className={`flex items-center gap-2 p-2 rounded-lg text-left border text-xs transition-all ${
-                          inputs.mediaUrl === sample.url
-                            ? 'bg-emerald-50 border-emerald-300 text-emerald-800 font-semibold'
-                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                        }`}
-                      >
-                        <img src={sample.url} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
-                        <span className="line-clamp-1 truncate text-[11px]">{sample.name}</span>
-                      </button>
-                    ))}
+                    {sampleImages.map((sample, idx) => {
+                      const isSelected = inputs.mediaUrl === sample.url;
+                      return (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => {
+                            onUpdateInputs({
+                              mediaUrl: sample.url,
+                              platform: sample.platform,
+                              bloggerType: sample.bloggerType,
+                            });
+                          }}
+                          className={`flex items-center gap-2 p-2 rounded-lg text-left border text-xs transition-all ${
+                            isSelected
+                              ? 'bg-emerald-50 border-emerald-300 text-emerald-800 font-semibold ring-1 ring-emerald-400'
+                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          <img src={sample.url} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
+                          <div className="min-w-0 flex-1">
+                            <span className="line-clamp-1 truncate text-[11px] font-medium block">{sample.name}</span>
+                            <span className="text-[9px] text-slate-400 block truncate">已包含平台与博主配置</span>
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
 
               {/* Context Options */}
-              <div className="grid grid-cols-2 gap-3 pt-2">
-                <div>
-                  <label className="text-xs font-medium text-slate-700 dark:text-slate-300 block mb-1">
-                    来源平台
-                  </label>
-                  <select
-                    value={inputs.platform}
-                    onChange={(e) => onUpdateInputs({ platform: e.target.value as any })}
-                    className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:border-emerald-500 font-medium shadow-sm"
-                  >
-                    <option value="xiaohongshu">小红书（治愈种草）</option>
-                    <option value="douyin">抖音（卡点冲击）</option>
-                    <option value="shipinhao">视频号（信任品质）</option>
-                    <option value="general">通用平台</option>
-                  </select>
-                </div>
+              {(() => {
+                const activeSample = sampleImages.find((s) => s.url === inputs.mediaUrl);
+                if (activeSample) {
+                  const platformLabels: Record<string, string> = {
+                    xiaohongshu: '小红书（治愈种草）',
+                    douyin: '抖音（卡点冲击）',
+                    shipinhao: '视频号（信任品质）',
+                    general: '通用平台',
+                  };
+                  const bloggerLabels: Record<string, string> = {
+                    daily_seeding: '日常种草（真实生活）',
+                    skincare_expert: '护肤达人（成分解析）',
+                    ingredient_geek: '成分党（硬核测评）',
+                    review_beauty: '美妆测评（红黑榜）',
+                  };
 
-                <div>
-                  <label className="text-xs font-medium text-slate-700 dark:text-slate-300 block mb-1">
-                    博主类型
-                  </label>
-                  <select
-                    value={inputs.bloggerType}
-                    onChange={(e) => onUpdateInputs({ bloggerType: e.target.value as any })}
-                    className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:border-emerald-500 font-medium shadow-sm"
-                  >
-                    <option value="daily_seeding">日常种草（真实生活）</option>
-                    <option value="skincare_expert">护肤达人（成分解析）</option>
-                    <option value="ingredient_geek">成分党（硬核测评）</option>
-                    <option value="review_beauty">美妆测评（红黑榜）</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Image Model Selector */}
-              <div className="p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl space-y-2">
-                <div className="flex items-center justify-between text-xs font-medium text-slate-800 dark:text-slate-200">
-                  <span className="flex items-center gap-1.5 font-bold">
-                    <Cpu className="w-3.5 h-3.5 text-emerald-600" />
-                    目标图片生成 AI 模型 (Image Model)
-                  </span>
-                  <span className="text-[10px] text-emerald-700 bg-emerald-100 dark:bg-emerald-950/80 px-2 py-0.5 rounded font-medium">
-                    AI 自动推荐适配
-                  </span>
-                </div>
-
-                <select
-                  value={inputs.imageModel || 'Imagen 4 Ultra'}
-                  onChange={(e) => onUpdateInputs({ imageModel: e.target.value as any })}
-                  className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:outline-none focus:border-emerald-500 font-semibold shadow-sm"
-                >
-                  {enabledImageModels.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name} — {m.recommendedScenario} ({m.speedRating})
-                    </option>
-                  ))}
-                </select>
-
-                {currentSelectedModelMeta && (
-                  <div className="text-[11px] bg-white dark:bg-slate-900 p-2.5 rounded-lg border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 space-y-1">
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400">推荐场景:</span>
-                      <span className="font-medium text-slate-800 dark:text-slate-200">{currentSelectedModelMeta.recommendedScenario}</span>
+                  return (
+                    <div className="p-3 bg-emerald-50/80 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/40 rounded-xl space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5">
+                          <span>🔒 已自动绑定内置素材属性</span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onUpdateInputs({ mediaUrl: '' })}
+                          className="text-[10px] text-emerald-600 hover:text-emerald-700 underline font-medium"
+                        >
+                          切换自定义模式
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="bg-white/80 dark:bg-slate-800/80 p-2 rounded-lg border border-emerald-100 dark:border-emerald-900/50">
+                          <span className="text-[10px] text-slate-400 block">来源平台</span>
+                          <span className="font-semibold text-slate-700 dark:text-slate-200">
+                            {platformLabels[inputs.platform] || inputs.platform}
+                          </span>
+                        </div>
+                        <div className="bg-white/80 dark:bg-slate-800/80 p-2 rounded-lg border border-emerald-100 dark:border-emerald-900/50">
+                          <span className="text-[10px] text-slate-400 block">博主类型</span>
+                          <span className="font-semibold text-slate-700 dark:text-slate-200">
+                            {bloggerLabels[inputs.bloggerType] || inputs.bloggerType}
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400">预估速度:</span>
-                      <span className="font-semibold text-emerald-600 dark:text-emerald-400">
-                        {currentSelectedModelMeta.speedRating} ({currentSelectedModelMeta.speedMs})
-                      </span>
+                  );
+                }
+
+                return (
+                  <div className="grid grid-cols-2 gap-3 pt-2">
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                        来源平台
+                      </label>
+                      <select
+                        value={inputs.platform}
+                        onChange={(e) => onUpdateInputs({ platform: e.target.value as any })}
+                        className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:border-emerald-500 font-medium shadow-sm"
+                      >
+                        <option value="xiaohongshu">小红书（治愈种草）</option>
+                        <option value="douyin">抖音（卡点冲击）</option>
+                        <option value="shipinhao">视频号（信任品质）</option>
+                        <option value="general">通用平台</option>
+                      </select>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400">画质评级:</span>
-                      <span className="font-semibold text-indigo-600 dark:text-indigo-400">{currentSelectedModelMeta.qualityRating}</span>
+
+                    <div>
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300 block mb-1">
+                        博主类型
+                      </label>
+                      <select
+                        value={inputs.bloggerType}
+                        onChange={(e) => onUpdateInputs({ bloggerType: e.target.value as any })}
+                        className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:border-emerald-500 font-medium shadow-sm"
+                      >
+                        <option value="daily_seeding">日常种草（真实生活）</option>
+                        <option value="skincare_expert">护肤达人（成分解析）</option>
+                        <option value="ingredient_geek">成分党（硬核测评）</option>
+                        <option value="review_beauty">美妆测评（红黑榜）</option>
+                      </select>
                     </div>
                   </div>
-                )}
+                );
+              })()}
+
+              {/* 模型选择：多模态拆解 + 文生图（操作面板） */}
+              <div className="space-y-2">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">模型选择</p>
+                <StepModelPicker
+                  category="text"
+                  title="多模态视觉拆解模型"
+                  models={modelConfig.textModels}
+                  value={inputs.textModel}
+                  defaultId={modelConfig.defaultTextModel}
+                  onChange={(id) => onUpdateInputs({ textModel: id })}
+                />
+                <StepModelPicker
+                  category="image"
+                  title="文生图 / 首帧生成模型"
+                  models={modelConfig.imageModels}
+                  value={inputs.imageModel}
+                  defaultId={modelConfig.defaultImageModel}
+                  onChange={(id) => onUpdateInputs({ imageModel: id })}
+                />
               </div>
 
               <div>
@@ -985,7 +1079,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
                       点击【启动拆解】开始第 1 步视觉拆解与生成
                     </p>
                     <p className="text-[11px] text-slate-500 mt-1">
-                      （系统将自动提取画面色板、镜头构图、情绪与 Midjourney/Imagen 提示词）
+                      （系统将自动提取画面色板、镜头构图、情绪与文生图 Prompt）
                     </p>
                   </div>
                 ) : activeTab === 'visual' ? (
@@ -1045,7 +1139,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
                         <span className="text-xs font-bold text-emerald-400 font-mono flex items-center gap-2">
                           <span>static_image_prompt</span>
                           <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/30 text-[10px] text-emerald-300">
-                            {inputs.imageModel || 'Imagen 4 Ultra'} 适配
+                            {inputs.imageModel || 'GPT Image 1'} 适配
                           </span>
                         </span>
 
@@ -1621,7 +1715,7 @@ export const Step1Card: React.FC<Step1CardProps> = ({
               : '第 1 步：静态图 Prompt 精细化编辑器'
           }
           promptType="static_image_prompt"
-          modelName={inputs.imageModel || 'Imagen 4 Ultra'}
+          modelName={inputs.imageModel || 'GPT Image 1'}
           initialPrompt={
             editingQueueItem?.output?.static_image_prompt || output?.static_image_prompt || ''
           }
@@ -1632,4 +1726,4 @@ export const Step1Card: React.FC<Step1CardProps> = ({
       )}
     </div>
   );
-};
+});

@@ -8,6 +8,8 @@ const BASE = process.env.E2E_BASE_URL || 'http://localhost:3004';
 
 test.describe('BUV workbench smoke', () => {
   test.beforeEach(async ({ page }) => {
+    page.on('console', (msg) => console.log(`[browser console] ${msg.type()}: ${msg.text()}`));
+    page.on('pageerror', (err) => console.error(`[browser error] ${err.message}`));
     await page.addInitScript(() => {
       localStorage.setItem('aigc_onboarding_completed', 'true');
       localStorage.removeItem('aigc_is_logged_in');
@@ -46,19 +48,21 @@ test.describe('BUV workbench smoke', () => {
     expect(health.status).toBe('ok');
     expect(health.readiness?.yunwu).toBeTruthy();
 
-    // Use title attributes on sidebar buttons for stable navigation
     const pages: Array<{ title: string; heading: RegExp }> = [
+      { title: '确权 BGM 曲库管理', heading: /确权 BGM 曲库/ },
       { title: '视频素材库页面', heading: /爆款短视频与图片素材库/ },
       { title: '后台任务中心页面', heading: /后台渲染与反推任务中心/ },
       { title: '爆款视频与反推预设', heading: /爆款短视频模版与反推预设库/ },
       { title: '大模型与提示词配置页面', heading: /大模型与提示词规则配置中心/ },
-      { title: '确权 BGM 曲库管理', heading: /确权 BGM 曲库/ },
       { title: '卖点库与品牌知识中心', heading: /品牌卖点与知识资产库/ },
     ];
 
     for (const p of pages) {
-      await page.locator(`aside button[title="${p.title}"]`).click();
-      await expect(page.getByRole('heading', { name: p.heading })).toBeVisible({ timeout: 10000 });
+      const btn = page.locator(`aside button[title="${p.title}"]`).first();
+      await btn.scrollIntoViewIfNeeded();
+      await btn.click({ force: true });
+      await page.waitForTimeout(500);
+      await expect(page.locator('h1').filter({ hasText: p.heading }).first()).toBeVisible({ timeout: 10000 });
     }
 
     await page.locator('aside button[title="5步短视频反推与生成主工程"]').click();

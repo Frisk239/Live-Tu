@@ -5,8 +5,13 @@ build/
 *.env
 *.log
 *.log.*
-*.db
+*.db*
+app/data/
 uploads/
+
+# Media and reference videos
+爆款视频/
+参考视频/
 
 # Test results and coverage
 test-results/
@@ -21,6 +26,8 @@ playwright-report/
 
 # Scratch temporary files
 .scratch/
+scratch/
+app/scratch/
 
 # E2E (uncomment if you want to ignore e2e tests)
 # app/e2e/
@@ -39,3 +46,4 @@ yuanxing/
 # OS
 .DS_Store
 Thumbs.db
+

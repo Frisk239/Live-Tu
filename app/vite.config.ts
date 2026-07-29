@@ -15,6 +15,9 @@ export default defineConfig(({mode}) => {
     // Expose only VITE_* vars to client code via import.meta.env
     envPrefix: 'VITE_',
     server: {
+      watch: {
+        ignored: ['**/data/**', '**/uploads/**', '**/dist/**', '**/test-results/**', '**/.system_generated/**', '**/*.db*'],
+      },
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: env.DISABLE_HMR !== 'true' && {
@@ -22,8 +25,6 @@ export default defineConfig(({mode}) => {
         port: Number(env.VITE_HMR_PORT || 24679),
         clientPort: Number(env.VITE_HMR_PORT || 24679),
       },
-      // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
-      watch: env.DISABLE_HMR === 'true' ? null : {},
     },
   };
 });

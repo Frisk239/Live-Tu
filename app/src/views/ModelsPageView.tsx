@@ -28,7 +28,7 @@ interface ModelsPageViewProps {
   config: ModelConfigState;
   onSaveConfig: (newConfig: ModelConfigState) => void;
   userRole: 'admin' | 'user';
-  onToggleRole: () => void;
+  onToggleRole?: () => void;
   onBackToPipeline: () => void;
 }
 
@@ -36,22 +36,41 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
   config,
   onSaveConfig,
   userRole,
-  onToggleRole,
   onBackToPipeline,
 }) => {
   const [localConfig, setLocalConfig] = useState<ModelConfigState>(config);
   const [activeTab, setActiveTab] = useState<'text' | 'image' | 'video'>('text');
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Sync when parent finishes bootstrapping models from API
+  const reloadModelsFromApi = async () => {
+    try {
+      const fresh = await apiService.models.fetchModels();
+      if (fresh && (fresh.textModels?.length || fresh.imageModels?.length || fresh.videoModels?.length)) {
+        setLocalConfig(fresh);
+        onSaveConfig(fresh);
+      }
+    } catch (err) {
+      console.warn('[ModelsPageView] fetchModels failed:', err);
+    }
+  };
+
+  // Sync when parent finishes bootstrapping models from API, or auto-fetch if empty
   React.useEffect(() => {
-    setLocalConfig(config);
+    if (
+      !config.textModels?.length &&
+      !config.imageModels?.length &&
+      !config.videoModels?.length
+    ) {
+      reloadModelsFromApi();
+    } else {
+      setLocalConfig((prev) => (JSON.stringify(prev) !== JSON.stringify(config) ? config : prev));
+    }
   }, [config]);
 
   // Edit / Add Form state
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingModel, setEditingModel] = useState<ModelMetadata | null>(null);
-  const [formType, setFormType] = useState<'image' | 'video'>('image');
+  const [formType, setFormType] = useState<'text' | 'image' | 'video'>('text');
 
   // Connection testing states
   const [testingModelId, setTestingModelId] = useState<string | null>(null);
@@ -75,61 +94,68 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
   const [formDescription, setFormDescription] = useState('');
   const [formBadge, setFormBadge] = useState('');
 
-  const handleToggleEnableImage = (id: ImageModelName) => {
-    if (userRole !== 'admin') return;
-    setLocalConfig((prev) => ({
-      ...prev,
-      imageModels: prev.imageModels.map((m) =>
-        m.id === id ? { ...m, enabled: !m.enabled } : m
-      ),
-    }));
+  const persistAndSyncConfig = async (nextConfig: ModelConfigState) => {
+    setLocalConfig(nextConfig);
+    onSaveConfig(nextConfig);
+    try {
+      await apiService.models.saveConfig(nextConfig);
+    } catch (err) {
+      console.warn('[ModelsPageView] saveConfig failed:', err);
+    }
   };
 
-  const handleToggleEnableVideo = (id: VideoModelName) => {
+  const handleToggleEnable = (id: string, category: 'text' | 'image' | 'video') => {
     if (userRole !== 'admin') return;
-    setLocalConfig((prev) => ({
-      ...prev,
-      videoModels: prev.videoModels.map((m) =>
-        m.id === id ? { ...m, enabled: !m.enabled } : m
-      ),
-    }));
+    const key = category === 'text' ? 'textModels' : category === 'image' ? 'imageModels' : 'videoModels';
+    const nextConfig = {
+      ...localConfig,
+      [key]: localConfig[key].map((m) => (m.id === id ? { ...m, enabled: !m.enabled } : m)),
+    };
+    persistAndSyncConfig(nextConfig);
   };
 
-  const handleSetDefaultImage = (id: ImageModelName) => {
+  const handleSetDefault = (id: string, category: 'text' | 'image' | 'video') => {
     if (userRole !== 'admin') return;
-    setLocalConfig((prev) => ({
-      ...prev,
-      defaultImageModel: id,
-      imageModels: prev.imageModels.map((m) => ({
-        ...m,
-        isDefault: m.id === id,
-      })),
-    }));
+    let nextConfig: ModelConfigState;
+    if (category === 'text') {
+      nextConfig = {
+        ...localConfig,
+        defaultTextModel: id as any,
+        textModels: localConfig.textModels.map((m) => ({ ...m, isDefault: m.id === id })),
+      };
+    } else if (category === 'image') {
+      nextConfig = {
+        ...localConfig,
+        defaultImageModel: id as any,
+        imageModels: localConfig.imageModels.map((m) => ({ ...m, isDefault: m.id === id })),
+      };
+    } else {
+      nextConfig = {
+        ...localConfig,
+        defaultVideoModel: id as any,
+        videoModels: localConfig.videoModels.map((m) => ({ ...m, isDefault: m.id === id })),
+      };
+    }
+    persistAndSyncConfig(nextConfig);
+    setSaveSuccess(true);
+    setTimeout(() => {
+      setSaveSuccess(false);
+    }, 1500);
   };
 
-  const handleSetDefaultVideo = (id: VideoModelName) => {
-    if (userRole !== 'admin') return;
-    setLocalConfig((prev) => ({
-      ...prev,
-      defaultVideoModel: id,
-      videoModels: prev.videoModels.map((m) => ({
-        ...m,
-        isDefault: m.id === id,
-      })),
-    }));
-  };
-
-  const handleDeleteModel = (id: string, type: 'image' | 'video') => {
+  const handleDeleteModel = (id: string, type: 'text' | 'image' | 'video') => {
     if (userRole !== 'admin') return;
     if (!window.confirm(`确定要删除模型 [${id}] 吗？`)) return;
 
-    setLocalConfig((prev) => {
-      if (type === 'image') {
-        return { ...prev, imageModels: prev.imageModels.filter((m) => m.id !== id) };
-      } else {
-        return { ...prev, videoModels: prev.videoModels.filter((m) => m.id !== id) };
-      }
-    });
+    let nextConfig: ModelConfigState;
+    if (type === 'text') {
+      nextConfig = { ...localConfig, textModels: localConfig.textModels.filter((m) => m.id !== id) };
+    } else if (type === 'image') {
+      nextConfig = { ...localConfig, imageModels: localConfig.imageModels.filter((m) => m.id !== id) };
+    } else {
+      nextConfig = { ...localConfig, videoModels: localConfig.videoModels.filter((m) => m.id !== id) };
+    }
+    persistAndSyncConfig(nextConfig);
   };
 
   const handleTestConnection = async (model: ModelMetadata) => {
@@ -139,35 +165,35 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
     setTestingModelId(null);
   };
 
-  const handleOpenAddForm = (type: 'image' | 'video') => {
+  const handleOpenAddForm = (type: 'text' | 'image' | 'video') => {
     setFormType(type);
     setEditingModel(null);
     setFormName('');
-    setFormProvider('Google Gemini AIGC');
-    setFormBaseUrl('https://generativelanguage.googleapis.com/v1beta');
+    setFormProvider(type === 'video' ? '星河中转 / Seedance' : '云雾');
+    setFormBaseUrl(type === 'video' ? '/api/seedance' : 'https://api3.wlai.vip/v1');
     setFormApiKey('');
-    setFormModelCode('');
-    setFormScenario('适合爆款画质重构与细节渲染');
+    setFormModelCode(type === 'text' ? 'gemini-3.6-flash' : type === 'image' ? 'gpt-image-1' : 'doubao-seedance-2-0-fast');
+    setFormScenario(type === 'text' ? '文案/多模态拆解' : type === 'image' ? '产品首帧文生图' : '图生视频');
     setFormSpeedRating('标准');
-    setFormSpeedMs('3.0s');
-    setFormQualityRating('影视级');
-    setFormDescription('企业级微调算法接入模型');
-    setFormBadge('自定义模型');
+    setFormSpeedMs(type === 'image' ? '30s' : '1.0s');
+    setFormQualityRating(type === 'image' ? '写实级' : '专业级');
+    setFormDescription('自定义云雾模型');
+    setFormBadge('自定义');
     setIsFormOpen(true);
   };
 
-  const handleOpenEditForm = (model: ModelMetadata, type: 'image' | 'video') => {
+  const handleOpenEditForm = (model: ModelMetadata, type: 'text' | 'image' | 'video') => {
     setFormType(type);
     setEditingModel(model);
     setFormName(model.name);
-    setFormProvider(model.provider || 'Google Gemini AIGC');
-    setFormBaseUrl(model.baseUrl || 'https://generativelanguage.googleapis.com/v1beta');
+    setFormProvider(model.provider || '云雾');
+    setFormBaseUrl(model.baseUrl || 'https://api3.wlai.vip/v1');
     setFormApiKey(model.apiKey || '');
     setFormModelCode(model.modelCode || model.id);
     setFormScenario(model.recommendedScenario || '');
     setFormSpeedRating(model.speedRating || '标准');
     setFormSpeedMs(model.speedMs || '2.5s');
-    setFormQualityRating(model.qualityRating || '影视级');
+    setFormQualityRating(model.qualityRating || '专业级');
     setFormDescription(model.description || '');
     setFormBadge(model.badge || '');
     setIsFormOpen(true);
@@ -177,7 +203,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
     e.preventDefault();
     if (!formName.trim()) return;
 
-    const newId = editingModel ? editingModel.id : (formName.trim() as any);
+    const newId = editingModel ? editingModel.id : formName.trim();
 
     const updatedModel: ModelMetadata = {
       id: newId,
@@ -197,28 +223,20 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
       isCustom: true,
     };
 
-    setLocalConfig((prev) => {
-      if (formType === 'image') {
-        const exists = prev.imageModels.some((m) => m.id === newId);
-        const imageModels = exists
-          ? prev.imageModels.map((m) => (m.id === newId ? updatedModel : m))
-          : [...prev.imageModels, updatedModel];
-        return { ...prev, imageModels: imageModels as any };
-      } else {
-        const exists = prev.videoModels.some((m) => m.id === newId);
-        const videoModels = exists
-          ? prev.videoModels.map((m) => (m.id === newId ? updatedModel : m))
-          : [...prev.videoModels, updatedModel];
-        return { ...prev, videoModels: videoModels as any };
-      }
-    });
+    const key = formType === 'text' ? 'textModels' : formType === 'image' ? 'imageModels' : 'videoModels';
+    const list = localConfig[key];
+    const exists = list.some((m) => m.id === newId);
+    const nextList = exists
+      ? list.map((m) => (m.id === newId ? updatedModel : m))
+      : [...list, updatedModel];
 
+    const nextConfig = { ...localConfig, [key]: nextList as any };
+    persistAndSyncConfig(nextConfig);
     setIsFormOpen(false);
   };
 
   const handleSave = async () => {
-    await apiService.models.saveConfig(localConfig);
-    onSaveConfig(localConfig);
+    await persistAndSyncConfig(localConfig);
     setSaveSuccess(true);
     setTimeout(() => {
       setSaveSuccess(false);
@@ -258,22 +276,14 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
                 }`}
               >
                 <ShieldCheck className="w-3.5 h-3.5" />
-                {userRole === 'admin' ? '管理员模式 (可编辑)' : '普通用户模式 (只读选择)'}
+                {userRole === 'admin' ? '超级管理员视图 (完整权限)' : '普通用户视图 (只读展示)'}
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              可实时接入与调整图片及视频大模型 endpoint、API Key、推荐匹配模型算法。
+              系统根据当前用户角色（{userRole === 'admin' ? '管理员' : '普通用户'}）自动匹配并接入模型配置。
             </p>
           </div>
         </div>
-
-        <button
-          onClick={onToggleRole}
-          className="px-4 py-2 rounded-lg border border-slate-200/80 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold transition-all shadow-2xs flex items-center gap-2 shrink-0 cursor-pointer"
-        >
-          <Eye className="w-4 h-4 text-slate-500" />
-          <span>切换视角: {userRole === 'admin' ? '普通用户视图' : '管理员模式'}</span>
-        </button>
       </div>
 
       {/* Mode / Tabs Bar */}
@@ -318,7 +328,10 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
               className="px-4 py-2 rounded-lg text-xs font-semibold bg-white border border-slate-200/80 hover:bg-slate-50 text-slate-700 transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer"
             >
               <Plus className="w-4 h-4 text-blue-600" />
-              <span>新增{activeTab === 'image' ? '图片' : '视频'} AI 模型</span>
+              <span>
+                新增
+                {activeTab === 'text' ? '文本' : activeTab === 'image' ? '图片' : '视频'} AI 模型
+              </span>
             </button>
           )}
 
@@ -342,16 +355,45 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
 
       {/* Models Grid */}
       <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-2xs">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {(activeTab === 'text'
-            ? (localConfig.textModels || [])
-            : activeTab === 'image'
-            ? localConfig.imageModels
-            : localConfig.videoModels
-          ).map((model: ModelMetadata) => {
-              const testResult = testResults[model.id];
-              const isTesting = testingModelId === model.id;
-              const isKeyShown = Boolean(showKeyMap[model.id]);
+        {(() => {
+          const currentModels =
+            activeTab === 'text'
+              ? localConfig.textModels || []
+              : activeTab === 'image'
+              ? localConfig.imageModels || []
+              : localConfig.videoModels || [];
+
+          if (currentModels.length === 0) {
+            return (
+              <div className="py-12 px-4 text-center space-y-4">
+                <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto border border-blue-200/60">
+                  <Cpu className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    当前分类下暂无已加载的 AI 模型
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+                    系统已内置 SQLite 嵌入式数据库并自动同步 11 款实测可用模型（Gemini 3.6 Flash、GPT Image 1、Seedance 2.0 等）。点击下方按钮可立即一键同步！
+                  </p>
+                </div>
+                <button
+                  onClick={reloadModelsFromApi}
+                  className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold shadow-2xs transition-all cursor-pointer inline-flex items-center gap-2"
+                >
+                  <Activity className="w-4 h-4" />
+                  <span>一键同步后端数据库预置模型</span>
+                </button>
+              </div>
+            );
+          }
+
+          return (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {currentModels.map((model: ModelMetadata) => {
+                const testResult = testResults[model.id];
+                const isTesting = testingModelId === model.id;
+                const isKeyShown = Boolean(showKeyMap[model.id]);
 
               return (
                 <div
@@ -403,11 +445,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
 
                         <button
                           disabled={userRole !== 'admin'}
-                          onClick={() =>
-                            activeTab === 'image'
-                              ? handleToggleEnableImage(model.id as any)
-                              : handleToggleEnableVideo(model.id as any)
-                          }
+                          onClick={() => handleToggleEnable(model.id, activeTab)}
                           className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
                             model.enabled
                               ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
@@ -420,13 +458,22 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
                     </div>
 
                     <div className="mt-3 p-3 rounded-lg bg-slate-50 border border-slate-200/80 space-y-2 text-xs font-mono">
+                      <div className="flex items-center justify-between text-slate-600 gap-2">
+                        <span className="flex items-center gap-1 font-semibold text-slate-700 shrink-0">
+                          <Server className="w-3.5 h-3.5 text-blue-600" />
+                          <span>model_code:</span>
+                        </span>
+                        <span className="truncate max-w-[240px] text-slate-800 font-medium">
+                          {model.modelCode || model.id}
+                        </span>
+                      </div>
                       <div className="flex items-center justify-between text-slate-600">
                         <span className="flex items-center gap-1 font-semibold text-slate-700">
                           <Globe className="w-3.5 h-3.5 text-blue-600" />
                           <span>Base URL:</span>
                         </span>
                         <span className="truncate max-w-[240px] text-slate-800 font-medium">
-                          {model.baseUrl || 'https://generativelanguage.googleapis.com'}
+                          {model.baseUrl || 'https://api3.wlai.vip/v1'}
                         </span>
                       </div>
 
@@ -483,11 +530,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
 
                     {userRole === 'admin' && model.enabled && !model.isDefault && (
                       <button
-                        onClick={() =>
-                          activeTab === 'image'
-                            ? handleSetDefaultImage(model.id as any)
-                            : handleSetDefaultVideo(model.id as any)
-                        }
+                        onClick={() => handleSetDefault(model.id, activeTab)}
                         className="text-xs text-blue-600 hover:text-blue-700 font-semibold flex items-center gap-1 cursor-pointer"
                       >
                         <Sliders className="w-3.5 h-3.5" />
@@ -497,9 +540,10 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
                   </div>
                 </div>
               );
-            }
-          )}
-        </div>
+            })}
+          </div>
+        );
+      })()}
       </div>
 
       {/* Edit Form Modal */}
@@ -509,7 +553,11 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
                 <Server className="w-4 h-4 text-blue-600" />
-                <span>{editingModel ? '编辑 AI 模型' : `新增${formType === 'image' ? '图片' : '视频'} AI 模型`}</span>
+                <span>
+                  {editingModel
+                    ? '编辑 AI 模型'
+                    : `新增${formType === 'text' ? '文本' : formType === 'image' ? '图片' : '视频'} AI 模型`}
+                </span>
               </h3>
               <button
                 onClick={() => setIsFormOpen(false)}

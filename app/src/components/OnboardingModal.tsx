@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Sparkles,
@@ -11,6 +11,7 @@ import {
   Layers,
   Cpu,
   HelpCircle,
+  Play,
 } from 'lucide-react';
 
 interface OnboardingModalProps {
@@ -26,23 +27,24 @@ const ONBOARDING_STEPS = [
     title: '欢迎体验 AI 爆款视频反推与重构工作台',
     tagline: '短视频反向工程 · 结构化 AIGC 商业落地',
     description:
-      '本工作台基于 BUV (Bottom-Up Video) 爆款视频反推算法，将爆款短视频或 Live 图精准拆解，并重构为高转化率带货视频工程。',
+      '本工作台基于 BUV (Bottom-Up Video) 爆款视频反推算法，将已有的爆款短视频或静态参考图拆解为可复用的要素，端到端复刻同款高转化率内容。',
     highlights: [
-      { icon: Film, label: '全流程 5 步贯通', desc: '从视频视觉解析到镜头运镜、爆款脚本文案、BGM卡点及成片导出' },
-      { icon: BookOpen, label: '品牌卖点库深度绑定', desc: '自动注入产品核心配方、SGS 实测数据与合规避坑词' },
+      { icon: Film, label: '全流程 5 步贯通', desc: '包含 视觉抽帧拆解 → 运镜轨迹 → 爆款脚本文案 → BGM卡点 → 多轨视频合成导出' },
+      { icon: Sparkles, label: '内置素材智能匹配', desc: '选取内置爆款素材时，系统自动锁定专属来源平台（小红书/抖音）与博主人设' },
     ],
   },
   {
     id: 2,
     title: 'Step 1: 绑定品牌卖点与知识资产库',
-    tagline: '深度融合 DeepSeek V3 / R1 & GPT-4o 多模型',
+    tagline: '默认 Gemini 3.6 Flash，支持 GPT-4o / DeepSeek 多模型',
     description:
       '在【卖点库】中，你可以自由录入或选定不同产品。AI 卖点提炼引擎将帮助你一键提炼专业配方与高转化带货痛点。',
     highlights: [
       { icon: BookOpen, label: '自定义卖点与行业预设', desc: '提供美妆护肤、数码科技、食品饮料等丰富的行业爆款产品模板' },
-      { icon: Cpu, label: 'AI 深度卖点润色', desc: '支持 DeepSeek V3 / R1 / GPT-4o / Gemini 一键润色提炼规范卖点' },
+      { icon: Cpu, label: 'AI 深度卖点润色', desc: '默认 Gemini 3.6 Flash，亦可切换 GPT-4o / DeepSeek 一键润色卖点' },
       { icon: CheckCircle2, label: '合规禁忌词智能避坑', desc: '文案生成时自动规避极限词与违规广告词，确保商业投放安全' },
     ],
+    actionType: 'knowledge',
   },
   {
     id: 3,
@@ -51,11 +53,11 @@ const ONBOARDING_STEPS = [
     description:
       '在工作台主区域，你将体验到清晰递进的 5 步爆款视频生成与剪辑模块：',
     pipelineItems: [
-      { step: 'Step 1', title: '视觉抽帧与静态图 Prompt', desc: '提取视频黄金帧，生成适配 Imagen/Midjourney 的提示词' },
-      { step: 'Step 2', title: '运镜轨迹与动态 Prompt', desc: '设定推拉摇移运镜，支持发送至 AI 视频渲染引擎（Veo3 / Kling）' },
-      { step: 'Step 3', title: '爆款带货脚本文案', desc: '黄金 3 秒 Hook 抓人眼球，结合卖点库生成口播与爆款花字' },
-      { step: 'Step 4', title: '智能卡点 BGM & 剪辑', desc: '匹配抖音/小红书热歌 BPM，并提供人工精细剪辑（字体/音效/BGM）' },
-      { step: 'Step 5', title: '综合成片预览与工程打包', desc: '实时合成视频预览，提供高清 MP4、视频字幕与剪映草稿工程导出' },
+      { step: 'Step 1', title: '视觉抽帧与静态图 Prompt', desc: '提取视频黄金帧与风格要素，生成适配 GPT Image / Seedream 提示词' },
+      { step: 'Step 2', title: '运镜轨迹与动态 Prompt', desc: '设定推拉摇移运镜，支持发送至 Seedance / Veo AI 视频生成引擎' },
+      { step: 'Step 3', title: '爆款带货脚本文案', desc: '黄金 3 秒 Hook 抓人眼球，按平台（抖音/小红书）精准生成带货文本' },
+      { step: 'Step 4', title: '智能卡点 BGM 匹配', desc: '推荐高质量确权 BGM，计算 BPM 重音卡点点位与商业合规授权' },
+      { step: 'Step 5', title: '综合成片预览与真 MP4 导出', desc: '实时多轨 Timeline 预览，一键导出最终 MP4 视频与工程包' },
     ],
   },
   {
@@ -66,8 +68,8 @@ const ONBOARDING_STEPS = [
       '侧边栏导航为你提供了完善的专业辅助矩阵，提升创作效率与控制粒度：',
     highlights: [
       { icon: Layers, label: '爆款预设模版库', desc: '内置美妆护肤、数码测评、美食探店等热门短视频爆款模板' },
-      { icon: Cpu, label: 'AI 模型配置中心', desc: '自由配置 DeepSeek、GPT-4o、Gemini 3.6 及 Imagen/Veo3 API 密钥' },
-      { icon: Film, label: '视频素材与后台任务', desc: '管理上传的视频素材与后台正在运行的 AI 高并发渲染任务' },
+      { icon: Cpu, label: 'AI 模型配置中心', desc: '默认 Gemini 3.6 Flash + GPT Image 1，云雾网关极速响应' },
+      { icon: Film, label: '素材管理与后台任务', desc: '管理上传的素材库与后台高并发全自动 AI 贯通任务' },
     ],
   },
   {
@@ -75,20 +77,43 @@ const ONBOARDING_STEPS = [
     title: '准备完毕！开启你的第一个爆款生成',
     tagline: '开启商业落地级短视频重构',
     description:
-      '点击开始体验，工作台将为你呈现完整的反推与重构成果！',
+      '你可以直接启动全自动贯通反推，也可以手动逐步体验每个步骤的精细控制！',
     highlights: [
-      { icon: Sparkles, label: '全流程智能贯通', desc: '自动无缝链接 5 步流程，极速获得完整爆款成果工程' },
-      { icon: Film, label: '人工精细剪辑与微调', desc: '支持随时微调画面 Prompt、文案风格、替换 BGM 与修剪轨道' },
+      { icon: Sparkles, label: '全流程智能贯通', desc: '点击「一键全自动贯通反推」，极速获取包含全套产物的完整爆款工程' },
+      { icon: Film, label: '人工精细剪辑与微调', desc: '随时查看与编辑 Prompt、切换平台预览模式及导出 MP4 视频' },
     ],
+    actionType: 'start',
   },
 ];
 
 export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   isOpen,
   onClose,
+  onStartAutoPipeline,
+  onOpenKnowledge,
 }) => {
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [dontShowAgain, setDontShowAgain] = useState(false);
+
+  // Keyboard navigation support
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleComplete();
+      } else if (e.key === 'ArrowRight') {
+        if (currentStepIndex < ONBOARDING_STEPS.length - 1) {
+          setCurrentStepIndex((prev) => prev + 1);
+        }
+      } else if (e.key === 'ArrowLeft') {
+        if (currentStepIndex > 0) {
+          setCurrentStepIndex((prev) => prev - 1);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, currentStepIndex]);
 
   if (!isOpen) return null;
 
@@ -118,8 +143,13 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs overflow-y-auto">
-      <div className="bg-white text-slate-900 border border-slate-200/90 rounded-2xl w-full max-w-2xl shadow-xl overflow-hidden my-auto flex flex-col">
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget) handleComplete();
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs overflow-y-auto"
+    >
+      <div className="bg-white text-slate-900 border border-slate-200/90 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden my-auto flex flex-col">
         {/* Header Progress Bar */}
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/80">
           <div className="flex items-center gap-2">
@@ -152,7 +182,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
           <button
             onClick={handleComplete}
             className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
-            title="关闭引导"
+            title="关闭指南 (Esc)"
           >
             <X className="w-4 h-4" />
           </button>
@@ -231,6 +261,22 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                   ))}
                 </div>
               )}
+
+              {/* Quick Action Button for Knowledge Page */}
+              {step.actionType === 'knowledge' && onOpenKnowledge && (
+                <div className="pt-1">
+                  <button
+                    onClick={() => {
+                      handleComplete();
+                      onOpenKnowledge();
+                    }}
+                    className="px-3.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-blue-700 font-semibold text-xs transition-colors flex items-center gap-1.5 cursor-pointer border border-slate-200"
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>前往【卖点库与 AI 润色】页面</span>
+                  </button>
+                </div>
+              )}
             </motion.div>
           </AnimatePresence>
         </div>
@@ -259,12 +305,26 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             )}
 
             {isLast ? (
-              <button
-                onClick={handleComplete}
-                className="px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-2xs transition-all cursor-pointer"
-              >
-                开始体验工作台
-              </button>
+              <div className="flex items-center gap-2">
+                {onStartAutoPipeline && (
+                  <button
+                    onClick={() => {
+                      handleComplete();
+                      onStartAutoPipeline();
+                    }}
+                    className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>一键全自动反推工程</span>
+                  </button>
+                )}
+                <button
+                  onClick={handleComplete}
+                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs shadow-2xs transition-all cursor-pointer"
+                >
+                  开始体验工作台
+                </button>
+              </div>
             ) : (
               <button
                 onClick={handleNext}

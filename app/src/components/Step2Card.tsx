@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Step2Inputs, Step2Output, Step1Output, StepStatus } from '../types';
+import { CandidateImageItem, Step2Inputs, Step2Output, Step1Output, StepStatus } from '../types';
 import { copyToClipboard, downloadJsonFile } from '../utils/format';
 import {
   Video,
@@ -21,9 +21,17 @@ import {
   Cpu,
   Maximize2,
   Minimize2,
+  Image as ImageIcon,
+  Grid,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  Upload,
+  X,
 } from 'lucide-react';
-import { VideoModelName, ModelConfigState } from '../data/models';
+import { ModelConfigState } from '../data/models';
 import { PromptEditorModal } from './PromptEditorModal';
+import { StepModelPicker } from './StepModelPicker';
 
 interface Step2CardProps {
   inputs: Step2Inputs;
@@ -35,6 +43,7 @@ interface Step2CardProps {
   onUpdateOutput?: (updatedOutput: Partial<Step2Output>) => void;
   onSyncFromStep1?: () => void;
   onRun: () => void;
+  onAbort?: () => void;
   onReset: () => void;
   onPrev: () => void;
   onNext: () => void;
@@ -42,7 +51,7 @@ interface Step2CardProps {
   upstreamStale?: boolean;
 }
 
-export const Step2Card: React.FC<Step2CardProps> = ({
+export const Step2Card: React.FC<Step2CardProps> = React.memo(({
   inputs,
   output,
   step1Output,
@@ -52,6 +61,7 @@ export const Step2Card: React.FC<Step2CardProps> = ({
   onUpdateOutput,
   onSyncFromStep1,
   onRun,
+  onAbort,
   onReset,
   onPrev,
   onNext,
@@ -63,24 +73,101 @@ export const Step2Card: React.FC<Step2CardProps> = ({
   const [isPromptEditorOpen, setIsPromptEditorOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  // AI 生图候选集状态
+  const [isGeneratingCandidates, setIsGeneratingCandidates] = useState(false);
+  const [zoomImageUrl, setZoomImageUrl] = useState<string | null>(null);
+
   const isRunning = status === 'running';
   const isCompleted = status === 'completed' && Boolean(output);
 
-  // Enabled Video Models
-  const enabledVideoModels = modelConfig.videoModels.filter((m) => m.enabled);
-
-  // Auto-recommendation：优先星河 Seedance 中转
+  // Auto-pick defaults when model config loads
   useEffect(() => {
-    if (modelConfig.autoRecommendationEnabled && !inputs.videoModel) {
-      if (inputs.videoTone === 'xiaohongshu_healing') {
-        onUpdateInputs({ videoModel: 'Seedance 2.0' });
-      } else if (inputs.videoTone === 'douyin_beat') {
-        onUpdateInputs({ videoModel: 'Seedance 2.0 Fast' });
-      } else {
-        onUpdateInputs({ videoModel: 'Seedance 2.0 Fast' });
-      }
+    if (!modelConfig.autoRecommendationEnabled) return;
+    const patch: Partial<Step2Inputs> = {};
+    if (!inputs.textModel) {
+      patch.textModel =
+        modelConfig.defaultTextModel ||
+        modelConfig.textModels.find((m) => m.enabled && m.isDefault)?.id ||
+        modelConfig.textModels.find((m) => m.enabled)?.id ||
+        'Gemini 3.6 Flash';
     }
-  }, [inputs.videoTone, modelConfig.autoRecommendationEnabled]);
+    if (!inputs.videoModel) {
+      patch.videoModel =
+        modelConfig.defaultVideoModel ||
+        modelConfig.videoModels.find((m) => m.enabled && m.isDefault)?.id ||
+        modelConfig.videoModels.find((m) => m.enabled)?.id ||
+        'Seedance 2.0 Fast';
+    }
+    if (Object.keys(patch).length) onUpdateInputs(patch);
+  }, [
+    modelConfig.autoRecommendationEnabled,
+    modelConfig.defaultTextModel,
+    modelConfig.defaultVideoModel,
+    modelConfig.textModels.length,
+    modelConfig.videoModels.length,
+  ]);
+
+  // 批量调用生图大模型（GPT-Image-1 / 云雾）生成 3 张素材选优
+  const handleGenerateCandidates = async () => {
+    const prompt =
+      inputs.static_image_prompt ||
+      step1Output?.static_image_prompt ||
+      '高清商业爆款产品质感拉丝特写，小红书极简风摄影';
+    if (!prompt.trim()) {
+      alert('请先填写或解构出 static_image_prompt 生图提示词');
+      return;
+    }
+    setIsGeneratingCandidates(true);
+    try {
+      const promises = [1, 2, 3].map(() =>
+        fetch('/api/pipeline/generate-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt,
+            imageModel: inputs.imageModel,
+          }),
+        }).then((res) => res.json())
+      );
+
+      const results = await Promise.all(promises);
+      const newCandidates: CandidateImageItem[] = [];
+
+      results.forEach((res, idx) => {
+        if (res.success && res.data?.imageUrl) {
+          newCandidates.push({
+            id: `cand_${Date.now()}_${idx}`,
+            url: res.data.imageUrl,
+            promptUsed: res.data.promptUsed || prompt,
+            createdAt: Date.now(),
+          });
+        }
+      });
+
+      if (newCandidates.length > 0) {
+        const existing = inputs.candidateImages || [];
+        const merged = [...newCandidates, ...existing];
+        onUpdateInputs({
+          candidateImages: merged,
+          selectedImageId: newCandidates[0].id,
+          imageUrl: newCandidates[0].url,
+        });
+      } else {
+        alert('生成素材图失败，请检查画图大模型配置与 API Key');
+      }
+    } catch (err: any) {
+      alert(`生成生图素材失败: ${err?.message || '网络异常'}`);
+    } finally {
+      setIsGeneratingCandidates(false);
+    }
+  };
+
+  const handleSelectCandidate = (cand: CandidateImageItem) => {
+    onUpdateInputs({
+      selectedImageId: cand.id,
+      imageUrl: cand.url,
+    });
+  };
 
   const [seedanceWaitSec, setSeedanceWaitSec] = useState(0);
 
@@ -215,10 +302,6 @@ export const Step2Card: React.FC<Step2CardProps> = ({
     return map[type] || type;
   };
 
-  const currentSelectedModelMeta = enabledVideoModels.find(
-    (m) => m.id === (inputs.videoModel || 'Seedance 2.0 Fast')
-  );
-
   return (
     <div
       className={
@@ -262,6 +345,7 @@ export const Step2Card: React.FC<Step2CardProps> = ({
             )}
           </button>
           <button
+            type="button"
             onClick={onPrev}
             className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-200/80 shadow-2xs hover:bg-slate-50 transition-all cursor-pointer flex items-center gap-1.5"
           >
@@ -270,6 +354,7 @@ export const Step2Card: React.FC<Step2CardProps> = ({
           </button>
 
           <button
+            type="button"
             onClick={onReset}
             className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-200/80 shadow-2xs hover:bg-slate-50 transition-all cursor-pointer flex items-center gap-1.5"
           >
@@ -279,6 +364,7 @@ export const Step2Card: React.FC<Step2CardProps> = ({
 
           {isCompleted && (
             <button
+              type="button"
               onClick={() => downloadJsonFile(output, 'step2_video_prompt.json')}
               className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-200/80 shadow-2xs hover:bg-slate-50 transition-all cursor-pointer flex items-center gap-1.5"
             >
@@ -287,30 +373,55 @@ export const Step2Card: React.FC<Step2CardProps> = ({
             </button>
           )}
 
-          <button
-            onClick={onRun}
-            disabled={isRunning}
-            className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-          >
-            {isRunning ? (
-              <>
+          {isRunning ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled
+                className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-600/80 text-white shadow-2xs flex items-center gap-1.5 cursor-wait"
+              >
                 <Sparkles className="w-3.5 h-3.5 animate-spin" />
                 <span>AI 动态合成中...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>运行</span>
-              </>
-            )}
-          </button>
+              </button>
+              {onAbort && (
+                <button
+                  type="button"
+                  onClick={onAbort}
+                  className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-xs transition-all flex items-center gap-1 cursor-pointer"
+                  title="中断并终止当前动态合成阶段"
+                >
+                  <span>终止阶段</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={onRun}
+              className="px-4 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>运行</span>
+            </button>
+          )}
 
           <button
-            onClick={onNext}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white text-slate-700 border border-slate-200/80 shadow-2xs hover:bg-slate-50 transition-all cursor-pointer flex items-center gap-1.5"
+            type="button"
+            onClick={() => {
+              if (!isCompleted) {
+                alert('请先运行当前步骤生成视频 Prompt 再进入下一步');
+                return;
+              }
+              onNext();
+            }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold shadow-2xs transition-all flex items-center gap-1.5 ${
+              isCompleted
+                ? 'bg-blue-600 hover:bg-blue-500 text-white cursor-pointer'
+                : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+            }`}
           >
             <span>下一步</span>
-            <ArrowRight className="w-3.5 h-3.5 text-slate-500" />
+            <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
@@ -321,7 +432,7 @@ export const Step2Card: React.FC<Step2CardProps> = ({
           <div className="text-xs font-semibold text-slate-700 uppercase tracking-wider flex items-center justify-between">
             <div className="flex items-center gap-1.5">
               <Video className="w-4 h-4 text-slate-500" />
-              <span>1. 继承第 1 步 Prompt & 视频控制参数</span>
+              <span>1. 首帧素材模式与视频参数设定</span>
             </div>
           </div>
 
@@ -356,12 +467,192 @@ export const Step2Card: React.FC<Step2CardProps> = ({
                 title="一键拉取 Step 1 最新 static_image_prompt"
               >
                 <RefreshCw className={`w-3 h-3 ${upstreamStale ? 'text-amber-600' : 'text-emerald-600'}`} />
-                <span>{upstreamStale ? '同步上游产物' : '同步 Step 1 结果'}</span>
               </button>
             )}
           </div>
 
-          {/* Inherited Static Image Prompt */}
+          {/* Mode Selector Tabs (Tab 1: AI 生图多素材生成选优 | Tab 2: 已有首帧图/Step1素材) */}
+          <div className="p-1.5 bg-slate-100/90 rounded-xl border border-slate-200/80 flex items-center gap-1.5 text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => onUpdateInputs({ tabMode: 'text2image' })}
+              className={`flex-1 py-2 px-2.5 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                inputs.tabMode !== 'direct_image'
+                  ? 'bg-white text-blue-600 shadow-2xs border border-slate-200/80 font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+              <span>AI 生图选优</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => onUpdateInputs({ tabMode: 'direct_image' })}
+              className={`flex-1 py-2 px-2.5 rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                inputs.tabMode === 'direct_image'
+                  ? 'bg-white text-blue-600 shadow-2xs border border-slate-200/80 font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <ImageIcon className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <span>已有首帧图</span>
+            </button>
+          </div>
+
+          {/* Tab 1 Content: AI 生图大模型生成多个素材图 (候选选优) */}
+          {inputs.tabMode !== 'direct_image' ? (
+            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <Sparkles className="w-4 h-4 text-blue-600" />
+                  <span className="text-xs font-bold text-slate-800">生图大模型素材生成器</span>
+                </div>
+                <span className="text-[10px] text-slate-500">点击生成 3 张素材选优</span>
+              </div>
+
+              {/* 生图模型选择 */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-600 block mb-1">
+                  生图大模型 (Text-to-Image Engine)
+                </label>
+                <select
+                  value={inputs.imageModel || 'GPT Image 1'}
+                  onChange={(e) => onUpdateInputs({ imageModel: e.target.value })}
+                  className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-blue-500 shadow-2xs cursor-pointer"
+                >
+                  <option value="GPT Image 1">GPT Image 1 ★ 推荐（画质高、光影细腻）</option>
+                  <option value="云雾矢量模组">云雾 Vision 生图模组</option>
+                  <option value="Midjourney V6 Bridge">Midjourney V6.1 旗舰画质</option>
+                </select>
+              </div>
+
+              {/* 生图 Prompt */}
+              <div>
+                <label className="text-[11px] font-semibold text-slate-600 block mb-1">
+                  生图 Prompt (可自主微调)
+                </label>
+                <textarea
+                  value={inputs.static_image_prompt}
+                  onChange={(e) => onUpdateInputs({ static_image_prompt: e.target.value })}
+                  placeholder="请输入用于 AI 生图的详细视觉描写 Prompt..."
+                  className="w-full h-20 bg-white border border-slate-200 rounded-xl p-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 resize-none shadow-2xs"
+                />
+              </div>
+
+              {/* 生成 3 张素材图按钮 */}
+              <button
+                type="button"
+                onClick={handleGenerateCandidates}
+                disabled={isGeneratingCandidates}
+                className="w-full py-2.5 px-4 rounded-xl text-xs font-bold bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white shadow-2xs transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+              >
+                {isGeneratingCandidates ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>大模型并发生成 3 张素材图中...</span>
+                  </>
+                ) : (
+                  <>
+                    <Grid className="w-4 h-4" />
+                    <span>批量生成 3 张素材图选优 ▶</span>
+                  </>
+                )}
+              </button>
+
+              {/* Candidate Images Grid */}
+              {inputs.candidateImages && inputs.candidateImages.length > 0 ? (
+                <div className="space-y-1.5 pt-1">
+                  <div className="flex items-center justify-between text-[11px] text-slate-600 font-semibold">
+                    <span>素材候选池 ({inputs.candidateImages.length} 张)</span>
+                    <span className="text-[10px] text-blue-600">点击选中作为视频首帧</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {inputs.candidateImages.map((cand, idx) => {
+                      const isSelected =
+                        inputs.selectedImageId === cand.id || inputs.imageUrl === cand.url;
+                      return (
+                        <div
+                          key={cand.id || idx}
+                          onClick={() => handleSelectCandidate(cand)}
+                          className={`relative aspect-square rounded-lg overflow-hidden border-2 cursor-pointer transition-all group ${
+                            isSelected
+                              ? 'border-blue-600 ring-2 ring-blue-400/40 shadow-xs'
+                              : 'border-slate-200 hover:border-blue-300'
+                          }`}
+                        >
+                          <img
+                            src={cand.url}
+                            alt={`素材 ${idx + 1}`}
+                            className="w-full h-full object-cover"
+                          />
+                          {isSelected && (
+                            <div className="absolute top-1 left-1 bg-blue-600 text-white p-0.5 rounded-full shadow-2xs">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                            </div>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setZoomImageUrl(cand.url);
+                            }}
+                            className="absolute bottom-1 right-1 p-1 bg-slate-900/80 text-white rounded-md opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="放大预览图片"
+                          >
+                            <Maximize2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 bg-white/80 border border-dashed border-slate-200 rounded-lg text-center text-[11px] text-slate-500">
+                  尚无素材图，点击上按钮即可由大模型并发生成 3 张爆款素材图选优
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Tab 2 Content: 已有首帧图 / 继承 Step 1 素材 */
+            <div className="space-y-3">
+              {inputs.imageUrl ? (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-slate-600 font-semibold">
+                    <span>🖼 当前首帧素材图片</span>
+                    <span className="text-[10px] text-emerald-600 font-mono">已就绪</span>
+                  </div>
+                  <div className="relative aspect-video rounded-lg overflow-hidden border border-slate-200 bg-slate-900 group">
+                    <img src={inputs.imageUrl} alt="首帧图片" className="w-full h-full object-contain" />
+                    <button
+                      type="button"
+                      onClick={() => setZoomImageUrl(inputs.imageUrl)}
+                      className="absolute top-2 right-2 p-1.5 bg-slate-900/80 text-white rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="放大预览"
+                    >
+                      <Maximize2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl text-xs text-amber-800">
+                  ⚠️ 尚未检测到首帧图片（请切换到【AI 生图选优】Tab 生成素材或在 Step 1 上传图片）
+                </div>
+              )}
+
+              <div>
+                <label className="text-xs font-semibold text-slate-700 block mb-1">
+                  第 1 步生成的 static_image_prompt (自动接入)
+                </label>
+                <textarea
+                  value={inputs.static_image_prompt}
+                  onChange={(e) => onUpdateInputs({ static_image_prompt: e.target.value })}
+                  placeholder="来自于第 1 步的静态图提示词..."
+                  className="w-full h-24 bg-white border border-slate-200 rounded-xl p-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 resize-none shadow-2xs"
+                />
+              </div>
+            </div>
+          )}
           <div>
             <label className="text-xs font-semibold text-slate-700 block mb-1">
               第 1 步生成的 static_image_prompt (自动接入)
@@ -408,48 +699,25 @@ export const Step2Card: React.FC<Step2CardProps> = ({
             </div>
           </div>
 
-          {/* Video Model Selector with Non-technical Metadata */}
-          <div className="p-3.5 bg-slate-50 border border-slate-200/80 rounded-xl shadow-2xs space-y-2">
-            <div className="flex items-center justify-between text-xs font-semibold text-slate-800">
-              <span className="flex items-center gap-1.5">
-                <Cpu className="w-3.5 h-3.5 text-blue-600" />
-                目标视频生成 AI 模型 (Video Model)
-              </span>
-              <span className="text-[10px] text-blue-700 bg-blue-50 border border-blue-200/60 px-2 py-0.5 rounded-full font-semibold">
-                SOTA 运镜引擎
-              </span>
-            </div>
-
-            <select
-              value={inputs.videoModel || 'Seedance 2.0 Fast'}
-              onChange={(e) => onUpdateInputs({ videoModel: e.target.value as any })}
-              className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-blue-500 shadow-2xs cursor-pointer"
-            >
-              {enabledVideoModels.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name} — {m.recommendedScenario} ({m.speedRating})
-                </option>
-              ))}
-            </select>
-
-            {currentSelectedModelMeta && (
-              <div className="text-[11px] bg-white p-2.5 rounded-lg border border-slate-200/80 text-slate-700 space-y-1 shadow-2xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">推荐场景:</span>
-                  <span className="font-semibold text-slate-800">{currentSelectedModelMeta.recommendedScenario}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">预估速度:</span>
-                  <span className="font-semibold text-slate-800">
-                    {currentSelectedModelMeta.speedRating} ({currentSelectedModelMeta.speedMs})
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-500">动态质量:</span>
-                  <span className="font-semibold text-slate-800">{currentSelectedModelMeta.qualityRating}</span>
-                </div>
-              </div>
-            )}
+          {/* 模型选择：运镜 LLM + 图生视频 */}
+          <div className="space-y-2">
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">模型选择</p>
+            <StepModelPicker
+              category="text"
+              title="运镜 Prompt 文本模型"
+              models={modelConfig.textModels}
+              value={inputs.textModel}
+              defaultId={modelConfig.defaultTextModel}
+              onChange={(id) => onUpdateInputs({ textModel: id })}
+            />
+            <StepModelPicker
+              category="video"
+              title="图生视频 / Seedance 模型"
+              models={modelConfig.videoModels}
+              value={inputs.videoModel}
+              defaultId={modelConfig.defaultVideoModel}
+              onChange={(id) => onUpdateInputs({ videoModel: id })}
+            />
           </div>
         </div>
 
@@ -546,6 +814,7 @@ export const Step2Card: React.FC<Step2CardProps> = ({
 
                     <div className="flex items-center gap-1.5">
                       <button
+                        type="button"
                         onClick={() => setIsPromptEditorOpen(true)}
                         className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-xs border border-slate-700 transition-colors cursor-pointer"
                         title="查看与完整编辑 Video Prompt"
@@ -555,6 +824,7 @@ export const Step2Card: React.FC<Step2CardProps> = ({
                       </button>
 
                       <button
+                        type="button"
                         onClick={handleCopyPrompt}
                         className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs shadow-2xs transition-colors cursor-pointer"
                       >
@@ -573,6 +843,7 @@ export const Step2Card: React.FC<Step2CardProps> = ({
                       💡 核心资产：可编辑运镜逻辑并直接重新生成视频动画
                     </span>
                     <button
+                      type="button"
                       onClick={() => setIsPromptEditorOpen(true)}
                       className="text-xs font-semibold text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
                     >
@@ -595,56 +866,123 @@ export const Step2Card: React.FC<Step2CardProps> = ({
                   </div>
                 </div>
 
-                {/* 星河 Seedance 中转状态 */}
-                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                {/* 星河 Seedance 中转状态与 4 阶段进度条 */}
+                <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-slate-400 font-mono uppercase">星河 Seedance 中转</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-slate-300 font-mono">星河 Seedance 视频生成引擎</span>
+                      <span className="text-[10px] text-slate-500 font-mono">
+                        ({output.seedanceModel || inputs.videoModel || 'Seedance 2.0 Fast'})
+                      </span>
+                    </div>
+
                     <span
-                      className={`text-[10px] px-2 py-0.5 rounded-full border font-semibold ${
-                        output.seedanceStatus === 'success' || output.seedanceStatus === 'completed'
-                          ? 'bg-emerald-900/40 text-emerald-300 border-emerald-700/50'
-                          : output.seedanceStatus === 'processing' ||
-                              (output.seedanceTaskId && !output.previewVideoUrl)
-                          ? 'bg-amber-900/40 text-amber-300 border-amber-700/50'
-                          : output.seedanceStatus === 'not_configured' ||
-                              output.seedanceStatus === 'unconfigured'
-                          ? 'bg-slate-800 text-slate-300 border-slate-700'
-                          : output.seedanceStatus === 'submit_failed' ||
-                              output.seedanceStatus === 'error' ||
-                              output.seedanceStatus === 'timeout'
-                          ? 'bg-rose-900/40 text-rose-300 border-rose-700/50'
-                          : 'bg-blue-900/40 text-blue-300 border-blue-700/50'
+                      className={`text-[10px] px-2.5 py-0.5 rounded-full border font-bold flex items-center gap-1 ${
+                        output.seedanceStatus === 'success' || output.seedanceStatus === 'completed' || output.previewVideoUrl
+                          ? 'bg-emerald-950 text-emerald-300 border-emerald-700/60'
+                          : output.seedanceStatus === 'processing' || (output.seedanceTaskId && !output.previewVideoUrl)
+                          ? 'bg-amber-950 text-amber-300 border-amber-700/60 animate-pulse'
+                          : output.seedanceStatus === 'submit_failed' || output.seedanceStatus === 'error' || output.seedanceStatus === 'timeout'
+                          ? 'bg-rose-950 text-rose-300 border-rose-700/60'
+                          : 'bg-slate-800 text-slate-300 border-slate-700'
                       }`}
                     >
-                      {output.seedanceStatus || 'prompt_only'}
-                      {output.seedanceTaskId && !output.previewVideoUrl && seedanceWaitSec > 0
-                        ? ` · ${seedanceWaitSec}s`
-                        : ''}
+                      {output.seedanceStatus === 'success' || output.seedanceStatus === 'completed' || output.previewVideoUrl
+                        ? '✅ 视频生成成功'
+                        : output.seedanceTaskId && !output.previewVideoUrl
+                        ? `⚡ 渲染中 · 已等待 ${seedanceWaitSec}s`
+                        : output.seedanceStatus || 'prompt_only'}
                     </span>
                   </div>
+
+                  {/* 4-Stage Progress Stepper when Task in Progress */}
                   {output.seedanceTaskId && !output.previewVideoUrl && (
-                    <div className="space-y-1">
-                      <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
+                    <div className="space-y-2.5 pt-1 bg-slate-900/90 p-3 rounded-xl border border-slate-800">
+                      {/* Step Indicator Badges */}
+                      <div className="grid grid-cols-4 gap-1 text-center text-[10px] font-semibold">
                         <div
-                          className="h-full bg-amber-500/80 transition-all duration-500"
-                          style={{ width: `${Math.min(95, (seedanceWaitSec / 180) * 100)}%` }}
-                        />
+                          className={`p-1.5 rounded-lg border transition-all ${
+                            seedanceWaitSec >= 0 && seedanceWaitSec < 12
+                              ? 'bg-blue-950 text-blue-300 border-blue-600/80 shadow-xs'
+                              : 'bg-slate-900 text-slate-500 border-slate-800'
+                          }`}
+                        >
+                          🚀 1. 服务器接收
+                        </div>
+                        <div
+                          className={`p-1.5 rounded-lg border transition-all ${
+                            seedanceWaitSec >= 12 && seedanceWaitSec < 120
+                              ? 'bg-amber-950 text-amber-300 border-amber-600/80 shadow-xs animate-pulse'
+                              : seedanceWaitSec >= 120
+                              ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800'
+                              : 'bg-slate-900 text-slate-500 border-slate-800'
+                          }`}
+                        >
+                          ⚡ 2. AI扩散渲染
+                        </div>
+                        <div
+                          className={`p-1.5 rounded-lg border transition-all ${
+                            seedanceWaitSec >= 120 && seedanceWaitSec < 150
+                              ? 'bg-violet-950 text-violet-300 border-violet-600/80 shadow-xs animate-pulse'
+                              : seedanceWaitSec >= 150
+                              ? 'bg-emerald-950/60 text-emerald-400 border-emerald-800'
+                              : 'bg-slate-900 text-slate-500 border-slate-800'
+                          }`}
+                        >
+                          📦 3. 同步落盘
+                        </div>
+                        <div
+                          className={`p-1.5 rounded-lg border transition-all ${
+                            output.previewVideoUrl
+                              ? 'bg-emerald-950 text-emerald-300 border-emerald-600/80 shadow-xs'
+                              : 'bg-slate-900 text-slate-500 border-slate-800'
+                          }`}
+                        >
+                          ✅ 4. 生成完成
+                        </div>
                       </div>
-                      <p className="text-[10px] text-amber-200/80">
-                        正在轮询 Seedance 任务（约每 3s），已等待 {seedanceWaitSec}s / 180s
-                      </p>
+
+                      {/* Animated Progress Bar */}
+                      <div className="space-y-1">
+                        <div className="h-2 rounded-full bg-slate-800 overflow-hidden relative">
+                          <div
+                            className="h-full bg-gradient-to-r from-blue-500 via-amber-500 to-emerald-500 transition-all duration-500 rounded-full"
+                            style={{
+                              width: `${Math.min(96, Math.max(8, (seedanceWaitSec / 180) * 100))}%`,
+                            }}
+                          />
+                        </div>
+                        <div className="flex items-center justify-between text-[10px] text-slate-400">
+                          <span>
+                            {seedanceWaitSec < 12
+                              ? '正在分配星河 GPU 算力并入队...'
+                              : seedanceWaitSec < 120
+                              ? 'AI 正在推演物理运动与光影质感...'
+                              : '视频已生成完毕，正同步转存至本地渲染库...'}
+                          </span>
+                          <span className="font-mono text-amber-300">
+                            已耗时 {seedanceWaitSec}s / 预估 180s
+                          </span>
+                        </div>
+                      </div>
                     </div>
                   )}
-                  <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
+
+                  <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300 pt-1">
                     <div>
-                      <span className="text-slate-500">模型：</span>
-                      {output.seedanceModel || inputs.videoModel || 'Seedance 2.0 Fast'}
+                      <span className="text-slate-500">模型代码：</span>
+                      <span className="font-mono text-slate-200">
+                        {output.seedanceModel || inputs.videoModel || 'Seedance 2.0 Fast'}
+                      </span>
                     </div>
                     <div>
-                      <span className="text-slate-500">任务ID：</span>
-                      {output.seedanceTaskId || '—'}
+                      <span className="text-slate-500">任务 ID：</span>
+                      <span className="font-mono text-slate-200">
+                        {output.seedanceTaskId || '—'}
+                      </span>
                     </div>
                   </div>
+
                   {output.seedanceHint && (
                     <p className="text-[11px] text-slate-400">{output.seedanceHint}</p>
                   )}
@@ -652,43 +990,57 @@ export const Step2Card: React.FC<Step2CardProps> = ({
                     <p className="text-[11px] text-amber-300">{output.seedanceMaterialWarning}</p>
                   )}
                   {output.seedanceError && (
-                    <p className="text-[11px] text-rose-300">{output.seedanceError}</p>
+                    <p className="text-[11px] text-rose-300 bg-rose-950/60 p-2 rounded-lg border border-rose-900">
+                      ❌ {output.seedanceError}
+                    </p>
                   )}
+
+                  {/* Enhanced Interactive Video Preview Player */}
                   {output.previewVideoUrl && (
-                    <div className="space-y-2">
-                      <video
-                        src={output.previewVideoUrl}
-                        className="w-full max-h-48 rounded-lg bg-black object-contain border border-slate-800"
-                        controls
-                        playsInline
-                      />
-                      <div className="flex flex-wrap items-center gap-2">
+                    <div className="space-y-3 pt-2 border-t border-slate-800">
+                      <div className="flex items-center justify-between text-xs font-bold text-slate-200">
+                        <div className="flex items-center gap-1.5">
+                          <Film className="w-4 h-4 text-emerald-400" />
+                          <span>AI 生成视频效果预览 (Video Preview)</span>
+                        </div>
+                        <span className="text-[10px] text-emerald-400 font-mono">1080P HD · 60fps</span>
+                      </div>
+
+                      <div className="relative rounded-xl overflow-hidden bg-black border border-slate-800 shadow-md group">
+                        <video
+                          src={output.previewVideoUrl}
+                          className="w-full aspect-video object-contain max-h-64"
+                          controls
+                          autoPlay
+                          loop
+                          muted
+                          playsInline
+                        />
+                      </div>
+
+                      {/* Video Player Action Toolbar */}
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                         <a
                           href={output.previewVideoUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex text-[11px] text-blue-400 hover:underline"
+                          download="seedance_generated_video.mp4"
+                          className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs border border-slate-700 transition-colors flex items-center gap-1.5"
+                          title="下载原始高清 MP4 视频文件"
                         >
-                          打开生成视频
+                          <Download className="w-3.5 h-3.5" />
+                          <span>下载高清 MP4</span>
                         </a>
-                        {(output.seedanceStatus === 'success' ||
-                          output.seedanceStatus === 'completed' ||
-                          output.previewVideoUrl) && (
+
+                        <div className="flex items-center gap-2">
                           <button
                             type="button"
                             onClick={onNext}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold"
+                            className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
                           >
-                            视频已就绪 · 继续文案/合成
-                            <ArrowRight className="w-3 h-3" />
+                            <span>传送至 Step 3 生成文案</span>
+                            <ArrowRight className="w-3.5 h-3.5" />
                           </button>
-                        )}
+                        </div>
                       </div>
-                      {String(output.previewVideoUrl).includes('/uploads/renders/') && (
-                        <p className="text-[10px] text-emerald-400/90">
-                          已缓存到本地 renders，可供 Step5 FFmpeg 直接合成
-                        </p>
-                      )}
                     </div>
                   )}
                 </div>
@@ -743,6 +1095,35 @@ export const Step2Card: React.FC<Step2CardProps> = ({
           isRegenerating={isRunning}
         />
       )}
+      {/* Zoom Image Preview Modal */}
+      {zoomImageUrl && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={() => setZoomImageUrl(null)}
+        >
+          <div
+            className="relative max-w-4xl w-full bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden p-2 shadow-2xl flex flex-col items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="w-full flex items-center justify-between p-3 border-b border-slate-800 text-slate-200">
+              <span className="text-xs font-bold font-mono">高清首帧素材图全屏预览</span>
+              <button
+                onClick={() => setZoomImageUrl(null)}
+                className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 w-full flex items-center justify-center">
+              <img
+                src={zoomImageUrl}
+                alt="Zoomed"
+                className="max-h-[75vh] w-auto object-contain rounded-lg border border-slate-800"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
-};
+});

@@ -13,6 +13,9 @@ import {
   Layers,
   AlertCircle,
   CloudUpload,
+  Square,
+  Trash2,
+  XCircle,
 } from 'lucide-react';
 
 export interface AutoPipelineProgress {
@@ -30,6 +33,8 @@ interface StepProgressProps {
   pipelineData: PipelineData;
   onSelectStep: (stepId: StepId) => void;
   onRunFullPipelineAuto?: () => void;
+  onAbortFullPipeline?: () => void;
+  onClearWorkbench?: () => void;
   isAutoPipelineRunning?: boolean;
   autoProgress?: AutoPipelineProgress | null;
   /** Last auto-draft save time label, e.g. 14:32:01 */
@@ -53,11 +58,13 @@ export const STEP_CONFIG: Array<{
   { id: 5, title: '第 5 步', subtitle: '合成输出成品', icon: Film },
 ];
 
-export const StepProgress: React.FC<StepProgressProps> = ({
+export const StepProgress: React.FC<StepProgressProps> = React.memo(({
   currentStep,
   pipelineData,
   onSelectStep,
   onRunFullPipelineAuto,
+  onAbortFullPipeline,
+  onClearWorkbench,
   isAutoPipelineRunning = false,
   autoProgress = null,
   draftSavedLabel = null,
@@ -102,22 +109,22 @@ export const StepProgress: React.FC<StepProgressProps> = ({
               全自动上下文继承
             </span>
           </h2>
-          {draftSavedLabel && (
-            <button
-              type="button"
-              onClick={onOpenTasks}
-              className="px-2 py-0.5 rounded-full text-[10px] bg-amber-50 text-amber-800 border border-amber-200 font-medium flex items-center gap-1 hover:bg-amber-100 cursor-pointer"
-              title="工作台状态已自动保存；点击打开任务中心"
-            >
-              <CloudUpload className="w-3 h-3" />
-              草稿已保存 {draftSavedLabel}
-              {onOpenTasks && <span className="opacity-70">· 查看</span>}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onOpenTasks}
+            className={`px-2 py-0.5 rounded-full text-[10px] bg-amber-50 text-amber-800 border border-amber-200 font-medium flex items-center gap-1 hover:bg-amber-100 cursor-pointer transition-opacity duration-300 ${
+              draftSavedLabel ? 'opacity-100' : 'opacity-0 pointer-events-none'
+            }`}
+            title="工作台状态已自动保存；点击打开任务中心"
+          >
+            <CloudUpload className="w-3 h-3 text-amber-600" />
+            草稿已保存 {draftSavedLabel || ''}
+            {onOpenTasks && <span className="opacity-70">· 查看</span>}
+          </button>
         </div>
 
-        <div className="flex items-center gap-3">
-          <div className="text-xs text-slate-500 font-medium flex items-center gap-1.5">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="text-xs text-slate-500 font-medium flex items-center gap-1.5 mr-1">
             <span>完成度</span>
             <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 font-semibold text-xs border border-slate-200/80">
               {completedCount} / 5
@@ -129,32 +136,36 @@ export const StepProgress: React.FC<StepProgressProps> = ({
             )}
           </div>
 
-          {onRunFullPipelineAuto && (
+          {onClearWorkbench && (
             <button
-              onClick={onRunFullPipelineAuto}
-              disabled={isAutoPipelineRunning}
-              className={`inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 shadow-2xs transition-all cursor-pointer disabled:opacity-70 ${
-                isAutoPipelineRunning ? 'cursor-wait animate-pulse' : ''
-              }`}
+              onClick={onClearWorkbench}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-slate-700 hover:text-rose-700 bg-slate-100 hover:bg-rose-50 border border-slate-200 hover:border-rose-200 transition-all cursor-pointer shadow-xs"
+              title="一键清空工作台所有输入、产物与缓存"
             >
-              {isAutoPipelineRunning ? (
-                <>
-                  <Sparkles className="w-4 h-4 animate-spin text-white" />
-                  <span>
-                    Step {autoProgress?.step || currentStep}/5
-                    {autoProgress?.phase === 'seedance_wait'
-                      ? ` · 等视频 ${autoProgress.seedanceWaitSec || 0}s`
-                      : ''}
-                    ...
-                  </span>
-                </>
-              ) : (
-                <>
-                  <Zap className="w-4 h-4 fill-white text-white" />
-                  <span>一键全自动贯通反推 (Step 1→5)</span>
-                </>
-              )}
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>一键清空</span>
             </button>
+          )}
+
+          {isAutoPipelineRunning ? (
+            <button
+              onClick={onAbortFullPipeline}
+              className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 shadow-md transition-all cursor-pointer animate-pulse"
+              title="一键终止全自动贯通任务"
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+              <span>一键终止贯通</span>
+            </button>
+          ) : (
+            onRunFullPipelineAuto && (
+              <button
+                onClick={onRunFullPipelineAuto}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 shadow-2xs transition-all cursor-pointer"
+              >
+                <Zap className="w-4 h-4 fill-white text-white" />
+                <span>一键全自动贯通反推 (Step 1→5)</span>
+              </button>
+            )
           )}
         </div>
       </div>
@@ -278,4 +289,4 @@ export const StepProgress: React.FC<StepProgressProps> = ({
       </div>
     </div>
   );
-};
+});

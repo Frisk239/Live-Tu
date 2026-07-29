@@ -28,6 +28,20 @@ export const BgmPageView: React.FC<BgmPageViewProps> = ({ onBackToPipeline }) =>
   const [mood, setMood] = useState('治愈');
   const [file, setFile] = useState<File | null>(null);
 
+  // Filter & Search
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedMood, setSelectedMood] = useState<string>('all');
+
+  const filteredTracks = (tracks || []).filter((t) => {
+    if (!t) return false;
+    const matchesMood = selectedMood === 'all' || (t.mood && t.mood.includes(selectedMood));
+    const trackName = (t.track_name || '').toLowerCase();
+    const trackArtist = (t.artist || '').toLowerCase();
+    const query = (searchQuery || '').toLowerCase();
+    const matchesSearch = !query || trackName.includes(query) || trackArtist.includes(query);
+    return matchesMood && matchesSearch;
+  });
+
   const loadTracks = async () => {
     setLoading(true);
     try {
@@ -205,34 +219,47 @@ export const BgmPageView: React.FC<BgmPageViewProps> = ({ onBackToPipeline }) =>
           </div>
         ) : (
           <div className="space-y-2">
-            {tracks.map((t) => (
-              <div
-                key={t.id}
-                className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 hover:border-violet-200 transition-all"
-              >
-                <div className="flex items-start gap-3 min-w-0">
-                  <div className="p-2 rounded-lg bg-violet-50 text-violet-600 border border-violet-100 shrink-0">
-                    <Music2 className="w-4 h-4" />
+            {filteredTracks.map((t) => {
+              const styleTags = Array.isArray(t.style_tags)
+                ? t.style_tags
+                : typeof t.style_tags === 'string'
+                ? (() => {
+                    try {
+                      const p = JSON.parse(t.style_tags);
+                      return Array.isArray(p) ? p : [t.style_tags];
+                    } catch {
+                      return [t.style_tags];
+                    }
+                  })()
+                : [];
+              return (
+                <div
+                  key={t.id}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200/80 hover:border-violet-200 transition-all"
+                >
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className="p-2 rounded-lg bg-violet-50 text-violet-600 border border-violet-100 shrink-0">
+                      <Music2 className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-900 truncate">{t.track_name}</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        {t.artist} · BPM {t.bpm} · {t.mood} · {t.license_type}
+                      </p>
+                      {styleTags.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {styleTags.map((tag) => (
+                            <span
+                              key={tag}
+                              className="px-1.5 py-0.5 rounded text-[10px] bg-white border border-slate-200 text-slate-500"
+                            >
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-bold text-slate-900 truncate">{t.track_name}</p>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      {t.artist} · BPM {t.bpm} · {t.mood} · {t.license_type}
-                    </p>
-                    {Array.isArray(t.style_tags) && t.style_tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1.5">
-                        {t.style_tags.map((tag) => (
-                          <span
-                            key={tag}
-                            className="px-1.5 py-0.5 rounded text-[10px] bg-white border border-slate-200 text-slate-500"
-                          >
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
@@ -260,7 +287,8 @@ export const BgmPageView: React.FC<BgmPageViewProps> = ({ onBackToPipeline }) =>
                   </button>
                 </div>
               </div>
-            ))}
+            );
+          })}
           </div>
         )}
       </div>

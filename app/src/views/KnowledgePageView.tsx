@@ -33,7 +33,7 @@ export const KnowledgePageView: React.FC<KnowledgePageViewProps> = ({
   onBackToPipeline,
 }) => {
   const [selectedProductId, setSelectedProductId] = useState<string>(activeProductId);
-  const [selectedAiModel, setSelectedAiModel] = useState<SellingPointsAiModel>('deepseek-v3');
+  const [selectedAiModel, setSelectedAiModel] = useState<SellingPointsAiModel>('gemini-3.6-flash');
   const [isOptimizing, setIsOptimizing] = useState<boolean>(false);
   const [showTemplateMenu, setShowTemplateMenu] = useState<boolean>(false);
 
@@ -217,11 +217,9 @@ export const KnowledgePageView: React.FC<KnowledgePageViewProps> = ({
             onChange={(e) => setSelectedAiModel(e.target.value as SellingPointsAiModel)}
             className="bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-medium text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer shadow-2xs"
           >
-            <option value="deepseek-v3">🤖 DeepSeek V3 (建议首选)</option>
-            <option value="deepseek-r1">🧠 DeepSeek R1 (思维链推理)</option>
-            <option value="gpt-4o">⚡ GPT-4o (OpenAI 旗舰)</option>
-            <option value="gemini-3.6-flash">✨ Gemini 3.6 Flash</option>
-            <option value="claude-3.5-sonnet">🖋️ Claude 3.5 Sonnet</option>
+            <option value="gemini-3.6-flash">✨ Gemini 3.6 Flash（默认）</option>
+            <option value="gpt-4o">⚡ GPT-4o</option>
+            <option value="deepseek-v3">🤖 DeepSeek V3</option>
           </select>
         </div>
       </div>

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { StepId, PipelineData, PresetTemplate, MaterialItem, TaskItem, ProductItem } from './types';
-import { ModelConfigState } from './data/models';
+import { ModelConfigState, DEFAULT_MODEL_CONFIG } from './data/models';
 import { Navbar } from './components/Navbar';
 import { Sidebar, MainViewType } from './components/Sidebar';
 import { LoginScreen } from './components/LoginScreen';
@@ -29,8 +29,28 @@ export default function App() {
     return localStorage.getItem('aigc_is_logged_in') === 'true';
   });
 
-  // Main Active View State (Direct page switching)
-  const [activeView, setActiveView] = useState<MainViewType>('pipeline');
+  // Main Active View State (Persisted in localStorage to prevent reset to pipeline)
+  const [activeView, setActiveView] = useState<MainViewType>(() => {
+    try {
+      const saved = localStorage.getItem('aigc_active_view') as MainViewType;
+      if (saved && ['pipeline', 'materials', 'tasks', 'presets', 'models', 'knowledge', 'bgm'].includes(saved)) {
+        return saved;
+      }
+    } catch {}
+    return 'pipeline';
+  });
+
+  const handleSetActiveView = useCallback((view: MainViewType) => {
+    setActiveView(view);
+    try {
+      localStorage.setItem('aigc_active_view', view);
+    } catch {}
+    if (view === 'tasks') {
+      apiService.tasks.fetchTasks().then((list) => {
+        if (list?.length) setTasks(list);
+      }).catch(() => {});
+    }
+  }, []);
 
   // Sidebar Layout State
   const [sidebarWidth, setSidebarWidth] = useState<number>(240);
@@ -58,8 +78,17 @@ export default function App() {
   // Onboarding Guide State
   const [isOnboardingOpen, setIsOnboardingOpen] = useState<boolean>(false);
 
-  // Pipeline & Simulation States
-  const [currentStep, setCurrentStep] = useState<StepId>(1);
+  // Pipeline & Simulation States (Synchronously hydrated from localStorage to prevent page jumps)
+  const [currentStep, setCurrentStep] = useState<StepId>(() => {
+    try {
+      const saved = localStorage.getItem('aigc_cached_current_step');
+      if (saved) {
+        const step = Number(saved);
+        if (step >= 1 && step <= 5) return step as StepId;
+      }
+    } catch {}
+    return 1;
+  });
   const [isAutoPipelineRunning, setIsAutoPipelineRunning] = useState<boolean>(false);
   const [autoProgress, setAutoProgress] = useState<AutoPipelineProgress | null>(null);
 
@@ -114,9 +143,18 @@ export default function App() {
           if (savedDraftId) {
             const draft = taskList.find((t) => t.id === savedDraftId);
             if (draft?.pipelineData?.step1) {
-              setPipelineData(draft.pipelineData);
+              const sanitized = { ...draft.pipelineData };
+              (['step1', 'step2', 'step3', 'step4', 'step5'] as const).forEach((sKey) => {
+                if (sanitized[sKey] && sanitized[sKey].status === 'running') {
+                  sanitized[sKey] = {
+                    ...sanitized[sKey],
+                    status: sanitized[sKey].output ? 'completed' : 'pending',
+                  };
+                }
+              });
+              setPipelineData(sanitized);
               setCurrentStep((draft.currentStep as StepId) || 1);
-              setDraftTaskId(draft.id);
+              setDraftTaskIdSynced(draft.id);
             }
           }
         }
@@ -127,8 +165,8 @@ export default function App() {
             imageModels: models.imageModels || [],
             videoModels: models.videoModels || [],
             autoRecommendationEnabled: models.autoRecommendationEnabled ?? true,
-            defaultTextModel: models.defaultTextModel || 'DeepSeek V3',
-            defaultImageModel: models.defaultImageModel || 'Imagen 4 Ultra',
+            defaultTextModel: models.defaultTextModel || 'Gemini 3.6 Flash',
+            defaultImageModel: models.defaultImageModel || 'GPT Image 1',
             defaultVideoModel: models.defaultVideoModel || 'Seedance 2.0 Fast',
           });
         }
@@ -166,15 +204,7 @@ export default function App() {
     setProducts(nextProducts);
   };
 
-  const [modelConfig, setModelConfig] = useState<ModelConfigState>({
-    textModels: [],
-    imageModels: [],
-    videoModels: [],
-    autoRecommendationEnabled: true,
-    defaultTextModel: 'DeepSeek V3',
-    defaultImageModel: 'Imagen 4 Ultra',
-    defaultVideoModel: 'Seedance 2.0 Fast',
-  });
+  const [modelConfig, setModelConfig] = useState<ModelConfigState>(DEFAULT_MODEL_CONFIG);
   const [userRole, setUserRole] = useState<'admin' | 'user'>('admin');
 
   // Materials & Tasks State
@@ -186,6 +216,16 @@ export default function App() {
   };
 
   const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [sessions, setSessions] = useState<SessionItem[]>([]);
+
+  const handleDeleteSession = async (id: string) => {
+    try {
+      await apiService.sessions.deleteSession(id); // 注意：需要后端支持 /api/sessions
+    } catch (err) {
+      console.warn('[App] deleteSession failed:', err);
+    }
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+  };
 
   const handleDeleteTask = async (id: string) => {
     try {
@@ -196,10 +236,25 @@ export default function App() {
     setTasks((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Auto-draft: refresh-safe working copy
+  // Auto-draft: refresh-safe working copy with ref sync for silent, non-disruptive saving
   const [draftTaskId, setDraftTaskId] = useState<string>(
     () => localStorage.getItem('aigc_draft_task_id') || ''
   );
+  const draftTaskIdRef = useRef<string>(draftTaskId);
+  const lastSavedSnapshotRef = useRef<string>('');
+
+  const setDraftTaskIdSynced = useCallback((id: string) => {
+    if (draftTaskIdRef.current !== id) {
+      draftTaskIdRef.current = id;
+      setDraftTaskId(id);
+    }
+    if (id) {
+      localStorage.setItem('aigc_draft_task_id', id);
+    } else {
+      localStorage.removeItem('aigc_draft_task_id');
+    }
+  }, []);
+
   const [draftSavedLabel, setDraftSavedLabel] = useState<string | null>(null);
   const [stepSources, setStepSources] = useState<Partial<Record<StepId, string>>>({});
   const [engineReadiness, setEngineReadiness] = useState<{
@@ -245,7 +300,7 @@ export default function App() {
     const id =
       opts?.id ||
       (opts?.asDraft
-        ? draftTaskId || `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+        ? draftTaskIdRef.current || `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
         : undefined);
     try {
       const res = await apiService.tasks.createTask({
@@ -258,20 +313,19 @@ export default function App() {
       });
       if (res.success && res.data) {
         if (opts?.asDraft) {
-          setDraftTaskId(res.data.id);
-          localStorage.setItem('aigc_draft_task_id', res.data.id);
-          setDraftSavedLabel(
-            new Date().toLocaleTimeString('zh-CN', {
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-            })
-          );
+          setDraftTaskIdSynced(res.data.id);
+          const newTimeLabel = new Date().toLocaleTimeString('zh-CN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          });
+          setDraftSavedLabel((prev) => (prev === newTimeLabel ? prev : newTimeLabel));
+        } else {
+          setTasks((prev) => {
+            const rest = prev.filter((t) => t.id !== res.data.id);
+            return [res.data, ...rest];
+          });
         }
-        setTasks((prev) => {
-          const rest = prev.filter((t) => t.id !== res.data.id);
-          return [res.data, ...rest];
-        });
         return res.data;
       }
     } catch (err) {
@@ -311,52 +365,80 @@ export default function App() {
     }
   };
 
-  // Initialize pipeline data with defaults
-  const [pipelineData, setPipelineData] = useState<PipelineData>({
-    step1: {
-      status: 'pending',
-      inputs: {
-        mediaUrl: '',
-        platform: 'xiaohongshu',
-        bloggerType: 'daily_seeding',
-        viralReason: '真实晨间浴室自然光+爆款小绿泥膏体拉丝特写',
-        imageModel: 'Imagen 4 Ultra',
+  // Initialize pipeline data with cached snapshot or defaults (prevents 200ms layout jump on load)
+  const [pipelineData, setPipelineData] = useState<PipelineData>(() => {
+    try {
+      const saved = localStorage.getItem('aigc_cached_pipeline_data');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.step1) {
+          (['step1', 'step2', 'step3', 'step4', 'step5'] as const).forEach((sKey) => {
+            if (parsed[sKey] && parsed[sKey].status === 'running') {
+              parsed[sKey].status = parsed[sKey].output ? 'completed' : 'pending';
+            }
+          });
+          return parsed;
+        }
+      }
+    } catch {}
+    return {
+      step1: {
+        status: 'pending',
+        inputs: {
+          mediaUrl: '',
+          platform: 'xiaohongshu',
+          bloggerType: 'daily_seeding',
+          viralReason: '真实场景自然光+产品质感特写',
+          textModel: 'Gemini 3.6 Flash',
+          imageModel: 'GPT Image 1',
+        },
       },
-    },
-    step2: {
-      status: 'pending',
-      inputs: {
-        static_image_prompt: '',
-        imageUrl: '',
-        videoTone: 'xiaohongshu_healing',
-        durationSec: 4,
-        videoModel: 'Seedance 2.0 Fast',
+      step2: {
+        status: 'pending',
+        inputs: {
+          static_image_prompt: '',
+          imageUrl: '',
+          videoTone: 'xiaohongshu_healing',
+          durationSec: 4,
+          textModel: 'Gemini 3.6 Flash',
+          videoModel: 'Seedance 2.0 Fast',
+        },
       },
-    },
-    step3: {
-      status: 'pending',
-      inputs: {
-        videoPrompt: '',
-        targetPlatform: 'xiaohongshu',
-        scriptPersona: '油皮亲妈',
+      step3: {
+        status: 'pending',
+        inputs: {
+          videoPrompt: '',
+          targetPlatform: 'xiaohongshu',
+          scriptPersona: '油皮亲妈',
+          textModel: 'Gemini 3.6 Flash',
+        },
       },
-    },
-    step4: {
-      status: 'pending',
-      inputs: {
-        copywritingTitle: '',
-        tonePreference: '治愈',
-        commercialScenario: '抖音/小红书商业化',
+      step4: {
+        status: 'pending',
+        inputs: {
+          copywritingTitle: '',
+          tonePreference: '治愈',
+          commercialScenario: '抖音/小红书商业化',
+          textModel: 'Gemini 3.6 Flash',
+        },
       },
-    },
-    step5: {
-      status: 'pending',
-      inputs: {
-        aspectRatio: '9:16',
-        subtitleStyle: '黄字黑边',
+      step5: {
+        status: 'pending',
+        inputs: {
+          aspectRatio: '9:16',
+          subtitleStyle: '黄字黑边',
+        },
       },
-    },
+    };
   });
+
+  // Sync state to local cache for instant refresh
+  useEffect(() => {
+    try {
+      localStorage.setItem('aigc_cached_current_step', String(currentStep));
+      localStorage.setItem('aigc_cached_pipeline_data', JSON.stringify(pipelineData));
+    } catch {}
+  }, [currentStep, pipelineData]);
 
   /** Downstream steps still hold old artifacts after upstream re-run */
   const [staleUpstream, setStaleUpstream] = useState({
@@ -375,7 +457,7 @@ export default function App() {
     }));
   };
 
-  // Debounced auto-draft: any meaningful pipeline change → SQLite generating task
+  // Debounced auto-draft: any meaningful pipeline change → SQLite generating task (with Dirty Check)
   useEffect(() => {
     const hasWork =
       Boolean(pipelineData.step1.inputs.mediaUrl) ||
@@ -392,7 +474,17 @@ export default function App() {
 
     if (!hasWork || isAutoPipelineRunning) return;
 
+    // Fast Fingerprint Dirty Check: skip if snapshot hasn't changed since last persist
+    const currentFingerprint = JSON.stringify({ pipelineData, currentStep });
+    if (currentFingerprint === lastSavedSnapshotRef.current) {
+      return;
+    }
+
     const timer = setTimeout(() => {
+      const latestFingerprint = JSON.stringify({ pipelineData, currentStep });
+      if (latestFingerprint === lastSavedSnapshotRef.current) return;
+
+      lastSavedSnapshotRef.current = latestFingerprint;
       const finished =
         pipelineData.step5.status === 'completed' && Boolean(pipelineData.step5.output);
       void persistTaskSnapshot(pipelineData, {
@@ -403,7 +495,7 @@ export default function App() {
           ? pipelineData.step3.output?.title || '已完成反推工程'
           : '工作台草稿（自动保存）',
       });
-    }, 2000);
+    }, 3500);
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -421,56 +513,59 @@ export default function App() {
   };
 
   // Sync handlers for user-controlled re-inheritance
-  const handleSyncFromStep1 = () => {
-    if (pipelineData.step1.output) {
-      setPipelineData((prev) => ({
+  const handleSyncFromStep1 = useCallback(() => {
+    setPipelineData((prev) => {
+      if (!prev.step1.output) return prev;
+      return {
         ...prev,
         step2: {
           ...prev.step2,
           inputs: {
             ...prev.step2.inputs,
-            static_image_prompt: prev.step1.output!.static_image_prompt,
+            static_image_prompt: prev.step1.output.static_image_prompt,
             imageUrl: prev.step1.inputs.mediaUrl,
           },
         },
-      }));
-      setStaleUpstream((s) => ({ ...s, step2: false }));
-    }
-  };
+      };
+    });
+    setStaleUpstream((s) => ({ ...s, step2: false }));
+  }, []);
 
-  const handleSyncFromStep2 = () => {
-    if (pipelineData.step2.output) {
-      setPipelineData((prev) => ({
+  const handleSyncFromStep2 = useCallback(() => {
+    setPipelineData((prev) => {
+      if (!prev.step2.output) return prev;
+      return {
         ...prev,
         step3: {
           ...prev.step3,
           inputs: {
             ...prev.step3.inputs,
-            videoPrompt: prev.step2.output!.video_prompt,
+            videoPrompt: prev.step2.output.video_prompt,
           },
         },
-      }));
-      setStaleUpstream((s) => ({ ...s, step3: false }));
-    }
-  };
+      };
+    });
+    setStaleUpstream((s) => ({ ...s, step3: false }));
+  }, []);
 
-  const handleSyncFromStep3 = () => {
-    if (pipelineData.step3.output) {
-      setPipelineData((prev) => ({
+  const handleSyncFromStep3 = useCallback(() => {
+    setPipelineData((prev) => {
+      if (!prev.step3.output) return prev;
+      return {
         ...prev,
         step4: {
           ...prev.step4,
           inputs: {
             ...prev.step4.inputs,
-            copywritingTitle: prev.step3.output!.title,
+            copywritingTitle: prev.step3.output.title,
           },
         },
-      }));
-      setStaleUpstream((s) => ({ ...s, step4: false }));
-    }
-  };
+      };
+    });
+    setStaleUpstream((s) => ({ ...s, step4: false }));
+  }, []);
 
-  const handleSyncFromPrevSteps = () => {
+  const handleSyncFromPrevSteps = useCallback(() => {
     setPipelineData((prev) => ({
       ...prev,
       step5: {
@@ -481,13 +576,152 @@ export default function App() {
       },
     }));
     setStaleUpstream((s) => ({ ...s, step5: false }));
-  };
+  }, []);
+
+  // Global AbortController for cancelling in-flight fetch requests & polling loops
+  const activeAbortControllerRef = useRef<AbortController | null>(null);
+
+  const getNewAbortSignal = useCallback(() => {
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    activeAbortControllerRef.current = controller;
+    return controller.signal;
+  }, []);
+
+  const handleAbortCurrentStep = useCallback((stepId?: StepId) => {
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+      activeAbortControllerRef.current = null;
+    }
+    setIsAutoPipelineRunning(false);
+    setAutoProgress(null);
+
+    const target = stepId || currentStep;
+    setPipelineData((prev) => {
+      const stepKey = `step${target}` as keyof PipelineData;
+      const currentObj = prev[stepKey];
+      if (currentObj.status === 'running') {
+        return {
+          ...prev,
+          [stepKey]: {
+            ...currentObj,
+            status: currentObj.output ? 'completed' : 'pending',
+          },
+        };
+      }
+      return prev;
+    });
+  }, [currentStep]);
+
+  const handleAbortFullPipeline = useCallback(() => {
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+      activeAbortControllerRef.current = null;
+    }
+    setIsAutoPipelineRunning(false);
+    setAutoProgress({
+      step: currentStep,
+      phase: 'error',
+      message: '一键全自动贯通已终止',
+    });
+    setTimeout(() => setAutoProgress(null), 3000);
+
+    setPipelineData((prev) => {
+      const next = { ...prev };
+      (['step1', 'step2', 'step3', 'step4', 'step5'] as const).forEach((sKey) => {
+        if (next[sKey].status === 'running') {
+          next[sKey] = {
+            ...next[sKey],
+            status: next[sKey].output ? 'completed' : 'pending',
+          };
+        }
+      });
+      return next;
+    });
+  }, [currentStep]);
+
+  const handleClearWorkbench = useCallback(() => {
+    if (!confirm('确定要一键清空当前工作台吗？清空后 5 个步骤的所有输入与产物均将被重置。')) {
+      return;
+    }
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+      activeAbortControllerRef.current = null;
+    }
+    setIsAutoPipelineRunning(false);
+    setAutoProgress(null);
+    setStepSources({});
+    setDraftSavedLabel(null);
+    setDraftTaskIdSynced('');
+    lastSavedSnapshotRef.current = '';
+    setStaleUpstream({ step2: false, step3: false, step4: false, step5: false });
+
+    try {
+      localStorage.removeItem('aigc_cached_pipeline_data');
+      localStorage.removeItem('aigc_cached_current_step');
+      localStorage.removeItem('aigc_draft_task_id');
+    } catch {}
+
+    setPipelineData({
+      step1: {
+        status: 'pending',
+        inputs: {
+          mediaUrl: '',
+          platform: 'xiaohongshu',
+          bloggerType: 'daily_seeding',
+          viralReason: '',
+          textModel: 'Gemini 3.6 Flash',
+          imageModel: 'GPT Image 1',
+        },
+      },
+      step2: {
+        status: 'pending',
+        inputs: {
+          static_image_prompt: '',
+          imageUrl: '',
+          videoTone: 'xiaohongshu_healing',
+          durationSec: 4,
+          textModel: 'Gemini 3.6 Flash',
+          videoModel: 'Seedance 2.0 Fast',
+        },
+      },
+      step3: {
+        status: 'pending',
+        inputs: {
+          videoPrompt: '',
+          targetPlatform: 'xiaohongshu',
+          scriptPersona: '油皮亲妈',
+          textModel: 'Gemini 3.6 Flash',
+        },
+      },
+      step4: {
+        status: 'pending',
+        inputs: {
+          copywritingTitle: '',
+          tonePreference: '治愈',
+          commercialScenario: '抖音/小红书商业化',
+          textModel: 'Gemini 3.6 Flash',
+        },
+      },
+      step5: {
+        status: 'pending',
+        inputs: {
+          aspectRatio: '9:16',
+          subtitleStyle: '黄字黑边',
+        },
+      },
+    });
+    setCurrentStep(1);
+  }, []);
 
   // Full end-to-end automated reverse inference runner
   const runFullPipelineAuto = async () => {
     if (isAutoPipelineRunning) return;
+    const signal = getNewAbortSignal();
     setIsAutoPipelineRunning(true);
-    setActiveView('pipeline');
+    handleSetActiveView('pipeline');
     setAutoProgress({ step: 1, phase: 'llm', message: '准备全自动反推…' });
 
     /** Track latest snapshot for failure persistence */
@@ -539,107 +773,83 @@ export default function App() {
       setPipelineData(working);
       await new Promise((r) => setTimeout(r, 400));
 
-      // 2. Step 2
-      markRunning(2, 'llm', 'Step 2/5 · 运镜 Prompt + 提交图生视频…');
-      const res2 = await fetch('/api/pipeline/step2', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...updatedStep2Inputs,
-          ...productPayload(),
-        }),
-      });
-      const result2 = await res2.json();
-      if (!result2.success || !result2.data) throw new Error(result2.error || 'Step 2 failed');
-      let out2 = result2.data;
-      if (result2.source) setStepSources((s) => ({ ...s, 2: String(result2.source) }));
+      // 2 & 3. Parallelize Step 2 (Video Generation) and Step 3 (Copywriting)
+      markRunning(2, 'llm', 'Step 2/5 · 运镜与视频生成 + Step 3/5 · 文案并行构建中…');
 
-      // Wait for Seedance async video when task id present but URL not yet ready
-      if (out2.seedanceTaskId && !out2.previewVideoUrl) {
-        const taskId = String(out2.seedanceTaskId);
-        const maxSec = 180;
-        const startedAt = Date.now();
-        const deadline = startedAt + maxSec * 1000;
-        setAutoProgress({
-          step: 2,
-          phase: 'seedance_wait',
-          message: 'Step 2/5 · 等待 Seedance 出片…',
-          seedanceWaitSec: 0,
-          seedanceMaxSec: maxSec,
+      // Prepare Step 3 request in parallel
+      const runStep3Task = async () => {
+        const res3 = await fetch('/api/pipeline/step3', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...working.step3.inputs,
+            videoPrompt: out1.static_image_prompt,
+            ...productPayload(),
+          }),
         });
-        while (Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 3000));
-          const waited = Math.floor((Date.now() - startedAt) / 1000);
-          setAutoProgress({
-            step: 2,
-            phase: 'seedance_wait',
-            message: `Step 2/5 · Seedance 出片中（已等 ${waited}s / ${maxSec}s）…`,
-            seedanceWaitSec: waited,
-            seedanceMaxSec: maxSec,
-          });
-          try {
-            const pollRes = await fetch(`/api/seedance/generations/${encodeURIComponent(taskId)}`);
-            const pollJson = await pollRes.json();
-            const task = pollJson?.data;
-            if (task?.url) {
-              out2 = {
-                ...out2,
-                previewVideoUrl: task.url,
-                seedanceStatus: task.status || 'success',
-              };
-              setAutoProgress({
-                step: 2,
-                phase: 'llm',
-                message: 'Step 2/5 · 视频已就绪，继续文案…',
-                seedanceWaitSec: waited,
-                seedanceMaxSec: maxSec,
-              });
-              break;
+        const result3 = await res3.json();
+        if (!result3.success || !result3.data) throw new Error(result3.error || 'Step 3 failed');
+        return result3;
+      };
+
+      // Prepare Step 2 request
+      const runStep2Task = async () => {
+        const res2 = await fetch('/api/pipeline/step2', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...updatedStep2Inputs,
+            ...productPayload(),
+          }),
+        });
+        const result2 = await res2.json();
+        if (!result2.success || !result2.data) throw new Error(result2.error || 'Step 2 failed');
+        let out2 = result2.data;
+
+        if (out2.seedanceTaskId && !out2.previewVideoUrl) {
+          const taskId = String(out2.seedanceTaskId);
+          const maxSec = 180;
+          const startedAt = Date.now();
+          const deadline = startedAt + maxSec * 1000;
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 3000));
+            try {
+              const pollRes = await fetch(`/api/seedance/generations/${encodeURIComponent(taskId)}`);
+              const pollJson = await pollRes.json();
+              const task = pollJson?.data;
+              if (task?.url) {
+                out2 = { ...out2, previewVideoUrl: task.url, seedanceStatus: task.status || 'success' };
+                break;
+              }
+              const st = String(task?.status || '').toLowerCase();
+              if (st === 'failed' || st === 'error') throw new Error(task?.error || 'Seedance 视频生成失败');
+            } catch (pollErr: any) {
+              if (String(pollErr?.message || '').includes('Seedance')) throw pollErr;
             }
-            const st = String(task?.status || '').toLowerCase();
-            if (st === 'failed' || st === 'error') {
-              throw new Error(task?.error || 'Seedance 视频生成失败');
-            }
-          } catch (pollErr: any) {
-            if (String(pollErr?.message || '').includes('Seedance')) throw pollErr;
           }
         }
-        if (!out2.previewVideoUrl) {
-          // Continue pipeline with prompt-only; Step5 may fail with clear error
-          out2 = {
-            ...out2,
-            seedanceStatus: out2.seedanceStatus || 'timeout',
-            seedanceHint: '全自动等待 Seedance 超时，已继续后续文案步骤；合成前请确认视频源',
-          };
-        }
-      }
+        return { result2, out2 };
+      };
+
+      // Execute Step 2 and Step 3 in Parallel!
+      const [step2Res, result3] = await Promise.all([runStep2Task(), runStep3Task()]);
+      const out2 = step2Res.out2;
+      const out3 = result3.data;
+
+      if (step2Res.result2.source) setStepSources((s) => ({ ...s, 2: String(step2Res.result2.source) }));
+      if (result3.source) setStepSources((s) => ({ ...s, 3: String(result3.source) }));
 
       const updatedStep3Inputs = {
         ...working.step3.inputs,
-        videoPrompt: out2.video_prompt,
+        videoPrompt: out2.video_prompt || out1.static_image_prompt,
       };
       working = {
         ...working,
         step2: { ...working.step2, inputs: updatedStep2Inputs, output: out2, status: 'completed' },
-        step3: { ...working.step3, inputs: updatedStep3Inputs },
+        step3: { ...working.step3, inputs: updatedStep3Inputs, output: out3, status: 'completed' },
       };
       setPipelineData(working);
-      await new Promise((r) => setTimeout(r, 400));
-
-      // 3. Step 3
-      markRunning(3, 'llm', 'Step 3/5 · 爆款文案生成…');
-      const res3 = await fetch('/api/pipeline/step3', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...updatedStep3Inputs,
-          ...productPayload(),
-        }),
-      });
-      const result3 = await res3.json();
-      if (!result3.success || !result3.data) throw new Error(result3.error || 'Step 3 failed');
-      const out3 = result3.data;
-      if (result3.source) setStepSources((s) => ({ ...s, 3: String(result3.source) }));
+      await new Promise((r) => setTimeout(r, 300));
 
       const updatedStep4Inputs = {
         ...working.step4.inputs,
@@ -647,7 +857,6 @@ export default function App() {
       };
       working = {
         ...working,
-        step3: { ...working.step3, inputs: updatedStep3Inputs, output: out3, status: 'completed' },
         step4: { ...working.step4, inputs: updatedStep4Inputs },
       };
       setPipelineData(working);
@@ -702,12 +911,15 @@ export default function App() {
       };
       setPipelineData(finalSnapshot);
       setAutoProgress({ step: 5, phase: 'done', message: '全自动贯通完成' });
+      setStaleUpstream({ step2: false, step3: false, step4: false, step5: false });
+
       await persistTaskSnapshot(finalSnapshot, {
         status: 'completed',
         currentStep: 5,
-        title: out3.title,
-        asDraft: true,
+        title: out3.title || '全自动爆款视频产物',
+        asDraft: false,
       });
+      setDraftSavedLabel(`全自动生成成功！已作为成品入库 ${new Date().toLocaleTimeString()}`);
     } catch (e) {
       console.error('Auto pipeline run error:', e);
       const msg = e instanceof Error ? e.message : '全自动流水线运行失败';
@@ -743,6 +955,8 @@ export default function App() {
   const handleResetAll = () => {
     setStepSources({});
     setDraftSavedLabel(null);
+    setDraftTaskIdSynced('');
+    lastSavedSnapshotRef.current = '';
     setStaleUpstream({ step2: false, step3: false, step4: false, step5: false });
     setPipelineData({
       step1: {
@@ -752,7 +966,8 @@ export default function App() {
           platform: 'xiaohongshu',
           bloggerType: 'daily_seeding',
           viralReason: '',
-          imageModel: 'Imagen 4 Ultra',
+          textModel: 'Gemini 3.6 Flash',
+          imageModel: 'GPT Image 1',
         },
       },
       step2: {
@@ -762,6 +977,7 @@ export default function App() {
           imageUrl: '',
           videoTone: 'xiaohongshu_healing',
           durationSec: 4,
+          textModel: 'Gemini 3.6 Flash',
           videoModel: 'Seedance 2.0 Fast',
         },
       },
@@ -771,6 +987,7 @@ export default function App() {
           videoPrompt: '',
           targetPlatform: 'xiaohongshu',
           scriptPersona: '油皮亲妈',
+          textModel: 'Gemini 3.6 Flash',
         },
       },
       step4: {
@@ -779,6 +996,7 @@ export default function App() {
           copywritingTitle: '',
           tonePreference: '治愈',
           commercialScenario: '抖音/小红书商业化',
+          textModel: 'Gemini 3.6 Flash',
         },
       },
       step5: {
@@ -790,19 +1008,77 @@ export default function App() {
       },
     });
     setCurrentStep(1);
-    setActiveView('pipeline');
+    handleSetActiveView('pipeline');
   };
 
   // Load a Preset Template
   const handleSelectPreset = (preset: PresetTemplate) => {
-    const data = preset.pipelineData;
-    if (!data?.step1 || !data?.step2 || !data?.step3 || !data?.step4 || !data?.step5) {
-      alert('该预设缺少完整流水线数据，无法载入');
+    const rawData = (preset.pipelineData || {}) as Partial<PipelineData>;
+    if (!rawData?.step1 && !rawData?.step2 && !rawData?.step3 && !rawData?.step4 && !rawData?.step5) {
+      alert('该预设缺少流水线数据，无法载入');
       return;
     }
-    setPipelineData(data);
+
+    const cover = preset.coverImage || 'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80';
+
+    const normalizedData: PipelineData = {
+      step1: {
+        status: rawData.step1?.status || 'completed',
+        inputs: {
+          mediaUrl: rawData.step1?.inputs?.mediaUrl || cover,
+          platform: rawData.step1?.inputs?.platform || 'douyin',
+          bloggerType: rawData.step1?.inputs?.bloggerType || 'skincare_expert',
+          viralReason: rawData.step1?.inputs?.viralReason || preset.description || '',
+          textModel: rawData.step1?.inputs?.textModel || 'Gemini 3.6 Flash',
+          imageModel: rawData.step1?.inputs?.imageModel || 'GPT Image 1',
+        },
+        output: rawData.step1?.output,
+      },
+      step2: {
+        status: rawData.step2?.status || 'completed',
+        inputs: {
+          static_image_prompt: rawData.step2?.inputs?.static_image_prompt || rawData.step1?.output?.static_image_prompt || '',
+          imageUrl: rawData.step2?.inputs?.imageUrl || cover,
+          videoTone: rawData.step2?.inputs?.videoTone || 'douyin_beat',
+          durationSec: rawData.step2?.inputs?.durationSec || 4,
+          textModel: rawData.step2?.inputs?.textModel || 'Gemini 3.6 Flash',
+          videoModel: rawData.step2?.inputs?.videoModel || 'Seedance 2.0 Fast',
+        },
+        output: rawData.step2?.output,
+      },
+      step3: {
+        status: rawData.step3?.status || 'completed',
+        inputs: {
+          videoPrompt: rawData.step3?.inputs?.videoPrompt || rawData.step2?.output?.video_prompt || '',
+          targetPlatform: rawData.step3?.inputs?.targetPlatform || 'douyin',
+          scriptPersona: rawData.step3?.inputs?.scriptPersona || '成分党',
+          textModel: rawData.step3?.inputs?.textModel || 'Gemini 3.6 Flash',
+        },
+        output: rawData.step3?.output,
+      },
+      step4: {
+        status: rawData.step4?.status || 'completed',
+        inputs: {
+          copywritingTitle: rawData.step4?.inputs?.copywritingTitle || rawData.step3?.output?.title || preset.title || '',
+          tonePreference: rawData.step4?.inputs?.tonePreference || '卡点',
+          commercialScenario: rawData.step4?.inputs?.commercialScenario || '抖音/小红书商业化',
+          textModel: rawData.step4?.inputs?.textModel || 'Gemini 3.6 Flash',
+        },
+        output: rawData.step4?.output,
+      },
+      step5: {
+        status: rawData.step5?.status || 'completed',
+        inputs: {
+          aspectRatio: rawData.step5?.inputs?.aspectRatio || '9:16',
+          subtitleStyle: rawData.step5?.inputs?.subtitleStyle || '黄字黑边',
+        },
+        output: rawData.step5?.output,
+      },
+    };
+
+    setPipelineData(normalizedData);
     setCurrentStep(1);
-    setActiveView('pipeline');
+    handleSetActiveView('pipeline');
   };
 
   const productPayload = () => ({
@@ -812,6 +1088,7 @@ export default function App() {
 
   // Step 1 Execution
   const runStep1 = async () => {
+    const signal = getNewAbortSignal();
     setPipelineData((prev) => ({
       ...prev,
       step1: { ...prev.step1, status: 'running' },
@@ -821,6 +1098,7 @@ export default function App() {
       const res = await fetch('/api/pipeline/step1', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal,
         body: JSON.stringify({
           ...pipelineData.step1.inputs,
           ...productPayload(),
@@ -837,7 +1115,6 @@ export default function App() {
             step1: { ...prev.step1, output, status: 'completed' as const },
             step2: {
               ...prev.step2,
-              // Manual mode: only auto-fill inputs if step2 not yet completed
               inputs: {
                 ...prev.step2.inputs,
                 static_image_prompt: prev.step2.output
@@ -862,7 +1139,15 @@ export default function App() {
           step1: { ...prev.step1, status: 'failed' },
         }));
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (e.name === 'AbortError' || signal.aborted) {
+        console.log('Step 1 execution aborted by user');
+        setPipelineData((prev) => ({
+          ...prev,
+          step1: { ...prev.step1, status: prev.step1.output ? 'completed' : 'pending' },
+        }));
+        return;
+      }
       console.error('Step1 run failed:', e);
       setPipelineData((prev) => ({
         ...prev,
@@ -873,6 +1158,7 @@ export default function App() {
 
   // Step 2 Execution
   const runStep2 = async () => {
+    const signal = getNewAbortSignal();
     setPipelineData((prev) => ({
       ...prev,
       step2: { ...prev.step2, status: 'running' },
@@ -882,6 +1168,7 @@ export default function App() {
       const res = await fetch('/api/pipeline/step2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal,
         body: JSON.stringify({
           ...pipelineData.step2.inputs,
           ...productPayload(),
@@ -919,7 +1206,15 @@ export default function App() {
           step2: { ...prev.step2, status: 'failed' },
         }));
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (e.name === 'AbortError' || signal.aborted) {
+        console.log('Step 2 execution aborted by user');
+        setPipelineData((prev) => ({
+          ...prev,
+          step2: { ...prev.step2, status: prev.step2.output ? 'completed' : 'pending' },
+        }));
+        return;
+      }
       console.error('Step2 run failed:', e);
       setPipelineData((prev) => ({
         ...prev,
@@ -930,6 +1225,7 @@ export default function App() {
 
   // Step 3 Execution
   const runStep3 = async () => {
+    const signal = getNewAbortSignal();
     setPipelineData((prev) => ({
       ...prev,
       step3: { ...prev.step3, status: 'running' },
@@ -939,6 +1235,7 @@ export default function App() {
       const res = await fetch('/api/pipeline/step3', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal,
         body: JSON.stringify({
           ...pipelineData.step3.inputs,
           ...productPayload(),
@@ -978,7 +1275,15 @@ export default function App() {
           step3: { ...prev.step3, status: 'failed' },
         }));
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (e.name === 'AbortError' || signal.aborted) {
+        console.log('Step 3 execution aborted by user');
+        setPipelineData((prev) => ({
+          ...prev,
+          step3: { ...prev.step3, status: prev.step3.output ? 'completed' : 'pending' },
+        }));
+        return;
+      }
       console.error('Step3 run failed:', e);
       setPipelineData((prev) => ({
         ...prev,
@@ -989,6 +1294,7 @@ export default function App() {
 
   // Step 4 Execution
   const runStep4 = async () => {
+    const signal = getNewAbortSignal();
     setPipelineData((prev) => ({
       ...prev,
       step4: { ...prev.step4, status: 'running' },
@@ -998,6 +1304,7 @@ export default function App() {
       const res = await fetch('/api/pipeline/step4', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal,
         body: JSON.stringify({
           ...pipelineData.step4.inputs,
           ...productPayload(),
@@ -1023,7 +1330,15 @@ export default function App() {
           step4: { ...prev.step4, status: 'failed' },
         }));
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (e.name === 'AbortError' || signal.aborted) {
+        console.log('Step 4 execution aborted by user');
+        setPipelineData((prev) => ({
+          ...prev,
+          step4: { ...prev.step4, status: prev.step4.output ? 'completed' : 'pending' },
+        }));
+        return;
+      }
       console.error('Step4 run failed:', e);
       setPipelineData((prev) => ({
         ...prev,
@@ -1034,6 +1349,7 @@ export default function App() {
 
   // Step 5 Execution
   const runStep5 = async () => {
+    const signal = getNewAbortSignal();
     setPipelineData((prev) => ({
       ...prev,
       step5: { ...prev.step5, status: 'running' },
@@ -1043,6 +1359,7 @@ export default function App() {
       const res = await fetch('/api/pipeline/step5', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal,
         body: JSON.stringify({
           ...pipelineData.step5.inputs,
           videoPrompt: pipelineData.step2.output?.video_prompt,
@@ -1079,7 +1396,15 @@ export default function App() {
           step5: { ...prev.step5, status: 'failed' },
         }));
       }
-    } catch (e) {
+    } catch (e: any) {
+      if (e.name === 'AbortError' || signal.aborted) {
+        console.log('Step 5 execution aborted by user');
+        setPipelineData((prev) => ({
+          ...prev,
+          step5: { ...prev.step5, status: prev.step5.output ? 'completed' : 'pending' },
+        }));
+        return;
+      }
       console.error('Step5 run failed:', e);
       setPipelineData((prev) => ({
         ...prev,
@@ -1088,13 +1413,163 @@ export default function App() {
     }
   };
 
+  // Memoized Handlers for Step Cards to maintain React.memo effectiveness
+  const handleOpenMaterials = useCallback(() => handleSetActiveView('materials'), [handleSetActiveView]);
+  const handleOpenTasks = useCallback(() => handleSetActiveView('tasks'), [handleSetActiveView]);
+
+  const handleStep1UpdateInputs = useCallback(
+    (inp: any) =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step1: { ...prev.step1, inputs: { ...prev.step1.inputs, ...inp } },
+      })),
+    []
+  );
+  const handleStep1UpdateOutput = useCallback(
+    (updated: any) =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step1: {
+          ...prev.step1,
+          output: prev.step1.output ? { ...prev.step1.output, ...updated } : undefined,
+        },
+      })),
+    []
+  );
+  const handleStep1GeneratedImage = useCallback(
+    ({ imageUrl, promptUsed }: { imageUrl: string; promptUsed: string }) =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step1: {
+          ...prev.step1,
+          inputs: { ...prev.step1.inputs, mediaUrl: imageUrl },
+          output: prev.step1.output
+            ? { ...prev.step1.output, static_image_prompt: promptUsed }
+            : prev.step1.output,
+        },
+        step2: {
+          ...prev.step2,
+          inputs: {
+            ...prev.step2.inputs,
+            imageUrl,
+            static_image_prompt: promptUsed || prev.step2.inputs.static_image_prompt,
+          },
+        },
+      })),
+    []
+  );
+  const handleStep1Reset = useCallback(
+    () =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step1: { ...prev.step1, status: 'pending', output: undefined },
+      })),
+    []
+  );
+
+  const handleStep2UpdateInputs = useCallback(
+    (inp: any) =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step2: { ...prev.step2, inputs: { ...prev.step2.inputs, ...inp } },
+      })),
+    []
+  );
+  const handleStep2UpdateOutput = useCallback(
+    (updated: any) =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step2: {
+          ...prev.step2,
+          output: prev.step2.output ? { ...prev.step2.output, ...updated } : undefined,
+        },
+      })),
+    []
+  );
+  const handleStep2Reset = useCallback(
+    () =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step2: { ...prev.step2, status: 'pending', output: undefined },
+      })),
+    []
+  );
+
+  const handleStep3UpdateInputs = useCallback(
+    (inp: any) =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step3: { ...prev.step3, inputs: { ...prev.step3.inputs, ...inp } },
+      })),
+    []
+  );
+  const handleStep3UpdateOutput = useCallback(
+    (updated: any) =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step3: {
+          ...prev.step3,
+          output: prev.step3.output ? { ...prev.step3.output, ...updated } : undefined,
+        },
+      })),
+    []
+  );
+  const handleStep3Reset = useCallback(
+    () =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step3: { ...prev.step3, status: 'pending', output: undefined },
+      })),
+    []
+  );
+
+  const handleStep4UpdateInputs = useCallback(
+    (inp: any) =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step4: { ...prev.step4, inputs: { ...prev.step4.inputs, ...inp } },
+      })),
+    []
+  );
+  const handleStep4Reset = useCallback(
+    () =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step4: { ...prev.step4, status: 'pending', output: undefined },
+      })),
+    []
+  );
+
+  const handleStep5UpdateInputs = useCallback(
+    (inp: any) =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step5: { ...prev.step5, inputs: { ...prev.step5.inputs, ...inp } },
+      })),
+    []
+  );
+  const handleStep5Reset = useCallback(
+    () =>
+      setPipelineData((prev) => ({
+        ...prev,
+        step5: { ...prev.step5, status: 'pending', output: undefined },
+      })),
+    []
+  );
+
+  const goToStep1 = useCallback(() => setCurrentStep(1), []);
+  const goToStep2 = useCallback(() => setCurrentStep(2), []);
+  const goToStep3 = useCallback(() => setCurrentStep(3), []);
+  const goToStep4 = useCallback(() => setCurrentStep(4), []);
+  const goToStep5 = useCallback(() => setCurrentStep(5), []);
+
   // Render Login Screen if not authenticated
   if (!isLoggedIn) {
     return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
   }
 
   return (
-    <div className="flex min-h-screen bg-[#f8fafc] text-slate-900 font-sans selection:bg-indigo-600 selection:text-white transition-colors">
+    <div className="flex min-h-screen bg-[#f8fafc] text-slate-900 font-sans selection:bg-indigo-600 selection:text-white">
       {/* Resizable Sidebar */}
       <Sidebar
         sidebarWidth={sidebarWidth}
@@ -1102,7 +1577,7 @@ export default function App() {
         isExpanded={isSidebarExpanded}
         onToggleExpand={handleToggleSidebar}
         activeView={activeView}
-        onChangeView={(view) => setActiveView(view)}
+        onChangeView={(view) => handleSetActiveView(view)}
         onOpenOnboarding={() => setIsOnboardingOpen(true)}
         onResetAll={handleResetAll}
         activeProduct={activeProduct}
@@ -1136,9 +1611,10 @@ export default function App() {
                     inputs: { ...prev.step1.inputs, mediaUrl: material.url },
                   },
                 }));
-                setActiveView('pipeline');
+                setCurrentStep(1);
+                handleSetActiveView('pipeline');
               }}
-              onBackToPipeline={() => setActiveView('pipeline')}
+              onBackToPipeline={() => handleSetActiveView('pipeline')}
             />
           )}
 
@@ -1155,13 +1631,12 @@ export default function App() {
                 const step = (task.currentStep || 1) as StepId;
                 setCurrentStep(step >= 1 && step <= 5 ? step : 1);
                 if (task.id.startsWith('draft_') || task.title.includes('草稿')) {
-                  setDraftTaskId(task.id);
-                  localStorage.setItem('aigc_draft_task_id', task.id);
+                  setDraftTaskIdSynced(task.id);
                 }
-                setActiveView('pipeline');
+                handleSetActiveView('pipeline');
               }}
               onDeleteTask={handleDeleteTask}
-              onBackToPipeline={() => setActiveView('pipeline')}
+              onBackToPipeline={() => handleSetActiveView('pipeline')}
             />
           )}
 
@@ -1170,7 +1645,7 @@ export default function App() {
             <PresetsPageView
               presets={presets}
               onSelectPreset={handleSelectPreset}
-              onBackToPipeline={() => setActiveView('pipeline')}
+              onBackToPipeline={() => handleSetActiveView('pipeline')}
             />
           )}
 
@@ -1180,8 +1655,7 @@ export default function App() {
               config={modelConfig}
               onSaveConfig={(newConfig) => setModelConfig(newConfig)}
               userRole={userRole}
-              onToggleRole={() => setUserRole((prev) => (prev === 'admin' ? 'user' : 'admin'))}
-              onBackToPipeline={() => setActiveView('pipeline')}
+              onBackToPipeline={() => handleSetActiveView('pipeline')}
             />
           )}
 
@@ -1192,13 +1666,13 @@ export default function App() {
               activeProductId={activeProductId}
               onSelectActiveProduct={(id) => setActiveProductId(id)}
               onUpdateProducts={handleUpdateProducts}
-              onBackToPipeline={() => setActiveView('pipeline')}
+              onBackToPipeline={() => handleSetActiveView('pipeline')}
             />
           )}
 
           {/* 5b. BGM LIBRARY */}
           {activeView === 'bgm' && (
-            <BgmPageView onBackToPipeline={() => setActiveView('pipeline')} />
+            <BgmPageView onBackToPipeline={() => handleSetActiveView('pipeline')} />
           )}
 
           {/* 6. MAIN PIPELINE VIEW */}
@@ -1249,7 +1723,7 @@ export default function App() {
                   </button>
 
                   <button
-                    onClick={() => setActiveView('knowledge')}
+                    onClick={() => handleSetActiveView('knowledge')}
                     className="px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition-all shadow-xs shrink-0 flex items-center gap-1.5"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
@@ -1263,13 +1737,15 @@ export default function App() {
               <StepProgress
                 currentStep={currentStep}
                 pipelineData={pipelineData}
-                onSelectStep={(stepId) => setCurrentStep(stepId)}
+                onSelectStep={setCurrentStep}
                 onRunFullPipelineAuto={runFullPipelineAuto}
+                onAbortFullPipeline={handleAbortFullPipeline}
+                onClearWorkbench={handleClearWorkbench}
                 isAutoPipelineRunning={isAutoPipelineRunning}
                 autoProgress={autoProgress}
                 draftSavedLabel={draftSavedLabel}
                 stepSources={stepSources}
-                onOpenTasks={() => setActiveView('tasks')}
+                onOpenTasks={handleOpenTasks}
               />
 
               {/* Active Step Cards Container */}
@@ -1282,50 +1758,14 @@ export default function App() {
                     modelConfig={modelConfig}
                     materials={materials}
                     activeProduct={activeProduct}
-                    onOpenMaterials={() => setActiveView('materials')}
-                    onUpdateInputs={(inp) =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step1: { ...prev.step1, inputs: { ...prev.step1.inputs, ...inp } },
-                      }))
-                    }
-                    onUpdateOutput={(updated) =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step1: {
-                          ...prev.step1,
-                          output: prev.step1.output ? { ...prev.step1.output, ...updated } : undefined,
-                        },
-                      }))
-                    }
-                    onGeneratedImage={({ imageUrl, promptUsed }) => {
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step1: {
-                          ...prev.step1,
-                          inputs: { ...prev.step1.inputs, mediaUrl: imageUrl },
-                          output: prev.step1.output
-                            ? { ...prev.step1.output, static_image_prompt: promptUsed }
-                            : prev.step1.output,
-                        },
-                        step2: {
-                          ...prev.step2,
-                          inputs: {
-                            ...prev.step2.inputs,
-                            imageUrl,
-                            static_image_prompt: promptUsed || prev.step2.inputs.static_image_prompt,
-                          },
-                        },
-                      }));
-                    }}
+                    onOpenMaterials={handleOpenMaterials}
+                    onUpdateInputs={handleStep1UpdateInputs}
+                    onUpdateOutput={handleStep1UpdateOutput}
+                    onGeneratedImage={handleStep1GeneratedImage}
                     onRun={runStep1}
-                    onReset={() =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step1: { ...prev.step1, status: 'pending', output: undefined },
-                      }))
-                    }
-                    onNext={() => setCurrentStep(2)}
+                    onAbort={() => handleAbortCurrentStep(1)}
+                    onReset={handleStep1Reset}
+                    onNext={goToStep2}
                   />
                 )}
 
@@ -1338,30 +1778,13 @@ export default function App() {
                     modelConfig={modelConfig}
                     upstreamStale={staleUpstream.step2}
                     onSyncFromStep1={handleSyncFromStep1}
-                    onUpdateInputs={(inp) =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step2: { ...prev.step2, inputs: { ...prev.step2.inputs, ...inp } },
-                      }))
-                    }
-                    onUpdateOutput={(updated) =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step2: {
-                          ...prev.step2,
-                          output: prev.step2.output ? { ...prev.step2.output, ...updated } : undefined,
-                        },
-                      }))
-                    }
+                    onUpdateInputs={handleStep2UpdateInputs}
+                    onUpdateOutput={handleStep2UpdateOutput}
                     onRun={runStep2}
-                    onReset={() =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step2: { ...prev.step2, status: 'pending', output: undefined },
-                      }))
-                    }
-                    onPrev={() => setCurrentStep(1)}
-                    onNext={() => setCurrentStep(3)}
+                    onAbort={() => handleAbortCurrentStep(2)}
+                    onReset={handleStep2Reset}
+                    onPrev={goToStep1}
+                    onNext={goToStep3}
                   />
                 )}
 
@@ -1371,32 +1794,16 @@ export default function App() {
                     output={pipelineData.step3.output}
                     step2Output={pipelineData.step2.output}
                     status={pipelineData.step3.status}
+                    modelConfig={modelConfig}
                     upstreamStale={staleUpstream.step3}
                     onSyncFromStep2={handleSyncFromStep2}
-                    onUpdateInputs={(inp) =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step3: { ...prev.step3, inputs: { ...prev.step3.inputs, ...inp } },
-                      }))
-                    }
-                    onUpdateOutput={(updated) =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step3: {
-                          ...prev.step3,
-                          output: prev.step3.output ? { ...prev.step3.output, ...updated } : undefined,
-                        },
-                      }))
-                    }
+                    onUpdateInputs={handleStep3UpdateInputs}
+                    onUpdateOutput={handleStep3UpdateOutput}
                     onRun={runStep3}
-                    onReset={() =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step3: { ...prev.step3, status: 'pending', output: undefined },
-                      }))
-                    }
-                    onPrev={() => setCurrentStep(2)}
-                    onNext={() => setCurrentStep(4)}
+                    onAbort={() => handleAbortCurrentStep(3)}
+                    onReset={handleStep3Reset}
+                    onPrev={goToStep2}
+                    onNext={goToStep4}
                   />
                 )}
 
@@ -1406,23 +1813,15 @@ export default function App() {
                     output={pipelineData.step4.output}
                     step3Output={pipelineData.step3.output}
                     status={pipelineData.step4.status}
+                    modelConfig={modelConfig}
                     upstreamStale={staleUpstream.step4}
                     onSyncFromStep3={handleSyncFromStep3}
-                    onUpdateInputs={(inp) =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step4: { ...prev.step4, inputs: { ...prev.step4.inputs, ...inp } },
-                      }))
-                    }
+                    onUpdateInputs={handleStep4UpdateInputs}
                     onRun={runStep4}
-                    onReset={() =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step4: { ...prev.step4, status: 'pending', output: undefined },
-                      }))
-                    }
-                    onPrev={() => setCurrentStep(3)}
-                    onNext={() => setCurrentStep(5)}
+                    onAbort={() => handleAbortCurrentStep(4)}
+                    onReset={handleStep4Reset}
+                    onPrev={goToStep3}
+                    onNext={goToStep5}
                   />
                 )}
 
@@ -1439,22 +1838,13 @@ export default function App() {
                       ffmpegInstalled: engineReadiness.ffmpegInstalled,
                       publicBaseUrl: engineReadiness.publicBaseUrl,
                     }}
-                    onGoStep2={() => setCurrentStep(2)}
+                    onGoStep2={goToStep2}
                     onSyncFromPrevSteps={handleSyncFromPrevSteps}
-                    onUpdateInputs={(inp) =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step5: { ...prev.step5, inputs: { ...prev.step5.inputs, ...inp } },
-                      }))
-                    }
+                    onUpdateInputs={handleStep5UpdateInputs}
                     onRun={runStep5}
-                    onReset={() =>
-                      setPipelineData((prev) => ({
-                        ...prev,
-                        step5: { ...prev.step5, status: 'pending', output: undefined },
-                      }))
-                    }
-                    onPrev={() => setCurrentStep(4)}
+                    onAbort={() => handleAbortCurrentStep(5)}
+                    onReset={handleStep5Reset}
+                    onPrev={goToStep4}
                   />
                 )}
               </div>
@@ -1468,7 +1858,7 @@ export default function App() {
         isOpen={isOnboardingOpen}
         onClose={() => setIsOnboardingOpen(false)}
         onStartAutoPipeline={runFullPipelineAuto}
-        onOpenKnowledge={() => setActiveView('knowledge')}
+        onOpenKnowledge={() => handleSetActiveView('knowledge')}
       />
     </div>
   );

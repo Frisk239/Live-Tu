@@ -32,7 +32,7 @@ interface ModelConfigCenterModalProps {
   config: ModelConfigState;
   onSaveConfig: (newConfig: ModelConfigState) => void;
   userRole: 'admin' | 'user';
-  onToggleRole: () => void;
+  onToggleRole?: () => void;
 }
 
 export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
@@ -41,11 +41,26 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
   config,
   onSaveConfig,
   userRole,
-  onToggleRole,
 }) => {
   const [localConfig, setLocalConfig] = useState<ModelConfigState>(config);
   const [activeTab, setActiveTab] = useState<'text' | 'image' | 'video'>('text');
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  React.useEffect(() => {
+    if (
+      !config.textModels?.length &&
+      !config.imageModels?.length &&
+      !config.videoModels?.length
+    ) {
+      apiService.models.fetchModels().then((data) => {
+        if (data && (data.textModels?.length || data.imageModels?.length || data.videoModels?.length)) {
+          setLocalConfig(data);
+        }
+      }).catch(() => {});
+    } else {
+      setLocalConfig(config);
+    }
+  }, [config, isOpen]);
 
   // Edit / Add Modal state
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -76,61 +91,79 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
 
   if (!isOpen) return null;
 
+  const persistAndSyncConfig = async (nextConfig: ModelConfigState) => {
+    setLocalConfig(nextConfig);
+    onSaveConfig(nextConfig);
+    try {
+      await apiService.models.saveConfig(nextConfig);
+    } catch (err) {
+      console.warn('[ModelConfigCenterModal] saveConfig failed:', err);
+    }
+  };
+
   const handleToggleEnableImage = (id: ImageModelName) => {
     if (userRole !== 'admin') return;
-    setLocalConfig((prev) => ({
-      ...prev,
-      imageModels: prev.imageModels.map((m) =>
+    const nextConfig = {
+      ...localConfig,
+      imageModels: localConfig.imageModels.map((m) =>
         m.id === id ? { ...m, enabled: !m.enabled } : m
       ),
-    }));
+    };
+    persistAndSyncConfig(nextConfig);
   };
 
   const handleToggleEnableVideo = (id: VideoModelName) => {
     if (userRole !== 'admin') return;
-    setLocalConfig((prev) => ({
-      ...prev,
-      videoModels: prev.videoModels.map((m) =>
+    const nextConfig = {
+      ...localConfig,
+      videoModels: localConfig.videoModels.map((m) =>
         m.id === id ? { ...m, enabled: !m.enabled } : m
       ),
-    }));
+    };
+    persistAndSyncConfig(nextConfig);
   };
 
   const handleSetDefaultImage = (id: ImageModelName) => {
     if (userRole !== 'admin') return;
-    setLocalConfig((prev) => ({
-      ...prev,
+    const nextConfig = {
+      ...localConfig,
       defaultImageModel: id,
-      imageModels: prev.imageModels.map((m) => ({
+      imageModels: localConfig.imageModels.map((m) => ({
         ...m,
         isDefault: m.id === id,
       })),
-    }));
+    };
+    persistAndSyncConfig(nextConfig);
+    setSaveSuccess(true);
+    setTimeout(() => setSaveSuccess(false), 1500);
   };
 
   const handleSetDefaultVideo = (id: VideoModelName) => {
     if (userRole !== 'admin') return;
-    setLocalConfig((prev) => ({
-      ...prev,
+    const nextConfig = {
+      ...localConfig,
       defaultVideoModel: id,
-      videoModels: prev.videoModels.map((m) => ({
+      videoModels: localConfig.videoModels.map((m) => ({
         ...m,
         isDefault: m.id === id,
       })),
-    }));
+    };
+    persistAndSyncConfig(nextConfig);
+    setSaveSuccess(true);
+    setTimeout(() => setSaveSuccess(false), 1500);
   };
 
   const handleDeleteModel = (id: string, type: 'image' | 'video') => {
     if (userRole !== 'admin') return;
     if (!window.confirm(`确定要删除模型 [${id}] 吗？`)) return;
 
-    setLocalConfig((prev) => {
-      if (type === 'image') {
-        return { ...prev, imageModels: prev.imageModels.filter((m) => m.id !== id) };
-      } else {
-        return { ...prev, videoModels: prev.videoModels.filter((m) => m.id !== id) };
-      }
-    });
+    let nextConfig: ModelConfigState;
+    if (type === 'image') {
+      nextConfig = { ...localConfig, imageModels: localConfig.imageModels.filter((m) => m.id !== id) };
+    } else {
+      nextConfig = { ...localConfig, videoModels: localConfig.videoModels.filter((m) => m.id !== id) };
+    }
+    persistAndSyncConfig(nextConfig);
   };
 
   const handleTestConnection = async (model: ModelMetadata) => {
@@ -144,16 +177,16 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
     setFormType(type);
     setEditingModel(null);
     setFormName('');
-    setFormProvider('Google Gemini AIGC');
-    setFormBaseUrl('https://generativelanguage.googleapis.com/v1beta');
+    setFormProvider(type === 'video' ? '星河中转 / Seedance' : '云雾');
+    setFormBaseUrl(type === 'video' ? '/api/seedance' : 'https://api3.wlai.vip/v1');
     setFormApiKey('');
-    setFormModelCode('');
-    setFormScenario('适合爆款画质重构与细节渲染');
+    setFormModelCode(type === 'image' ? 'gpt-image-1' : 'doubao-seedance-2-0-fast');
+    setFormScenario(type === 'image' ? '产品首帧文生图' : '图生视频');
     setFormSpeedRating('标准');
-    setFormSpeedMs('3.0s');
-    setFormQualityRating('影视级');
-    setFormDescription('企业级微调算法接入模型');
-    setFormBadge('自定义模型');
+    setFormSpeedMs(type === 'image' ? '30s' : '3.2s');
+    setFormQualityRating(type === 'image' ? '写实级' : '高清');
+    setFormDescription('自定义云雾模型');
+    setFormBadge('自定义');
     setIsFormOpen(true);
   };
 
@@ -161,14 +194,14 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
     setFormType(type);
     setEditingModel(model);
     setFormName(model.name);
-    setFormProvider(model.provider || 'Google Gemini AIGC');
-    setFormBaseUrl(model.baseUrl || 'https://generativelanguage.googleapis.com/v1beta');
+    setFormProvider(model.provider || '云雾');
+    setFormBaseUrl(model.baseUrl || 'https://api3.wlai.vip/v1');
     setFormApiKey(model.apiKey || '');
     setFormModelCode(model.modelCode || model.id);
     setFormScenario(model.recommendedScenario || '');
     setFormSpeedRating(model.speedRating || '标准');
     setFormSpeedMs(model.speedMs || '2.5s');
-    setFormQualityRating(model.qualityRating || '影视级');
+    setFormQualityRating(model.qualityRating || '专业级');
     setFormDescription(model.description || '');
     setFormBadge(model.badge || '');
     setIsFormOpen(true);
@@ -178,7 +211,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
     e.preventDefault();
     if (!formName.trim()) return;
 
-    const newId = editingModel ? editingModel.id : (formName.trim() as any);
+    const newId = editingModel ? editingModel.id : formName.trim();
 
     const updatedModel: ModelMetadata = {
       id: newId,
@@ -198,28 +231,27 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
       isCustom: true,
     };
 
-    setLocalConfig((prev) => {
-      if (formType === 'image') {
-        const exists = prev.imageModels.some((m) => m.id === newId);
-        const imageModels = exists
-          ? prev.imageModels.map((m) => (m.id === newId ? updatedModel : m))
-          : [...prev.imageModels, updatedModel];
-        return { ...prev, imageModels: imageModels as any };
-      } else {
-        const exists = prev.videoModels.some((m) => m.id === newId);
-        const videoModels = exists
-          ? prev.videoModels.map((m) => (m.id === newId ? updatedModel : m))
-          : [...prev.videoModels, updatedModel];
-        return { ...prev, videoModels: videoModels as any };
-      }
-    });
+    let nextConfig: ModelConfigState;
+    if (formType === 'image') {
+      const exists = localConfig.imageModels.some((m) => m.id === newId);
+      const imageModels = exists
+        ? localConfig.imageModels.map((m) => (m.id === newId ? updatedModel : m))
+        : [...localConfig.imageModels, updatedModel];
+      nextConfig = { ...localConfig, imageModels: imageModels as any };
+    } else {
+      const exists = localConfig.videoModels.some((m) => m.id === newId);
+      const videoModels = exists
+        ? localConfig.videoModels.map((m) => (m.id === newId ? updatedModel : m))
+        : [...localConfig.videoModels, updatedModel];
+      nextConfig = { ...localConfig, videoModels: videoModels as any };
+    }
 
+    persistAndSyncConfig(nextConfig);
     setIsFormOpen(false);
   };
 
   const handleSave = async () => {
-    await apiService.models.saveConfig(localConfig);
-    onSaveConfig(localConfig);
+    await persistAndSyncConfig(localConfig);
     setSaveSuccess(true);
     setTimeout(() => {
       setSaveSuccess(false);
@@ -263,16 +295,6 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* Switch Role Button */}
-            <button
-              onClick={onToggleRole}
-              className="text-xs px-3 py-1.5 rounded-lg border border-slate-200/80 bg-white text-slate-700 font-medium hover:bg-slate-100 transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
-              title="切换管理员/普通用户身份"
-            >
-              <Eye className="w-3.5 h-3.5 text-slate-500" />
-              <span>切换身份: {userRole === 'admin' ? '普通用户视图' : '管理员模式'}</span>
-            </button>
-
             <button
               onClick={onClose}
               className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
@@ -288,15 +310,9 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
             <div className="flex items-center gap-2">
               <Lock className="w-4 h-4 shrink-0 text-amber-600" />
               <span>
-                当前为普通用户只读状态，只能选择管理员开启的模型。如需添加新模型、修改 API 密钥或调整默认模型，请切换至【管理员模式】。
+                系统已自动切换至普通用户只读视图，仅允许预览及选择管理员已启用的模型。管理员变更后会自动同步。
               </span>
             </div>
-            <button
-              onClick={onToggleRole}
-              className="underline font-semibold text-amber-900 hover:text-amber-700 shrink-0 ml-2 cursor-pointer"
-            >
-              快速开启管理员
-            </button>
           </div>
         )}
 

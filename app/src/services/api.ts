@@ -50,14 +50,16 @@ export const apiService = {
           imageModels: json.imageModels || [],
           videoModels: json.videoModels || [],
           autoRecommendationEnabled: json.autoRecommendationEnabled ?? true,
-          defaultTextModel: json.defaultTextModel || 'DeepSeek V3',
-          defaultImageModel: json.defaultImageModel || 'Imagen 4 Ultra',
+          defaultTextModel: json.defaultTextModel || 'Gemini 3.6 Flash',
+          defaultImageModel: json.defaultImageModel || 'GPT Image 1',
           defaultVideoModel: json.defaultVideoModel || 'Seedance 2.0 Fast',
         };
       } catch (err) {
         console.warn('[API Client] Falling back to local model configuration');
         const local = JSON.parse(localStorage.getItem('aigc_model_config') || 'null');
-        if (local) return local;
+        if (local && (local.textModels?.length > 0 || local.imageModels?.length > 0 || local.videoModels?.length > 0)) {
+          return local;
+        }
         throw err;
       }
     },
@@ -81,34 +83,24 @@ export const apiService = {
     async testConnection(model: ModelMetadata): Promise<ApiTestConnectionResponse> {
       const startTime = Date.now();
       try {
-        const res = await fetch(`${model.baseUrl}/health`, {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${model.apiKey}`,
-            'Content-Type': 'application/json',
-          },
+        const res = await fetch(`${API_BASE_URL}/models/test-connection`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model }),
         });
-        const latency = Date.now() - startTime;
-        if (res.ok) {
-          return {
-            success: true,
-            message: `连接成功！响应 200 OK (${latency}ms)`,
-            latencyMs: latency,
-            statusCode: 200,
-          };
-        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
         return {
-          success: false,
-          message: `请求返回状态码 ${res.status}: ${res.statusText}`,
-          latencyMs: latency,
+          success: Boolean(json.success),
+          message: json.message || (json.success ? '连通成功' : '连通失败'),
+          latencyMs: json.latencyMs || (Date.now() - startTime),
           statusCode: res.status,
         };
-      } catch (err) {
+      } catch (err: any) {
         const elapsed = Date.now() - startTime;
-        const message = err instanceof Error ? err.message : '连接失败，请检查网络和 API 地址';
         return {
           success: false,
-          message: `连接失败: ${message} (${elapsed}ms)`,
+          message: `✗ 探测接口异常: ${err?.message || '网络连接超时'}`,
           latencyMs: elapsed,
           statusCode: 0,
         };

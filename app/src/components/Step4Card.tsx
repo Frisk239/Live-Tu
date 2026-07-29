@@ -20,35 +20,37 @@ import {
   RefreshCw,
   Maximize2,
   Minimize2,
-  Scissors,
-  Film,
-  Type,
-  Volume2,
+  XCircle,
 } from 'lucide-react';
-import { ArtificialVideoEditor } from './ArtificialVideoEditor';
+import { StepModelPicker } from './StepModelPicker';
+import { ModelConfigState } from '../data/models';
 
 interface Step4CardProps {
   inputs: Step4Inputs;
   output?: Step4Output;
   step3Output?: Step3Output;
   status: StepStatus;
+  modelConfig: ModelConfigState;
   onUpdateInputs: (inputs: Partial<Step4Inputs>) => void;
   onSyncFromStep3?: () => void;
   onRun: () => void;
+  onAbort?: () => void;
   onReset: () => void;
   onPrev: () => void;
   onNext: () => void;
   upstreamStale?: boolean;
 }
 
-export const Step4Card: React.FC<Step4CardProps> = ({
+export const Step4Card: React.FC<Step4CardProps> = React.memo(({
   inputs,
   output,
   step3Output,
   status,
+  modelConfig,
   onUpdateInputs,
   onSyncFromStep3,
   onRun,
+  onAbort,
   onReset,
   onPrev,
   onNext,
@@ -58,7 +60,6 @@ export const Step4Card: React.FC<Step4CardProps> = ({
   const [copiedJson, setCopiedJson] = useState(false);
   const [activeTab, setActiveTab] = useState<'visual' | 'json'>('visual');
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [isArtificialEditorOpen, setIsArtificialEditorOpen] = useState(false);
 
   const isRunning = status === 'running';
   const isCompleted = status === 'completed' && Boolean(output);
@@ -79,15 +80,6 @@ export const Step4Card: React.FC<Step4CardProps> = ({
           : 'bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800/80 rounded-2xl shadow-surface-md overflow-hidden transition-all'
       }
     >
-      {/* Artificial Video Editor Fullscreen Overlay */}
-      {isArtificialEditorOpen && (
-        <ArtificialVideoEditor
-          initialTitle={inputs.copywritingTitle || '高奢小绿泥晨间洗漱'}
-          initialBgmTrack={output?.bgm_recommendation?.track_name || 'Chill Lofi Beats - Morning Routine'}
-          onClose={() => setIsArtificialEditorOpen(false)}
-        />
-      )}
-
       {/* Header */}
       <div className="px-6 py-4 bg-slate-50/80 dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -96,25 +88,15 @@ export const Step4Card: React.FC<Step4CardProps> = ({
           </div>
           <div>
             <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-              第 4 步：文案 + 视频 → 匹配 BGM 音轨 & 人工精细剪辑
+              第 4 步：文案 + 视频 → 匹配 BGM 音轨 & BPM 节奏卡点
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              情绪匹配 + BPM 节奏卡点点位推荐 + 支持人工多轨道剪辑（字体、BGM、音效、字幕等）
+              情绪匹配 + BPM 节奏卡点点位推荐 + 商业化版权合规确权（抖音/小红书）
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Artificial Video Editor Launch Button */}
-          <button
-            onClick={() => setIsArtificialEditorOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 transition-all shadow-md shadow-indigo-500/20"
-            title="打开人工剪辑工作台 (字体、BGM、音效等)"
-          >
-            <Scissors className="w-3.5 h-3.5" />
-            <span>人工剪辑工作台</span>
-          </button>
-
           <button
             onClick={() => setIsFullscreen(!isFullscreen)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all shadow-surface-sm ${
@@ -162,27 +144,49 @@ export const Step4Card: React.FC<Step4CardProps> = ({
             </button>
           )}
 
-          <button
-            onClick={onRun}
-            disabled={isRunning}
-            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 transition-all shadow-md shadow-indigo-600/20"
-          >
-            {isRunning ? (
-              <>
+          {isRunning ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                disabled
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold text-white bg-indigo-600/80 cursor-wait shadow-md"
+              >
                 <Sparkles className="w-3.5 h-3.5 animate-spin" />
                 <span>BGM 匹配中...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>运行 </span>
-              </>
-            )}
-          </button>
+              </button>
+              {onAbort && (
+                <button
+                  onClick={onAbort}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 transition-all shadow-md cursor-pointer"
+                  title="中断并终止当前 BGM 匹配阶段"
+                >
+                  <XCircle className="w-3.5 h-3.5" />
+                  <span>终止阶段</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={onRun}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 transition-all shadow-md shadow-indigo-600/20"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>运行 </span>
+            </button>
+          )}
 
           <button
-            onClick={onNext}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 transition-colors shadow-sm"
+            onClick={() => {
+              if (!isCompleted) {
+                alert('请先运行当前步骤生成 BGM 推荐方案再进入下一步');
+                return;
+              }
+              onNext();
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shadow-sm ${
+              isCompleted
+                ? 'bg-purple-600 text-white hover:bg-purple-500 cursor-pointer font-bold'
+                : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+            }`}
           >
             <span>下一步</span>
             <ArrowRight className="w-3.5 h-3.5" />
@@ -240,30 +244,6 @@ export const Step4Card: React.FC<Step4CardProps> = ({
             )}
           </div>
 
-          {/* Artificial Video Editing Workbench Feature Card */}
-          <div className="p-3.5 bg-gradient-to-r from-purple-900/20 via-indigo-900/20 to-slate-900/40 dark:from-purple-950/50 dark:via-indigo-950/50 dark:to-slate-900/80 border border-purple-500/30 rounded-xl flex items-center justify-between text-xs">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-lg bg-gradient-to-br from-purple-600 to-indigo-600 text-white shadow-md">
-                <Scissors className="w-4 h-4" />
-              </div>
-              <div>
-                <span className="font-bold text-slate-800 dark:text-slate-100 block">
-                  人工精细剪辑与自定义音效字幕
-                </span>
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  支持多轨道剪辑、自定义字体、精细卡点、BGM及音效独立控制
-                </span>
-              </div>
-            </div>
-            <button
-              onClick={() => setIsArtificialEditorOpen(true)}
-              className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-lg font-bold text-xs shadow-md transition-all shrink-0 flex items-center gap-1.5"
-            >
-              <span>进入剪辑台</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
           <div>
             <label className="text-xs font-medium text-slate-700 dark:text-slate-300 block mb-1">
               第 3 步爆款标题 (copywritingTitle)
@@ -307,6 +287,18 @@ export const Step4Card: React.FC<Step4CardProps> = ({
                 <option value="个人">个人分享（非商业化）</option>
               </select>
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">模型选择</p>
+            <StepModelPicker
+              category="text"
+              title="BGM 语义匹配模型"
+              models={modelConfig.textModels}
+              value={inputs.textModel}
+              defaultId={modelConfig.defaultTextModel}
+              onChange={(id) => onUpdateInputs({ textModel: id })}
+            />
           </div>
 
           <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
@@ -494,4 +486,4 @@ export const Step4Card: React.FC<Step4CardProps> = ({
       </div>
     </div>
   );
-};
+});

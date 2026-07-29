@@ -35,8 +35,10 @@ materialsRouter.get('/', (req, res) => {
   }
 });
 
+import { isMinioConfigured, uploadToMinio } from '../lib/minio';
+
 // POST /api/materials/upload — 上传素材（支持 dataUrl / base64 Payload）
-materialsRouter.post('/upload', (req, res) => {
+materialsRouter.post('/upload', async (req, res) => {
   try {
     const { name = 'uploaded_file', dataUrl, url, mediaType, size } = req.body;
 
@@ -48,9 +50,17 @@ materialsRouter.post('/upload', (req, res) => {
     const calculatedType = isVideo ? 'video' : 'image';
 
     if (dataUrl && dataUrl.startsWith('data:')) {
+      const base64Str = dataUrl.split(',')[1] || '';
+      const estimatedBytes = Math.ceil(base64Str.length * 0.75);
+      const maxAllowedBytes = isVideo ? 50 * 1024 * 1024 : 20 * 1024 * 1024;
+      if (estimatedBytes > maxAllowedBytes) {
+        return res.status(413).json({ success: false, error: `文件超过大小限制 (最大 ${isVideo ? '50MB' : '20MB'})` });
+      }
+
       const matches = dataUrl.match(/^data:(.+);base64,(.+)$/);
       if (matches) {
-        const ext = matches[1].split('/')[1] || (isVideo ? 'mp4' : 'png');
+        const mimeType = matches[1];
+        const ext = mimeType.split('/')[1] || (isVideo ? 'mp4' : 'png');
         const filename = `${id}.${ext}`;
         const fullPath = path.join(uploadsMaterialsDir, filename);
         const buffer = Buffer.from(matches[2], 'base64');
@@ -59,6 +69,16 @@ materialsRouter.post('/upload', (req, res) => {
 
         filePath = path.join('uploads', 'materials', filename).replace(/\\/g, '/');
         finalUrl = `/${filePath}`;
+
+        // 如果配置了 MinIO 对象存储，自动同步至 MinIO 并获取公网 URL
+        if (isMinioConfigured()) {
+          try {
+            const minioUrl = await uploadToMinio(filename, buffer, mimeType);
+            finalUrl = minioUrl;
+          } catch (minioErr: any) {
+            console.warn('[materials] MinIO 上传失败，回退使用本地路径:', minioErr.message);
+          }
+        }
       }
     }
 

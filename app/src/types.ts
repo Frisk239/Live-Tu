@@ -7,7 +7,10 @@ export interface Step1Inputs {
   platform: 'douyin' | 'xiaohongshu' | 'shipinhao' | 'general';
   bloggerType: 'skincare_expert' | 'daily_seeding' | 'ingredient_geek' | 'review_beauty';
   viralReason: string;
-  imageModel?: 'Nano Banana 2 Lite' | 'Nano Banana Pro' | 'Imagen 4' | 'Imagen 4 Ultra' | 'Imagen 4 Fast' | 'GPT Image 2';
+  /** 多模态视觉拆解用文本模型（默认 Gemini 3.6 Flash） */
+  textModel?: string;
+  /** 文生图模型（默认 GPT Image 1） */
+  imageModel?: string;
 }
 
 export interface Step1Output {
@@ -23,12 +26,30 @@ export interface Step1Output {
   rationale: string;
 }
 
+export interface CandidateImageItem {
+  id: string;
+  url: string;
+  promptUsed: string;
+  createdAt: number;
+}
+
 export interface Step2Inputs {
   static_image_prompt: string;
   imageUrl: string;
   videoTone: 'douyin_beat' | 'xiaohongshu_healing' | 'brand_tvc';
   durationSec: number;
-  videoModel?: 'Omni Flash' | 'Veo 3.1 Preview' | 'Veo 3.1 Fast Preview' | 'Seedance 2.0' | 'Seedance 2.0 Fast';
+  /** 图生视频模型（默认 Seedance 2.0 Fast） */
+  videoModel?: string;
+  /** 运镜 Prompt 生成用文本模型（默认 Gemini 3.6 Flash） */
+  textModel?: string;
+  /** 生图模型（默认 GPT Image 1 / 云雾） */
+  imageModel?: string;
+  /** 工作模式：text2image (AI 文生图素材集模式) | direct_image (已有首帧图/Step1 模式) */
+  tabMode?: 'text2image' | 'direct_image';
+  /** AI 生图大模型生成的多个素材图候选池 */
+  candidateImages?: CandidateImageItem[];
+  /** 当前选中的素材图 ID */
+  selectedImageId?: string;
 }
 
 export interface Step2Output {
@@ -56,6 +77,8 @@ export interface Step3Inputs {
   videoPrompt: string;
   targetPlatform: 'douyin' | 'xiaohongshu' | 'shipinhao' | 'general';
   scriptPersona: '成分党' | '油皮亲妈' | '学生党平价' | '高级感沉浸';
+  /** 文案 LLM（默认 Gemini 3.6 Flash） */
+  textModel?: string;
 }
 
 export interface ProhibitedWordWarning {
@@ -81,6 +104,8 @@ export interface Step4Inputs {
   copywritingTitle: string;
   tonePreference: '治愈' | '卡点' | '高级' | '反差';
   commercialScenario: '个人' | '抖音/小红书商业化';
+  /** BGM 匹配用文本模型（默认 Gemini 3.6 Flash） */
+  textModel?: string;
 }
 
 export interface Step4Output {
@@ -182,7 +207,7 @@ export interface ProductItem {
   updatedAt?: string;
 }
 
-export type SellingPointsAiModel = 'deepseek-v3' | 'deepseek-r1' | 'gpt-4o' | 'gemini-3.6-flash' | 'claude-3.5-sonnet';
+export type SellingPointsAiModel = 'gemini-3.6-flash' | 'gpt-4o' | 'deepseek-v3';
 
 export interface PresetTemplate {
   id: string;
@@ -193,4 +218,16 @@ export interface PresetTemplate {
   /** Full 5-step snapshot; aligned with backend `/api/presets` field name */
   pipelineData: PipelineData;
   createdAt?: string;
+}
+
+export interface SessionItem {
+  id: string;
+  title: string;
+  createdAt: string;
+  status: 'completed' | 'generating' | 'failed' | 'queued';
+  currentStep: StepId;
+  pipelineData: PipelineData;
+  thumbnailUrl?: string;
+  version?: number; // 版本控制，用于提示词调优对比
+  notes?: string;
 }

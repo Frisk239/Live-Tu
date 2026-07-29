@@ -10,6 +10,7 @@ import {
   PackageCheck,
   HelpCircle,
   PanelLeftClose,
+  PanelLeftOpen,
   Sparkles,
   Settings2,
   FolderKanban,
@@ -52,9 +53,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   products = [],
   onSelectActiveProduct,
 }) => {
-  const currentWidthClass = isExpanded
-    ? 'w-[240px] opacity-100 translate-x-0'
-    : 'w-0 -ml-0 opacity-0 -translate-x-full pointer-events-none overflow-hidden border-none';
+  const currentWidthClass = isExpanded ? 'w-[240px]' : 'w-[68px]';
 
   return (
     <aside
@@ -62,34 +61,46 @@ export const Sidebar: React.FC<SidebarProps> = ({
     >
       {/* Top Section */}
       <div className="overflow-hidden flex flex-col h-full justify-between">
-        <div>
+        <div className="flex flex-col flex-1 min-h-0 overflow-y-auto">
           {/* Header */}
-          <div className="p-3.5 border-b border-slate-200/80 bg-slate-50/50 flex items-center justify-between min-h-[61px]">
-            <div className="flex items-center gap-2.5 overflow-hidden pl-1">
-              <div className="relative flex items-center justify-center w-8 h-8 rounded-lg bg-blue-600 text-white font-bold shrink-0 shadow-2xs">
-                <span className="text-xs">BUV</span>
-              </div>
-              <div className="truncate">
-                <span className="font-semibold text-xs text-slate-900 block truncate">
-                  AI 爆款反推工作台
-                </span>
-                <span className="text-[10px] text-blue-700 font-medium bg-blue-50 px-1.5 py-0.5 rounded-full border border-blue-200/60 inline-block">
-                  v2.5 PRO
-                </span>
-              </div>
-            </div>
+          <div className={`p-3.5 border-b border-slate-200/80 bg-slate-50/50 flex items-center min-h-[61px] ${isExpanded ? 'justify-between' : 'justify-center'}`}>
+            {isExpanded ? (
+              <>
+                <div className="flex items-center gap-2.5 overflow-hidden pl-1">
+                  <div className="relative flex items-center justify-center w-8 h-8 rounded-lg bg-blue-600 text-white font-bold shrink-0 shadow-2xs">
+                    <span className="text-xs">BUV</span>
+                  </div>
+                  <div className="truncate">
+                    <span className="font-semibold text-xs text-slate-900 block truncate">
+                      AI 爆款反推工作台
+                    </span>
+                    <span className="text-[10px] text-blue-700 font-medium bg-blue-50 px-1.5 py-0.5 rounded-full border border-blue-200/60 inline-block">
+                      v2.5 PRO
+                    </span>
+                  </div>
+                </div>
 
-            <button
-              onClick={onToggleExpand}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
-              title="隐藏侧边栏"
-            >
-              <PanelLeftClose className="w-4 h-4" />
-            </button>
+                <button
+                  onClick={onToggleExpand}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
+                  title="收起侧边栏"
+                >
+                  <PanelLeftClose className="w-4 h-4" />
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={onToggleExpand}
+                className="p-2 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-100 transition-colors cursor-pointer"
+                title="展开侧边栏"
+              >
+                <PanelLeftOpen className="w-4 h-4" />
+              </button>
+            )}
           </div>
 
           {/* Navigation Items Group */}
-          <div className="p-2.5 space-y-4 overflow-y-auto max-h-[calc(100vh-140px)]">
+          <div className="p-2.5 space-y-4 flex-1 overflow-y-auto">
             {/* Main Pipeline Entrance */}
             <div className="flex flex-col space-y-1">
               <div className="px-2 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
@@ -271,15 +282,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        {/* Bottom Section: Reset Footer */}
+        {/* Bottom Section: Reset / Clear Footer */}
         <div className="p-2.5 border-t border-slate-200/80 bg-slate-50/50 flex flex-col items-center">
           <button
             onClick={onResetAll}
-            className="flex items-center justify-center gap-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-rose-50 hover:text-rose-600 border border-slate-200/80 hover:border-rose-200 transition-all w-full px-3 py-2 cursor-pointer bg-white shadow-2xs"
-            title="重置整个 5 步工作台工程"
+            className={`flex items-center justify-center gap-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-rose-50 hover:text-rose-600 border border-slate-200/80 hover:border-rose-200 transition-all px-3 py-2 cursor-pointer bg-white shadow-2xs ${isExpanded ? 'w-full' : 'w-10 px-0'}`}
+            title="一键清空工作台全部输入、产物与离线缓存"
           >
-            <RotateCcw className="w-4 h-4 shrink-0" />
-            <span>重置工作台工程</span>
+            <RotateCcw className="w-4 h-4 shrink-0 text-slate-500" />
+            {isExpanded && <span>一键清空工作台</span>}
           </button>
         </div>
       </div>

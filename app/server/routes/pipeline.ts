@@ -18,6 +18,28 @@ function allowMockFallback(): boolean {
   return process.env.ALLOW_MOCK_FALLBACK === 'true' || process.env.ALLOW_MOCK_FALLBACK === '1';
 }
 
+// ==================== GLOBAL HARNESS CONSTRAINTS ====================
+export const HARNESS_CONSTRAINTS = {
+  JSON_ONLY: '必须只输出纯合法 JSON 对象，无任何 Markdown、解释、代码块或额外文本。',
+  STRUCTURED_OUTPUT: '输出必须严格包含所有指定字段，字段值必须具体、视觉化、专业、高质量。',
+  LENGTH_CONSTRAINTS: {
+    title: '15-25字吸睛标题',
+    hook: '3秒黄金 Hook（情感+痛点+产品+转化暗示）',
+    scene: '15-30字场景描述',
+    subject: '15-30字主体动作描述',
+    static_image_prompt: '详细英文 Prompt，包含 8k、cinematic、ultra-realistic texture、viral keywords',
+    video_prompt: '详细英文结构化 Prompt，包含 60fps、natural lighting、product texture',
+    body: '80-120字口播脚本，自然植入成分与SGS数据',
+    hashtags: '3-4个真实话题标签',
+    sync_point: '卡点秒数描述（如 "1.2s (镜头推进特写), 2.8s (成分展示)"）',
+    negative_prompt: '强制包含避免旋转、变形、抖动、花式转场等',
+  },
+  SAFETY: '禁止任何虚假宣传、违禁极限词（如：绝对、第一名、100%根除、震惊、必看）。',
+  SELF_CRITIQUE: '在输出前自我批判：内容质量、格式正确性、产品特色融入度、SEO/转化潜力。',
+  FEW_SHOT: '始终参考以下示例输出格式。',
+  PRODUCT_INJECT: '必须融入品牌产品特色、定位、3:4:3配方、SGS数据。',
+};
+
 
 // Helper to fetch active product from DB or fallback
 function getProductContext(productId?: string, bodyProductInfo?: any) {
@@ -135,6 +157,33 @@ pipelineRouter.post('/generate-image', async (req, res) => {
       fs.writeFileSync(targetPath, svgContent, 'utf-8');
       imageUrl = `/uploads/materials/${filename}`;
       source = 'mock';
+    } else if (imageUrl.startsWith('data:image/')) {
+      // 云雾 gpt-image-* 返回 b64：落盘为本地 PNG
+      const match = imageUrl.match(/^data:image\/(\w+);base64,(.+)$/);
+      if (!match) {
+        return res.status(502).json({ success: false, error: '文生图返回了无法解析的 data URL', source });
+      }
+      const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+      const filename = `gen_img_${Date.now()}.${ext}`;
+      const targetPath = path.join(materialsDir, filename);
+      fs.writeFileSync(targetPath, Buffer.from(match[2], 'base64'));
+      imageUrl = `/uploads/materials/${filename}`;
+    } else if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+      // 远程 URL：尽量下载缓存到本地，失败则保留外链
+      try {
+        const remote = await fetch(imageUrl);
+        if (remote.ok) {
+          const buf = Buffer.from(await remote.arrayBuffer());
+          const ct = remote.headers.get('content-type') || '';
+          const ext = ct.includes('jpeg') || ct.includes('jpg') ? 'jpg' : ct.includes('webp') ? 'webp' : 'png';
+          const filename = `gen_img_${Date.now()}.${ext}`;
+          const targetPath = path.join(materialsDir, filename);
+          fs.writeFileSync(targetPath, buf);
+          imageUrl = `/uploads/materials/${filename}`;
+        }
+      } catch {
+        // keep remote URL
+      }
     }
 
     // Persist to materials table (correct schema)
@@ -159,6 +208,7 @@ pipelineRouter.post('/generate-image', async (req, res) => {
         imageUrl,
         materialId: id,
         promptUsed: prompt,
+        modelUsed: gatewayRes.modelUsed,
       },
       source,
     });
@@ -176,6 +226,7 @@ pipelineRouter.post('/step1', async (req, res) => {
     platform = 'douyin',
     bloggerType = 'daily_seeding',
     viralReason = '',
+    textModel,
     imageModel,
     productId,
     productInfo,
@@ -183,22 +234,35 @@ pipelineRouter.post('/step1', async (req, res) => {
 
   const targetMediaUrl = mediaUrl || imageUrl || req.body.mediaUrl || req.body.imageUrl || '';
   const product = getProductContext(productId, productInfo);
+  // 多模态拆解走文本模型；imageModel 仅用于文生图，勿混用
+  const visionModelId = textModel || 'Gemini 3.6 Flash';
 
-  const systemPrompt = `你是一个抖音/小红书顶级美妆电商爆款视觉拆解专家。
+  const systemPrompt = `你是一个顶级美妆电商爆款视觉拆解专家。严格遵守以下规则：
+
+1. **只输出纯JSON**，无任何前言、Markdown、解释或额外字符。
+2. **输出必须包含所有10个字段**，字段值必须具体、视觉化、专业、高质量。
+3. 场景、主体等描述字段：15-30字，英文或中文均可，优先中文。
+4. palette：3-4个颜色描述（如 "薄荷绿 #A8D5BA, 纯白 #FFFFFF, 柔光白 #F5F5F0"）。
+5. 所有描述必须融入产品特色、SGS暗示、爆款种草力。
+6. 禁止任何虚假宣传或违禁词。
+7. 静态_image_prompt必须是详细英文Prompt，包含高保真描述（8k、cinematic、product texture、viral keywords）。
+
+示例输出：
+{
+  "scene": "晨间阳光浴室镜前，自然光照射在膏体瓶子上，柔和光影突出质感",
+  "subject": "女性纤手展示产品膏体细腻拉丝动作，特写高清",
+  "style": "小红书治愈生活风",
+  "palette": ["#A8D5BA 薄荷绿", "#FFFFFF 纯白", "#F5F5F0 柔光白"],
+  "lighting": "自然柔光，高光润泽，透光感十足",
+  "composition": "三分法构图，主体居中偏右下，层次感分明",
+  "mood": "清爽高质感晨间仪式感",
+  "camera": "45度俯拍特写 + 微距大光圈虚化",
+  "static_image_prompt": "A high-end product photography shot of [product] in a bright minimalist aesthetic setting, soft morning sunlight, 8k resolution, ultra-realistic texture, perfect composition, viral skincare aesthetic",
+  "rationale": "通过真实高光质感与纯净配色，强化点击转化率"
+}
+
 针对品牌产品【${product.name}】（定位：${product.positioning}，卖点特色：${product.customSellingPoints}），
-你需要对用户提供的首帧图片/爆款视频画面进行多模态视觉反推与拆解。
-
-必须返回合法 JSON 对象，包含以下 10 个字段：
-1. scene (场景描述, 15-30字)
-2. subject (主体与产品动作, 15-30字)
-3. style (视觉风格, 5-15字)
-4. palette (颜色数组 Hex/中文, 3-4项字符串数组)
-5. lighting (光线描述)
-6. composition (构图方式)
-7. mood (情绪基调)
-8. camera (镜头语言与角度)
-9. static_image_prompt (详细高保真英文 Prompt，适合 Midjourney/Imagen 生成同款高清图)
-10. rationale (爆款归因拆解说明)`;
+你需要对用户提供的首帧图片/爆款视频画面进行多模态视觉反推与拆解。`;
 
   const userPrompt = `【拆解任务】
 - 目标产品：${product.name} (${product.positioning})
@@ -206,14 +270,14 @@ pipelineRouter.post('/step1', async (req, res) => {
 - 博主类型：${bloggerType}
 - 爆款原因描述：${viralReason || '膏体质感高清拉丝，光影透润极具治愈种草力'}
 ${targetMediaUrl ? '- 请结合所上传的画面素材进行深度视觉解析。' : '- 当前无画面素材，请基于文本上下文进行构想拆解。'}
-请输出结构化 JSON。`;
+请严格按照示例格式输出纯JSON。`;
 
   try {
     const gatewayRes = await callLlmGateway({
       system: systemPrompt,
       user: userPrompt,
       imageUrl: targetMediaUrl || undefined,
-      modelId: imageModel,
+      modelId: visionModelId,
     });
 
     if (gatewayRes.success && gatewayRes.data) {
@@ -284,37 +348,47 @@ pipelineRouter.post('/step2', async (req, res) => {
     videoTone = 'douyin_beat',
     durationSec = 4,
     videoModel = 'Seedance 2.0 Fast',
+    textModel,
     productId,
     productInfo,
   } = inputs;
 
   const targetImageUrl = imageUrl || mediaUrl || '';
   const product = getProductContext(productId, productInfo);
+  // 运镜 Prompt 走文本模型；videoModel 仅给 Seedance 图生视频
+  const motionLlmId = textModel || 'Gemini 3.6 Flash';
 
   let data: any = null;
   let gatewaySource = 'mock';
 
   try {
     const gatewayRes = await callLlmGateway({
-      system: `你是一个专业 AIGC 短视频运镜专家。
-针对品牌产品【${product.name}】（定位：${product.positioning}，卖点特色：${product.customSellingPoints}），
-结合首帧静态图描述及选定的视频调性，生成结构化镜头运镜 Prompt。
+      system: `你是一个专业 AIGC 短视频运镜专家。严格遵守以下规则：
+1. **只输出纯JSON**，无任何额外文本。
+2. 输出必须包含 motion_type / motion_intensity / motion_description / duration_sec / video_prompt / audio_layer / negative_prompt 所有字段。
+3. motion_description：中文，具体镜头推进描述（15-40字），融入产品质感。
+4. video_prompt：详细英文结构化 Prompt，包含 60fps、cinematic、product texture、viral motion keywords。
+5. negative_prompt：强制包含避免旋转、变形、抖动、花式转场等。
+6. motion_intensity 与调性匹配（strong / subtle）。
+7. 自我批判：确保运镜强度与视频调性（${videoTone}）匹配。
 
-必须返回合法 JSON 对象，包含字段：
-- motion_type: 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right' | 'tilt_up' | 'tilt_down' | 'rotate' | 'static_micro_motion'
-- motion_intensity: 'subtle' | 'medium' | 'strong'
-- motion_description (中文描述镜头推进、特写与微动作)
-- duration_sec (字符串, 如 "${durationSec}")
-- video_prompt (英文结构化运镜 Prompt, 供 Seedance / Veo 图生视频模型使用)
-- audio_layer (配套音效描述)
-- negative_prompt (负向 Prompt)`,
+示例输出：
+{
+  "motion_type": "zoom_in",
+  "motion_intensity": "strong",
+  "motion_description": "镜头由中景平滑推进至产品膏体瓶身特写，展示细腻拉丝质感与光影透润",
+  "duration_sec": "4",
+  "video_prompt": "A smooth slow zoom-in camera motion focusing on ${product.name}, 60fps cinematic quality, natural morning lighting, ultra-realistic texture, viral skincare motion",
+  "audio_layer": "晨间水滴声与轻柔环境音",
+  "negative_prompt": "avoid meaningless rotation, deformation, jitter, flashy transitions"
+}`,
       user: `【运镜生成任务】
 - 目标产品：${product.name}
 - 静态图首帧描述：${static_image_prompt || `A high-end commercial shot of ${product.name}`}
 - 目标调性：${videoTone}
 - 期望时长：${durationSec}秒
-请输出结构化 JSON。`,
-      modelId: videoModel,
+请严格按照示例格式输出纯JSON。`,
+      modelId: motionLlmId,
     });
 
     if (gatewayRes.success && gatewayRes.data) {
@@ -355,6 +429,7 @@ pipelineRouter.post('/step2', async (req, res) => {
         : 'doubao-seedance-2-0';
       const duration = clampSeedanceDuration(Number(durationSec) || 5);
       // duration clamp 5|10 is fine; API allows 4-15
+      const reqHost = `${req.protocol}://${req.get('host')}`;
       const prepared = buildSeedanceGenerationBody({
         prompt: data.video_prompt,
         model: modelId,
@@ -362,7 +437,7 @@ pipelineRouter.post('/step2', async (req, res) => {
         resolution: '720p',
         aspectRatio: '9:16',
         imageUrl: targetImageUrl,
-      });
+      }, reqHost);
 
       if (prepared.warnings.length > 0) {
         data.seedanceMaterialWarning = prepared.warnings.join('; ');
@@ -423,8 +498,14 @@ pipelineRouter.post('/step3', async (req, res) => {
 
   const product = getProductContext(productId, productInfo);
 
-  const systemPrompt = `你是一个顶级短视频带货文案主创与品牌广告合规官。
-你需要为品牌产品【${product.name}】撰写爆款带货脚本文案。
+  const systemPrompt = `你是一个顶级短视频带货文案主创与品牌广告合规官。严格遵守以下规则：
+
+${HARNESS_CONSTRAINTS.JSON_ONLY}
+${HARNESS_CONSTRAINTS.STRUCTURED_OUTPUT}
+${HARNESS_CONSTRAINTS.LENGTH_CONSTRAINTS.title} - ${HARNESS_CONSTRAINTS.LENGTH_CONSTRAINTS.hook} - ${HARNESS_CONSTRAINTS.LENGTH_CONSTRAINTS.body}
+${HARNESS_CONSTRAINTS.SAFETY}
+${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
+${HARNESS_CONSTRAINTS.FEW_SHOT}
 
 【品牌知识库权威依据】
 - 核心定位：${product.positioning}
@@ -432,26 +513,25 @@ pipelineRouter.post('/step3', async (req, res) => {
 - SGS权威检测数据：${product.sgsData}
 - 核心卖点：${product.customSellingPoints}
 
-【合规红线要求】
-绝对严禁在文案中使用任何虚假宣传或违禁极限词（如：绝对、第一名、医用级、100%根除、震惊、必看）。
-
-必须返回合法 JSON 对象，包含以下字段：
-- title (吸睛标题, 15-25字)
-- hook (3秒黄金 Hook 吸睛句)
-- body (正文口播脚本，自然植入 3:4:3 成分与 SGS 实测数据)
-- hashtags (话题标签数组, 3-4个)
-- cta (引导转化行动 Call-to-Action)
-- platform_fit: {
-    douyin: "抖音卡点节奏口播完整版本",
-    xiaohongshu: "小红书图文种草与体验笔记版本"
-  }`;
+示例输出：
+{
+  "title": "搞定油光黑头！${product.name} SGS实测强效修复膏体",
+  "hook": "还在为油光黑头烦恼？试试【${product.name}】的3:4:3配方，SGS权威实测后立即见效！",
+  "body": "来看 SGS 权威报告！${product.name} 凭什么口碑爆款？核心就在它的洗完一润二修三控油体系。洗完一润二修三控油，膏体薄荷绿质感拉丝，自然清爽不紧绷！",
+  "hashtags": ["#${product.name}", "#${product.name.split(' ')[0]}", "#美妆爆款", "#SGS实测"],
+  "cta": "点击下方链接，领专属限时体验福利！",
+  "platform_fit": {
+    "douyin": "宝藏好物！${product.name} SGS实测效果拉满！点击领优惠～",
+    "xiaohongshu": "沉浸式种草！${product.name} 质地超级治愈，强烈推荐给所有宝子们～"
+  }
+}`;
 
   const userPrompt = `【文案生成任务】
 - 目标产品：${product.name}
 - 目标平台：${targetPlatform}
 - 脚本人设：${scriptPersona}
 - 镜头运镜描述：${videoPrompt || `镜头推进展示 ${product.name}`}
-请生成包含 SGS 权威数据的爆款脚本文案 JSON。`;
+请严格按照示例格式输出纯JSON。`;
 
   let data: any = null;
   let source = 'mock';
@@ -512,9 +592,11 @@ pipelineRouter.post('/step4', async (req, res) => {
     tonePreference = '治愈',
     commercialScenario = '个人',
     musicModel,
+    textModel,
     productId,
     productInfo,
   } = inputs;
+  const bgmLlmId = textModel || musicModel || 'Gemini 3.6 Flash';
 
   const product = getProductContext(productId, productInfo);
 
@@ -537,26 +619,36 @@ pipelineRouter.post('/step4', async (req, res) => {
     audio_url: r.audio_url,
   }));
 
-  const systemPrompt = `你是一个专业的电商短视频音乐总监与音画匹配算法专家。
-针对品牌产品【${product.name}】（定位：${product.positioning}），
-根据文案标题【${copywritingTitle || product.name}】与用户偏好调性【${tonePreference}】，
-从以下候选 BGM 本地库中选择最匹配的音乐配乐：
+  const systemPrompt = `你是一个专业的电商短视频音乐总监与音画匹配算法专家。严格遵守以下规则：
+
+1. **只输出纯JSON**，无任何额外文本。
+2. 输出必须包含 bgm_recommendation 和 alternatives 所有字段。
+3. bgm_recommendation：必须包含 track_name / artist / style / bpm / mood_match / sync_point / license_note / audioSampleUrl。
+4. mood_match：严格按照文案标题和调性【${tonePreference}】描述契合度。
+5. sync_point：建议卡点秒数（与镜头匹配，如 "1.2s (镜头推进特写), 2.8s (成分效果)"）。
+6. alternatives：提供 2 首备选曲目说明。
+7. 自我批判：确保 BGM 与产品定位、视频调性高度匹配，授权合规。
 
 【候选 BGM 音乐库】
 ${JSON.stringify(bgmCandidates, null, 2)}
 
-必须返回合法 JSON 对象，包含字段：
-- bgm_recommendation: {
-    track_name: string (匹配曲目名称),
-    artist: string (艺术家),
-    style: string[] (风格标签数组),
-    bpm: string (BPM数值字符串),
-    mood_match: string (契合度与调性匹配说明),
-    sync_point: string (建议卡点秒数说明，如 "1.2s (镜头推进特写), 2.8s (成分效果)"),
-    license_note: string (如 "已商业授权"),
-    audioSampleUrl: string (对应的试听 audio_url)
-  }
-- alternatives: Array<{ track_name: string, style: string, when_to_use: string }> (2首备选曲目说明)`;
+示例输出：
+{
+  "bgm_recommendation": {
+    "track_name": "晨光治愈",
+    "artist": "晨光音乐",
+    "style": ["治愈", "轻快"],
+    "bpm": "92",
+    "mood_match": "完美契合小红书治愈生活调性，适合日常种草场景",
+    "sync_point": "1.2s（镜头推进特写）、2.8s（成分展示）",
+    "license_note": "已商业授权",
+    "audioSampleUrl": "https://example.com/audio/xxx.mp3"
+  },
+  "alternatives": [
+    {"track_name": "自然光影", "style": "轻快", "when_to_use": "备选，适合更明亮的早晨场景"},
+    {"track_name": "晨间水滴", "style": "治愈", "when_to_use": "备选，适合更柔和的种草氛围"}
+  ]
+}`;
 
   let data: any = null;
   let source = 'mock';
@@ -569,7 +661,7 @@ ${JSON.stringify(bgmCandidates, null, 2)}
 - 视频调性偏好：${tonePreference}
 - 商业授权场景：${commercialScenario}
 请进行语义最佳匹配。`,
-      modelId: musicModel,
+      modelId: bgmLlmId,
     });
 
     if (gatewayRes.success && gatewayRes.data && gatewayRes.data.bgm_recommendation) {
@@ -640,6 +732,7 @@ ${JSON.stringify(bgmCandidates, null, 2)}
 });
 
 // Step 5: 成品合成 Timeline 构建与 FFmpeg 渲染导出
+// 使用全局 HARNESS_CONSTRAINTS 确保所有合成提示词一致
 pipelineRouter.post('/step5', async (req, res) => {
   const inputs = req.body.inputs || req.body;
   const {

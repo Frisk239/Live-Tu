@@ -31,6 +31,7 @@ export const MaterialsPageView: React.FC<MaterialsPageViewProps> = ({
   const [activeTab, setActiveTab] = useState<'all' | 'video' | 'image'>('all');
   const [selectedPreview, setSelectedPreview] = useState<MaterialItem | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const handleFileUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -48,9 +49,9 @@ export const MaterialsPageView: React.FC<MaterialsPageViewProps> = ({
   };
 
   const filteredMaterials = materials.filter((item) => {
-    if (activeTab === 'video') return item.type === 'video';
-    if (activeTab === 'image') return item.type === 'image';
-    return true;
+    const matchesTab = activeTab === 'all' || item.type === activeTab;
+    const matchesSearch = !searchQuery || item.name.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesTab && matchesSearch;
   });
 
   return (
@@ -144,13 +145,20 @@ export const MaterialsPageView: React.FC<MaterialsPageViewProps> = ({
                 : 'bg-slate-100/80 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
             }`}
           >
-            📷 图片素材 ({materials.filter((m) => m.type === 'image').length})
+            🖼️ 静态图片 ({materials.filter((m) => m.type === 'image').length})
           </button>
         </div>
 
-        <span className="text-xs text-slate-500">
-          选中素材后点击【导入流水线】即可将素材填充至Step 1
-        </span>
+        {/* Search Input */}
+        <div className="relative">
+          <input
+            type="text"
+            placeholder="搜索素材名称..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs bg-slate-50 focus:bg-white focus:border-blue-500 focus:outline-none w-48 transition-all"
+          />
+        </div>
       </div>
 
       {/* Materials Grid */}

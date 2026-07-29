@@ -60,8 +60,8 @@ export async function callLlmGateway(params: LlmGatewayParams): Promise<LlmGatew
   // Fallback defaults if DB has no model records
   let baseUrl = targetModel?.base_url || process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1';
   let apiKey = targetModel?.api_key || process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
-  let modelCode = targetModel?.model_code || process.env.TEXT_MODEL || 'gpt-4o-mini';
-  let modelName = targetModel?.name || 'Default LLM';
+  let modelCode = targetModel?.model_code || process.env.TEXT_MODEL || 'gemini-3.6-flash';
+  let modelName = targetModel?.name || 'Gemini 3.6 Flash';
   let providerName = targetModel?.provider || 'LLM Gateway';
 
   baseUrl = baseUrl.replace(/\/$/, '');
@@ -101,14 +101,14 @@ export async function callLlmGateway(params: LlmGatewayParams): Promise<LlmGatew
     ],
   };
 
-  // 3. Execute HTTP Call with Timeout & Retry
-  const maxRetries = 1;
+  // 3. Execute HTTP Call with Timeout & Retry (with exponential backoff for 429 rate limit)
+  const maxRetries = 2;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+      const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s timeout
 
       const response = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
@@ -124,7 +124,15 @@ export async function callLlmGateway(params: LlmGatewayParams): Promise<LlmGatew
 
       if (!response.ok) {
         const errText = await response.text().catch(() => '');
-        throw new Error(`HTTP ${response.status} from ${baseUrl}: ${errText.slice(0, 300)}`);
+        const isRateLimit = response.status === 429;
+        const err = new Error(`HTTP ${response.status} from ${baseUrl}: ${errText.slice(0, 300)}`);
+        if (isRateLimit && attempt < maxRetries) {
+          const backoffMs = Math.pow(2, attempt + 1) * 1000;
+          console.warn(`[llm-gateway] 触发 429 限流，等待 ${backoffMs}ms 后发起第 ${attempt + 1} 次重试...`);
+          await new Promise((r) => setTimeout(r, backoffMs));
+          continue;
+        }
+        throw err;
       }
 
       const resBody = (await response.json()) as any;
@@ -146,7 +154,8 @@ export async function callLlmGateway(params: LlmGatewayParams): Promise<LlmGatew
     } catch (err: any) {
       lastError = err;
       if (attempt < maxRetries) {
-        await new Promise((r) => setTimeout(r, 500));
+        const backoffMs = (attempt + 1) * 1000;
+        await new Promise((r) => setTimeout(r, backoffMs));
       }
     }
   }
@@ -187,8 +196,8 @@ export async function callImageGenerationGateway(params: ImageGenParams): Promis
 
   let baseUrl = targetModel?.base_url || process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1';
   let apiKey = targetModel?.api_key || process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
-  let modelCode = targetModel?.model_code || 'dall-e-3';
-  let modelName = targetModel?.name || 'Default Image Model';
+  let modelCode = targetModel?.model_code || process.env.IMAGE_MODEL || 'gpt-image-1';
+  let modelName = targetModel?.name || 'GPT Image 1';
 
   baseUrl = baseUrl.replace(/\/$/, '');
   const envYunwuKey = process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY;
@@ -210,8 +219,9 @@ export async function callImageGenerationGateway(params: ImageGenParams): Promis
   }
 
   try {
+    // gpt-image-1 实测约 30–40s，超时给足
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 25000);
+    const timeoutId = setTimeout(() => controller.abort(), 90000);
 
     const response = await fetch(`${baseUrl}/images/generations`, {
       method: 'POST',
@@ -236,9 +246,17 @@ export async function callImageGenerationGateway(params: ImageGenParams): Promis
     }
 
     const resJson = (await response.json()) as any;
-    const generatedUrl = resJson?.data?.[0]?.url || resJson?.data?.[0]?.b64_json;
+    const item = resJson?.data?.[0];
+    let generatedUrl = '';
+    if (item?.url && typeof item.url === 'string') {
+      generatedUrl = item.url;
+    } else if (item?.b64_json && typeof item.b64_json === 'string') {
+      // 云雾 gpt-image-* 返回 b64_json（无外链）
+      const raw = item.b64_json.replace(/^data:image\/\w+;base64,/, '');
+      generatedUrl = `data:image/png;base64,${raw}`;
+    }
     if (!generatedUrl) {
-      throw new Error('画图 API 未返回有效的图片 URL');
+      throw new Error('画图 API 未返回有效的图片 URL / b64_json');
     }
 
     return {

@@ -21,10 +21,8 @@ import {
   RefreshCw,
   Maximize2,
   Minimize2,
-  Scissors,
   AlertCircle,
 } from 'lucide-react';
-import { ArtificialVideoEditor } from './ArtificialVideoEditor';
 
 interface Step5Readiness {
   ffmpegInstalled?: boolean | null;
@@ -41,6 +39,7 @@ interface Step5CardProps {
   onUpdateInputs: (inputs: Partial<Step5Inputs>) => void;
   onSyncFromPrevSteps?: () => void;
   onRun: () => void;
+  onAbort?: () => void;
   onReset: () => void;
   onPrev: () => void;
   upstreamStale?: boolean;
@@ -49,7 +48,7 @@ interface Step5CardProps {
   readiness?: Step5Readiness;
 }
 
-export const Step5Card: React.FC<Step5CardProps> = ({
+export const Step5Card: React.FC<Step5CardProps> = React.memo(({
   inputs,
   output,
   step2Output,
@@ -59,6 +58,7 @@ export const Step5Card: React.FC<Step5CardProps> = ({
   onUpdateInputs,
   onSyncFromPrevSteps,
   onRun,
+  onAbort,
   onReset,
   onPrev,
   upstreamStale = false,
@@ -120,10 +120,12 @@ export const Step5Card: React.FC<Step5CardProps> = ({
 
   const handleDownloadMarkdown = () => {
     if (!output) return;
-    const md = `# BUV 小绿泥短视频合成 Brief\n\n- 文件名: ${output.output.filename}\n- 分辨率: ${output.output.resolution}\n- 时长: ${output.output.duration_sec}s\n\n## 时间轴配置\n${output.timeline
+    const brandText = output.timeline.find((t) => t.action === 'brand_stamp')?.text || 'AIGC 短视频';
+    const md = `# ${brandText} 短视频合成 Brief\n\n- 文件名: ${output.output.filename}\n- 分辨率: ${output.output.resolution}\n- 时长: ${output.output.duration_sec}s\n\n## 时间轴配置\n${output.timeline
       .map((t) => `- [${t.at}] ${t.action}: ${t.text || t.source}`)
       .join('\n')}\n\n## 质检清单\n${output.qa_checklist.join('\n')}\n`;
-    downloadTextFile(md, 'buv_video_brief.md');
+    const safeName = output.output.filename.replace(/\.mp4$/i, '');
+    downloadTextFile(md, `${safeName}_brief.md`);
   };
 
   const handleCopyJson = async () => {
@@ -135,13 +137,16 @@ export const Step5Card: React.FC<Step5CardProps> = ({
   };
 
   const handleRealDownload = () => {
-    if (output?.output?.downloadUrl) {
+    const targetUrl = output?.output?.downloadUrl || output?.output?.videoUrl;
+    if (targetUrl) {
       const link = document.createElement('a');
-      link.href = output.output.downloadUrl;
-      link.download = output.output.filename;
+      link.href = targetUrl;
+      link.download = output?.output?.filename || 'AIGC_Video_Result.mp4';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
+    } else {
+      alert('成片视频尚未导出完成，请点击【运行一键视频合成】生成 MP4 文件后再下载。');
     }
   };
 
@@ -160,32 +165,6 @@ export const Step5Card: React.FC<Step5CardProps> = ({
           : 'bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800/80 rounded-2xl shadow-surface-md overflow-hidden transition-all'
       }
     >
-      {/* Artificial Video Editor Fullscreen Overlay */}
-      {isArtificialEditorOpen && (
-        <ArtificialVideoEditor
-          initialVideoUrl={
-            step2Output?.previewVideoUrl ||
-            output?.output?.videoUrl ||
-            ''
-          }
-          initialAudioUrl={step4Output?.bgm_recommendation?.audioSampleUrl || ''}
-          initialTitle={step3Output?.title || '高奢小绿泥晨间洗漱视频成片'}
-          initialBgmTrack={step4Output?.bgm_recommendation?.track_name || 'Chill Lofi Beats'}
-          onClose={() => setIsArtificialEditorOpen(false)}
-          onRenderComplete={(result) => {
-            // Parent can refresh via full re-run; surface download immediately
-            if (result.downloadUrl) {
-              const link = document.createElement('a');
-              link.href = result.downloadUrl;
-              link.download = result.filename;
-              document.body.appendChild(link);
-              link.click();
-              document.body.removeChild(link);
-            }
-          }}
-        />
-      )}
-
       {/* Header */}
       <div className="px-6 py-4 bg-slate-50/80 dark:bg-slate-900 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -194,24 +173,15 @@ export const Step5Card: React.FC<Step5CardProps> = ({
           </div>
           <div>
             <h3 className="text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-              第 5 步：视频 + 文案 + BGM → 合成输出成品 & 二次精细剪辑
+              第 5 步：视频 + 文案 + BGM → 合成输出成品
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              全流水线产物聚合 + 时间轴控制 + FFmpeg 渲染指令 + 支持人工二次微调剪辑
+              全流水线产物聚合 + 时间轴控制 + FFmpeg 自动渲染并导出成品短视频
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Artificial Video Editor Launch Button */}
-          <button
-            onClick={() => setIsArtificialEditorOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 transition-all shadow-md shadow-indigo-500/20"
-            title="打开人工剪辑工作台 (字体、BGM、音效等)"
-          >
-            <Scissors className="w-3.5 h-3.5" />
-            <span>人工二次剪辑</span>
-          </button>
 
           <button
             onClick={() => setIsFullscreen(!isFullscreen)}
@@ -270,24 +240,36 @@ export const Step5Card: React.FC<Step5CardProps> = ({
             </div>
           )}
 
-          <button
-            onClick={onRun}
-            disabled={!canRun}
-            title={blockers[0] || '开始服务端 FFmpeg 合成'}
-            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 transition-all shadow-md shadow-emerald-600/20"
-          >
-            {isRunning ? (
-              <>
+          {isRunning ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                disabled
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600/80 cursor-wait shadow-md"
+              >
                 <Sparkles className="w-3.5 h-3.5 animate-spin" />
                 <span>合成渲染中...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>运行合成</span>
-              </>
-            )}
-          </button>
+              </button>
+              {onAbort && (
+                <button
+                  onClick={onAbort}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 transition-all shadow-md cursor-pointer"
+                  title="中断并终止当前合成渲染阶段"
+                >
+                  <span>终止阶段</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={onRun}
+              disabled={!canRun}
+              title={blockers[0] || '开始服务端 FFmpeg 合成'}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 transition-all shadow-md shadow-emerald-600/20"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>运行合成</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -439,15 +421,21 @@ export const Step5Card: React.FC<Step5CardProps> = ({
             <div className="space-y-1.5 text-slate-700">
               <div className="flex items-center justify-between text-[11px]">
                 <span>第2步视频运镜：</span>
-                <span className="text-emerald-700 font-bold font-mono">✓ 4s 动态运镜已注入</span>
+                <span className={`font-bold font-mono ${step2Output ? 'text-emerald-700' : 'text-slate-400'}`}>
+                  {step2Output ? `✓ ${step2Output.motion_description || step2Output.duration_sec + 's 运镜'}` : '⏳ 待注入'}
+                </span>
               </div>
               <div className="flex items-center justify-between text-[11px]">
                 <span>第3步爆款文案：</span>
-                <span className="text-emerald-700 font-bold font-mono">✓ 含 SGS 8h控油数据</span>
+                <span className={`font-bold font-mono ${step3Output ? 'text-emerald-700' : 'text-slate-400'}`}>
+                  {step3Output ? `✓ 标题：${step3Output.title}` : '⏳ 待注入'}
+                </span>
               </div>
               <div className="flex items-center justify-between text-[11px]">
                 <span>第4步商用BGM：</span>
-                <span className="text-emerald-700 font-bold font-mono">✓ Mint Breeze 82BPM</span>
+                <span className={`font-bold font-mono ${step4Output ? 'text-emerald-700' : 'text-slate-400'}`}>
+                  {step4Output ? `✓ ${step4Output.bgm_recommendation.track_name} (${step4Output.bgm_recommendation.bpm} BPM)` : '⏳ 待注入'}
+                </span>
               </div>
             </div>
           </div>
@@ -516,83 +504,42 @@ export const Step5Card: React.FC<Step5CardProps> = ({
               </div>
             ) : activeTab === 'visual' ? (
               <div className="space-y-4 animate-fade-in">
-                {/* Interactive Player Frame */}
-                <div className="relative mx-auto w-full max-w-sm h-80 rounded-2xl bg-slate-950 border border-emerald-500/30 overflow-hidden shadow-2xl flex flex-col justify-between p-4">
-                  {/* Real rendered video when available */}
+                {/* Real Rendered Video Player Frame */}
+                <div className="relative mx-auto w-full max-w-sm rounded-2xl bg-slate-950 border border-emerald-500/30 overflow-hidden shadow-2xl flex flex-col justify-center items-center p-3">
                   {output.output?.videoUrl ? (
-                    <video
-                      src={output.output.videoUrl}
-                      className="absolute inset-0 w-full h-full object-cover"
-                      controls
-                      playsInline
-                      poster={step2Output?.previewVideoUrl}
-                    />
-                  ) : null}
-                  {/* Background Video Simulation */}
-                  <div className="absolute inset-0 z-0 bg-gradient-to-b from-slate-900/60 via-slate-950/80 to-slate-950 flex items-center justify-center">
-                    <img
-                      src="https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=600&q=80"
-                      alt="video frame"
-                      className={`w-full h-full object-cover opacity-60 transition-transform duration-1000 ${
-                        isPlaying ? 'scale-110' : 'scale-100'
-                      }`}
-                    />
-                  </div>
-
-                  {/* Top Brand Watermark Stamp */}
-                  <div className="relative z-10 flex items-center justify-between">
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500 text-slate-950 shadow-md">
-                      BUV 小绿泥
-                    </span>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900/80 text-emerald-300 border border-emerald-500/30 backdrop-blur-sm">
-                      沙利文国货控油洁面销量第一
-                    </span>
-                  </div>
-
-                  {/* Subtitle Overlay */}
-                  <div className="relative z-10 text-center my-auto px-4">
-                    {currentSubtitle ? (
-                      <span className="inline-block px-3 py-1.5 rounded bg-amber-400 text-slate-950 font-extrabold text-sm shadow-xl">
-                        {currentSubtitle}
-                      </span>
-                    ) : (
-                      <span className="text-xs text-slate-400/80 font-mono italic">
-                        [音画卡点播放中...]
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Bottom Controls Bar */}
-                  <div className="relative z-10 bg-slate-900/90 backdrop-blur-md p-2.5 rounded-xl border border-slate-800 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setIsPlaying(!isPlaying)}
-                          className="w-7 h-7 rounded-full bg-emerald-400 hover:bg-emerald-300 text-slate-950 flex items-center justify-center transition-colors"
-                        >
-                          {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
-                        </button>
-                        <span className="font-mono text-slate-300 text-[11px]">
-                          {currentTime}s / {output.output.duration_sec}s
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1 text-[11px] text-emerald-400 font-mono">
-                        <Volume2 className="w-3.5 h-3.5" />
-                        <span>BGM 0.3</span>
-                      </div>
-                    </div>
-
-                    {/* Progress Slider */}
-                    <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className="bg-emerald-400 h-full transition-all duration-100"
-                        style={{
-                          width: `${(currentTime / output.output.duration_sec) * 100}%`,
-                        }}
+                    <div className="w-full flex flex-col items-center">
+                      <video
+                        src={output.output.videoUrl}
+                        className="w-full h-auto max-h-[380px] rounded-xl object-contain shadow-lg"
+                        controls
+                        autoPlay
+                        loop
+                        playsInline
+                        poster={step2Output?.previewVideoUrl}
                       />
+                      <div className="mt-2 w-full flex items-center justify-between px-1 text-[11px] text-slate-400 font-mono">
+                        <span className="text-emerald-400 font-bold">✓ FFmpeg 渲染输出成品</span>
+                        <span>{output.output.resolution} | {output.output.duration_sec}s</span>
+                      </div>
                     </div>
-                  </div>
+                  ) : step2Output?.previewVideoUrl ? (
+                    <div className="w-full flex flex-col items-center">
+                      <video
+                        src={step2Output.previewVideoUrl}
+                        className="w-full h-auto max-h-[380px] rounded-xl object-contain opacity-80"
+                        controls
+                        playsInline
+                      />
+                      <span className="mt-2 text-[11px] text-amber-400 font-mono">
+                        Step2 视频预览源（等待合成渲染）
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="w-full h-64 flex flex-col items-center justify-center text-slate-400 text-xs">
+                      <Film className="w-8 h-8 mb-2 text-slate-600" />
+                      <span>暂无可播放视频源</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* QA Checklist */}
@@ -658,14 +605,7 @@ export const Step5Card: React.FC<Step5CardProps> = ({
 
               <div className="flex items-center gap-2 flex-wrap">
                 <button
-                  onClick={() => {
-                    const blob = new Blob(['AIGC Synthetic Video Stream Data'], { type: 'video/mp4' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = output?.output.filename || 'AIGC_Video_Result.mp4';
-                    a.click();
-                  }}
+                  onClick={handleRealDownload}
                   className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-all flex items-center gap-1.5"
                 >
                   <Download className="w-3.5 h-3.5" />
@@ -688,4 +628,4 @@ export const Step5Card: React.FC<Step5CardProps> = ({
       </div>
     </div>
   );
-};
+});

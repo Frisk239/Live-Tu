@@ -23,31 +23,37 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { PromptEditorModal } from './PromptEditorModal';
+import { StepModelPicker } from './StepModelPicker';
+import { ModelConfigState } from '../data/models';
 
 interface Step3CardProps {
   inputs: Step3Inputs;
   output?: Step3Output;
   step2Output?: Step2Output;
   status: StepStatus;
+  modelConfig: ModelConfigState;
   onUpdateInputs: (inputs: Partial<Step3Inputs>) => void;
   onUpdateOutput?: (updatedOutput: Partial<Step3Output>) => void;
   onSyncFromStep2?: () => void;
   onRun: () => void;
+  onAbort?: () => void;
   onReset: () => void;
   onPrev: () => void;
   onNext: () => void;
   upstreamStale?: boolean;
 }
 
-export const Step3Card: React.FC<Step3CardProps> = ({
+export const Step3Card: React.FC<Step3CardProps> = React.memo(({
   inputs,
   output,
   step2Output,
   status,
+  modelConfig,
   onUpdateInputs,
   onUpdateOutput,
   onSyncFromStep2,
   onRun,
+  onAbort,
   onReset,
   onPrev,
   onNext,
@@ -74,7 +80,15 @@ export const Step3Card: React.FC<Step3CardProps> = ({
 
   const handleCopyFullText = async () => {
     if (output) {
-      const fullText = `【${output.title}】\n\n📌 3秒前置钩子：${output.hook}\n\n📝 正文文案：\n${output.body}\n\n🏷 话题标签：${output.hashtags.join(' ')}\n\n🛒 行动号召：${output.cta}`;
+      const activeBody =
+        previewPlatform === 'xiaohongshu' && output.platform_fit?.xiaohongshu
+          ? output.platform_fit.xiaohongshu
+          : previewPlatform === 'douyin' && output.platform_fit?.douyin
+          ? output.platform_fit.douyin
+          : output.body;
+
+      const platformLabel = previewPlatform === 'xiaohongshu' ? '小红书笔记版' : '抖音挂车版';
+      const fullText = `【${output.title}】\n\n📌 3秒前置钩子：${output.hook}\n\n📝 正文文案（${platformLabel}）：\n${activeBody}\n\n🏷 话题标签：${output.hashtags.join(' ')}\n\n🛒 行动号召：${output.cta}`;
       await copyToClipboard(fullText);
       setCopiedFull(true);
       setTimeout(() => setCopiedFull(false), 2000);
@@ -179,27 +193,48 @@ export const Step3Card: React.FC<Step3CardProps> = ({
             </button>
           )}
 
-          <button
-            onClick={onRun}
-            disabled={isRunning}
-            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 transition-all shadow-md shadow-cyan-600/20"
-          >
-            {isRunning ? (
-              <>
+          {isRunning ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                disabled
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-bold text-white bg-cyan-600/80 cursor-wait shadow-md"
+              >
                 <Sparkles className="w-3.5 h-3.5 animate-spin" />
                 <span>文案生成中...</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>运行 ▶</span>
-              </>
-            )}
-          </button>
+              </button>
+              {onAbort && (
+                <button
+                  onClick={onAbort}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 transition-all shadow-md cursor-pointer"
+                  title="中断并终止当前文案生成阶段"
+                >
+                  <span>终止阶段</span>
+                </button>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={onRun}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-cyan-600 hover:bg-cyan-500 transition-all shadow-md shadow-cyan-600/20"
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>运行 ▶</span>
+            </button>
+          )}
 
           <button
-            onClick={onNext}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 transition-colors shadow-sm"
+            onClick={() => {
+              if (!isCompleted) {
+                alert('请先运行当前步骤生成爆款文案再进入下一步');
+                return;
+              }
+              onNext();
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shadow-sm ${
+              isCompleted
+                ? 'bg-emerald-600 text-white hover:bg-emerald-500 cursor-pointer font-bold'
+                : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+            }`}
           >
             <span>下一步</span>
             <ArrowRight className="w-3.5 h-3.5" />
@@ -303,21 +338,30 @@ export const Step3Card: React.FC<Step3CardProps> = ({
             </div>
           </div>
 
-          {/* BUV Selling point tags */}
+          <div className="space-y-2">
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">模型选择</p>
+            <StepModelPicker
+              category="text"
+              title="爆款文案生成模型"
+              models={modelConfig.textModels}
+              value={inputs.textModel}
+              defaultId={modelConfig.defaultTextModel}
+              onChange={(id) => onUpdateInputs({ textModel: id })}
+            />
+          </div>
+
+          {/* Dynamic Selling point tags */}
           <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
-            <span className="text-slate-700 font-bold block">自动注入品牌硬核卖点：</span>
+            <span className="text-slate-700 font-bold block">自动注入品牌硬核卖点与实测数据：</span>
             <div className="flex flex-wrap gap-1.5">
               <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-200 text-[11px] font-medium">
-                3重天然泥
+                SGS 实验室实测数据
               </span>
               <span className="px-2 py-0.5 rounded bg-teal-100 text-teal-800 border border-teal-200 text-[11px] font-medium">
-                4重控油植萃
+                3:4:3 核心成分模型
               </span>
               <span className="px-2 py-0.5 rounded bg-cyan-100 text-cyan-800 border border-cyan-200 text-[11px] font-medium">
-                SGS 8h控油 -66.87%
-              </span>
-              <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 border border-indigo-200 text-[11px] font-medium">
-                14天黑头 -35.92%
+                合规避坑词库过滤
               </span>
             </div>
           </div>
@@ -638,4 +682,4 @@ export const Step3Card: React.FC<Step3CardProps> = ({
       )}
     </div>
   );
-};
+});

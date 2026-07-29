@@ -102,7 +102,11 @@ export async function seedanceFetch(apiPath: string, init: RequestInit = {}, ret
  * materials[].url 必须公网可访问（Seedance 文档硬约束）。
  * 相对路径 /uploads/... 需配置 PUBLIC_BASE_URL（部署公网域名/IP）。
  */
-export function resolvePublicMediaUrl(url: string): { url: string | null; warning?: string } {
+/**
+ * materials[].url 必须公网可访问（Seedance 文档硬约束）。
+ * 相对路径 /uploads/... 优先使用 PUBLIC_BASE_URL 或 HTTP 请求 Host（部署公网域名/IP）。
+ */
+export function resolvePublicMediaUrl(url: string, requestBaseUrl?: string): { url: string | null; warning?: string } {
   if (!url || !url.trim()) return { url: null, warning: '未提供素材 URL' };
   const trimmed = url.trim();
 
@@ -113,10 +117,23 @@ export function resolvePublicMediaUrl(url: string): { url: string | null; warnin
     };
   }
 
+  const publicBase = (process.env.PUBLIC_BASE_URL || process.env.APP_PUBLIC_URL || requestBaseUrl || '').replace(/\/$/, '');
+
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     try {
       const u = new URL(trimmed);
       const host = u.hostname.toLowerCase();
+      let publicHost: string | null = null;
+      if (publicBase) {
+        try {
+          publicHost = new URL(publicBase).hostname.toLowerCase();
+        } catch {}
+      }
+
+      if (publicHost && host === publicHost) {
+        return { url: trimmed };
+      }
+
       if (
         host === 'localhost' ||
         host === '127.0.0.1' ||
@@ -126,6 +143,10 @@ export function resolvePublicMediaUrl(url: string): { url: string | null; warnin
         host.startsWith('10.') ||
         /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
       ) {
+        if (publicBase) {
+          const relativePath = u.pathname + u.search;
+          return { url: `${publicBase}${relativePath}` };
+        }
         return {
           url: null,
           warning: `素材 URL 不是公网地址（${host}）。Seedance 无法拉取内网/本机文件，请配置 PUBLIC_BASE_URL 或使用公网图链`,
@@ -137,7 +158,6 @@ export function resolvePublicMediaUrl(url: string): { url: string | null; warnin
     }
   }
 
-  const publicBase = (process.env.PUBLIC_BASE_URL || process.env.APP_PUBLIC_URL || '').replace(/\/$/, '');
   if (!publicBase) {
     return {
       url: null,
@@ -163,7 +183,7 @@ export interface SeedanceCreateInput {
 }
 
 /** Build request body matching 星河 Seedance 2.0 外部接口文档 */
-export function buildSeedanceGenerationBody(input: SeedanceCreateInput) {
+export function buildSeedanceGenerationBody(input: SeedanceCreateInput, requestBaseUrl?: string) {
   const env = seedanceEnv();
   const raw = String(input.model || env.model || 'doubao-seedance-2-0-fast');
   const lower = raw.toLowerCase();
@@ -181,7 +201,7 @@ export function buildSeedanceGenerationBody(input: SeedanceCreateInput) {
 
   if (input.materials?.length) {
     for (const m of input.materials) {
-      const resolved = resolvePublicMediaUrl(m.url);
+      const resolved = resolvePublicMediaUrl(m.url, requestBaseUrl);
       if (resolved.url) {
         materials.push({
           url: resolved.url,
@@ -194,7 +214,7 @@ export function buildSeedanceGenerationBody(input: SeedanceCreateInput) {
       }
     }
   } else if (input.imageUrl) {
-    const resolved = resolvePublicMediaUrl(input.imageUrl);
+    const resolved = resolvePublicMediaUrl(input.imageUrl, requestBaseUrl);
     if (resolved.url) {
       materials.push({
         url: resolved.url,

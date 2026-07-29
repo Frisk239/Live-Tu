@@ -216,7 +216,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
                     : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
                 }`}
-                title="后台历史任务与工作区"
+                title="后台任务中心页面"
               >
                 <FolderKanban className="w-4 h-4 shrink-0" />
                 <span className="truncate">历史会话全集</span>

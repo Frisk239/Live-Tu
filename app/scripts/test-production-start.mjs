@@ -363,12 +363,19 @@ try {
   const forbiddenModels = await fetch(`${baseUrl}/api/models/config`, {
     headers: { Cookie: operatorCookie },
   });
+  const forbiddenKnowledge = await fetch(`${baseUrl}/api/knowledge`, {
+    headers: { Cookie: operatorCookie },
+  });
   const operatorProducts = await fetch(`${baseUrl}/api/products`, {
     headers: { Cookie: operatorCookie },
   });
-  if (forbiddenModels.status !== 403 || operatorProducts.status !== 403) {
+  if (
+    forbiddenModels.status !== 403 ||
+    forbiddenKnowledge.status !== 403 ||
+    operatorProducts.status !== 403
+  ) {
     throw new Error(
-      `Permission enforcement failed (models=${forbiddenModels.status}, products=${operatorProducts.status})`
+      `Permission enforcement failed (models=${forbiddenModels.status}, knowledge=${forbiddenKnowledge.status}, products=${operatorProducts.status})`
     );
   }
   const forbiddenMetrics = await fetch(`${baseUrl}/api/metrics`, {

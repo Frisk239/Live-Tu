@@ -371,7 +371,11 @@ app.use(
   limitExpensiveOperations,
   runsRouter
 );
-app.use(['/api/products', '/api/v1/products'], requireAuth, productsRouter);
+app.use(
+  ['/api/products', '/api/v1/products', '/api/knowledge', '/api/v1/knowledge'],
+  requireAuth,
+  productsRouter
+);
 app.use(
   ['/api/selling-points/optimize', '/api/v1/selling-points/optimize'],
   requireAuth,

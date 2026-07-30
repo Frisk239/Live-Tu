@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Step4Inputs, Step4Output, Step3Output, StepStatus } from '../types';
 import { copyToClipboard, downloadJsonFile } from '../utils/format';
+import { notify } from '../services/notifications';
 import {
   Music,
   Play,
@@ -177,7 +178,7 @@ export const Step4Card: React.FC<Step4CardProps> = React.memo(({
           <button
             onClick={() => {
               if (!isCompleted) {
-                alert('请先运行当前步骤生成 BGM 推荐方案再进入下一步');
+                notify('请先运行当前步骤生成 BGM 推荐方案再进入下一步', 'error');
                 return;
               }
               onNext();

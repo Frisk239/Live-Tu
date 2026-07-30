@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Step1Inputs, Step1Output, StepStatus, MaterialItem, ProductItem } from '../types';
 import { copyToClipboard, downloadJsonFile } from '../utils/format';
+import { notify } from '../services/notifications';
 import {
   Upload,
   Play,
@@ -37,6 +38,7 @@ import { ModelConfigState } from '../data/models';
 import { PromptEditorModal } from './PromptEditorModal';
 import { StepModelPicker } from './StepModelPicker';
 import { apiService } from '../services/api';
+import { VideoDeconstructionView } from './VideoDeconstructionView';
 
 export interface BatchStep1QueueItem {
   id: string;
@@ -129,7 +131,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
   const handleCaptureFrame = async () => {
     const video = videoRef.current;
     if (!video || !videoSrc) {
-      alert('请先上传视频素材');
+      notify('请先上传视频素材', 'error');
       return;
     }
     setIsCapturingFrame(true);
@@ -150,9 +152,9 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
       const file = new File([blob], `keyframe_${Date.now()}.png`, { type: 'image/png' });
       const uploaded = await apiService.materials.uploadMaterial(file);
       onUpdateInputs({ mediaUrl: uploaded.url });
-      alert('✅ 已抓取当前帧并设为 Step1 分析素材（同时可同步到素材库）');
+      notify('✅ 已抓取当前帧并设为 Step1 分析素材（同时可同步到素材库）', 'success');
     } catch (err: any) {
-      alert(err?.message || '抓帧失败');
+      notify(err?.message || '抓帧失败', 'error');
     } finally {
       setIsCapturingFrame(false);
     }
@@ -165,7 +167,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
       inputs.viralReason ||
       '高质感爆款小绿泥洁面膏体拉丝特写';
     if (!prompt.trim()) {
-      alert('请先填写爆款原因或完成 Step 1 拆解以获得静态图 Prompt');
+      notify('请先填写爆款原因或完成 Step 1 拆解以获得静态图 Prompt', 'error');
       return;
     }
     try {
@@ -187,12 +189,12 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
           onUpdateOutput({ static_image_prompt: promptUsed });
         }
         onGeneratedImage?.({ imageUrl, promptUsed });
-        alert('✅ 同款新首帧已生成并同步到 Step 2！');
+        notify('✅ 同款新首帧已生成并同步到 Step 2！', 'success');
       } else {
-        alert(data.error || '生成失败，请检查画图模型 API Key 配置');
+        notify(data.error || '生成失败，请检查画图模型 API Key 配置', 'error');
       }
     } catch (e) {
-      alert('生成失败，请检查后端配置');
+      notify('生成失败，请检查后端配置', 'error');
     }
   };
 
@@ -588,6 +590,17 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
               <span className="text-[11px] font-bold text-indigo-900 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/80 border border-indigo-200 dark:border-indigo-800 px-2.5 py-0.5 rounded-full">
                 AI 视觉拆解引擎
               </span>
+              {isVideoMedia(safeInputs.mediaUrl || '') || Boolean(sourceVideoUrl) ? (
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 dark:bg-purple-950/80 text-purple-800 dark:text-purple-300 border border-purple-300 dark:border-purple-700 flex items-center gap-1">
+                  <FileVideo className="w-3 h-3 text-purple-600 dark:text-purple-400" />
+                  当前为视频拆解复刻模式
+                </span>
+              ) : (
+                <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-sky-100 dark:bg-sky-950/80 text-sky-800 dark:text-sky-300 border border-sky-300 dark:border-sky-700 flex items-center gap-1">
+                  <ImageIcon className="w-3 h-3 text-sky-600 dark:text-sky-400" />
+                  当前为图片视觉分析模式
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
               视觉深度理解 + 结构化 Prompt 拆解（支持单素材精细拆解与多素材批量反推）
@@ -1031,8 +1044,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                 />
               </div>
             </div>
-
-            {/* Right Output Column */}
+{/* Right Output Column */}
             <div className="lg:col-span-7 flex flex-col justify-between bg-slate-950 p-5 rounded-2xl border border-slate-800 shadow-inner">
               <div>
                 <div className="flex items-center justify-between mb-3">
@@ -1071,19 +1083,63 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
 
                 {/* Output Display Area */}
                 {!output ? (
-                  <div className="h-64 rounded-xl border border-dashed border-slate-800 bg-slate-900/50 flex flex-col items-center justify-center p-6 text-center">
-                    <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mb-3 text-slate-500">
-                      <ImageIcon className="w-6 h-6" />
+                  isRunning ? (
+                    <div className="h-64 rounded-xl border border-indigo-500/40 bg-slate-900/90 flex flex-col items-center justify-center p-6 text-center space-y-4 relative overflow-hidden">
+                      <div className="w-12 h-12 rounded-xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400 animate-pulse">
+                        {isVideoMedia(safeInputs.mediaUrl || '') || Boolean(sourceVideoUrl) ? (
+                          <FileVideo className="w-6 h-6 animate-bounce text-purple-400" />
+                        ) : (
+                          <Sparkles className="w-6 h-6 animate-spin text-emerald-400" />
+                        )}
+                      </div>
+
+                      <div className="space-y-1 relative z-10">
+                        <h4 className="text-sm font-extrabold text-indigo-300 flex items-center justify-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                          {isVideoMedia(safeInputs.mediaUrl || '') || Boolean(sourceVideoUrl)
+                            ? '视频预处理中（场景检测 / 关键帧提取 / 音频分析）...'
+                            : 'AI 视觉分析与结构化 Prompt 生成中...'}
+                        </h4>
+                        <p className="text-xs text-slate-400">
+                          {isVideoMedia(safeInputs.mediaUrl || '') || Boolean(sourceVideoUrl)
+                            ? '多模态 AI 正在逐镜头拆解画面运镜、卡点与口播文案'
+                            : '深度推理画面构图、色板与爆款生图提示词'}
+                        </p>
+                      </div>
+
+                      <div className="w-full max-w-xs bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
+                        <div className="bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-400 h-full rounded-full animate-pulse w-3/4" />
+                      </div>
                     </div>
-                    <p className="text-xs text-slate-300 font-medium">
-                      点击【启动拆解】开始第 1 步视觉拆解与生成
-                    </p>
-                    <p className="text-[11px] text-slate-500 mt-1">
-                      （系统将自动提取画面色板、镜头构图、情绪与文生图 Prompt）
-                    </p>
-                  </div>
+                  ) : (
+                    <div className="h-64 rounded-xl border border-dashed border-slate-800 bg-slate-900/50 flex flex-col items-center justify-center p-6 text-center">
+                      <div className="w-12 h-12 rounded-full bg-slate-800 flex items-center justify-center mb-3 text-slate-500">
+                        {isVideoMedia(safeInputs.mediaUrl || '') || Boolean(sourceVideoUrl) ? (
+                          <FileVideo className="w-6 h-6 text-purple-400" />
+                        ) : (
+                          <ImageIcon className="w-6 h-6 text-sky-400" />
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-300 font-medium">
+                        点击【运行】开始第 1 步视觉拆解与生成
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        {isVideoMedia(safeInputs.mediaUrl || '') || Boolean(sourceVideoUrl)
+                          ? '（系统将切分镜头横向时间轴、提炼爆款 SellPoints 及 Hook 节奏）'
+                          : '（系统将自动提取画面色板、镜头构图、情绪与文生图 Prompt）'}
+                      </p>
+                    </div>
+                  )
                 ) : activeTab === 'visual' ? (
                   <div className="space-y-4 animate-fade-in">
+                    {/* 🎬 视频拆解引擎高级视图 (当包含镜头表或视频结构时呈现) */}
+                    {(output.shotList?.length || output.videoStructure || isVideoMedia(safeInputs.mediaUrl || '') || Boolean(sourceVideoUrl)) && (
+                      <VideoDeconstructionView
+                        output={output}
+                        sourceVideoUrl={sourceVideoUrl || (isVideoMedia(safeInputs.mediaUrl || '') ? safeInputs.mediaUrl : undefined)}
+                      />
+                    )}
+
                     {/* Color Palette Badge Row */}
                     <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800">
                       <div className="flex items-center gap-2 mb-2 text-xs font-bold text-slate-300">

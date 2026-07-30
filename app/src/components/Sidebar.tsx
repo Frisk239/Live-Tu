@@ -17,6 +17,7 @@ import {
   RotateCcw,
   Workflow,
   Music2,
+  LogOut,
 } from 'lucide-react';
 
 export type MainViewType =
@@ -41,6 +42,8 @@ interface SidebarProps {
   products?: ProductItem[];
   onSelectActiveProduct?: (id: string) => void;
   onOpenSessionManager?: () => void;
+  onLogout?: () => void;
+  isAdmin?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -54,6 +57,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   products = [],
   onSelectActiveProduct,
   onOpenSessionManager,
+  onLogout,
+  isAdmin = false,
 }) => {
   const currentWidthClass = isExpanded ? 'w-[240px]' : 'w-[68px]';
 
@@ -70,7 +75,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <>
                 <div className="flex items-center gap-2.5 overflow-hidden pl-1">
                   <div className="relative flex items-center justify-center w-8 h-8 rounded-lg bg-blue-600 text-white font-bold shrink-0 shadow-2xs">
-                    <span className="text-xs">BUV</span>
+                    <span className="text-xs font-black">LIVE</span>
                   </div>
                   <div className="truncate">
                     <span className="font-semibold text-xs text-slate-900 block truncate">
@@ -161,18 +166,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
               )}
 
               {/* Knowledge Base Direct Page Navigation */}
-              <button
-                onClick={() => onChangeView('knowledge')}
-                className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
-                  activeView === 'knowledge'
-                    ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
-                    : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
-                }`}
-                title="卖点库与品牌知识中心"
-              >
-                <BookOpen className="w-4 h-4 shrink-0" />
-                <span className="truncate">卖点库 & AI润色</span>
-              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => onChangeView('knowledge')}
+                  className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
+                    activeView === 'knowledge'
+                      ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
+                      : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
+                  }`}
+                  title="卖点库与品牌知识中心"
+                >
+                  <BookOpen className="w-4 h-4 shrink-0" />
+                  <span className="truncate">卖点库 & AI润色</span>
+                </button>
+              )}
             </div>
 
             {/* Section 2: Core Workspace Modules */}
@@ -225,44 +232,54 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {/* Presets Library */}
               <button
                 onClick={() => onChangeView('presets')}
-                className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
+                className={`flex items-center justify-between rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
                   activeView === 'presets'
                     ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
                     : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
                 }`}
-                title="爆款视频与反推预设"
+                title="8 大黄金爆款示范模板库与 AI 全链路反推"
               >
-                <Layers className="w-4 h-4 shrink-0" />
-                <span className="truncate">爆款模版库</span>
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <Layers className="w-4 h-4 shrink-0 text-blue-600" />
+                  <span className="truncate">8大爆款模版库</span>
+                </div>
+                {isExpanded && (
+                  <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-1.5 py-0.2 rounded border border-blue-200 shrink-0">
+                    8 大公式
+                  </span>
+                )}
               </button>
 
-              {/* Model Config */}
-              <button
-                onClick={() => onChangeView('models')}
-                className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
-                  activeView === 'models'
-                    ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
-                    : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
-                }`}
-                title="大模型与提示词配置页面"
-              >
-                <Cpu className="w-4 h-4 shrink-0" />
-                <span className="truncate">模型配置中心</span>
-              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => onChangeView('models')}
+                  className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
+                    activeView === 'models'
+                      ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
+                      : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
+                  }`}
+                  title="大模型与提示词配置页面"
+                >
+                  <Cpu className="w-4 h-4 shrink-0" />
+                  <span className="truncate">模型配置中心</span>
+                </button>
+              )}
 
               {/* BGM Library */}
-              <button
-                onClick={() => onChangeView('bgm')}
-                className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
-                  activeView === 'bgm'
-                    ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
-                    : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
-                }`}
-                title="确权 BGM 曲库管理"
-              >
-                <Music2 className="w-4 h-4 shrink-0" />
-                <span className="truncate">BGM 确权曲库</span>
-              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => onChangeView('bgm')}
+                  className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
+                    activeView === 'bgm'
+                      ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
+                      : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
+                  }`}
+                  title="确权 BGM 曲库管理"
+                >
+                  <Music2 className="w-4 h-4 shrink-0" />
+                  <span className="truncate">BGM 确权曲库</span>
+                </button>
+              )}
             </div>
 
             {/* Section 3: Help & System Settings */}
@@ -305,6 +322,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <RotateCcw className="w-4 h-4 shrink-0 text-slate-500" />
             {isExpanded && <span>一键清空工作台</span>}
+          </button>
+          <button
+            onClick={onLogout}
+            className={`mt-1.5 flex items-center justify-center gap-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-all px-3 py-2 cursor-pointer ${isExpanded ? 'w-full' : 'w-10 px-0'}`}
+            title="退出当前账号"
+          >
+            <LogOut className="w-4 h-4 shrink-0 text-slate-500" />
+            {isExpanded && <span>退出登录</span>}
           </button>
         </div>
       </div>

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Step5Inputs, Step5Output, Step2Output, Step3Output, Step4Output, StepStatus } from '../types';
 import { copyToClipboard, downloadTextFile, downloadJsonFile, generateFFmpegCommand } from '../utils/format';
+import { notify } from '../services/notifications';
 import {
   Film,
   Play,
@@ -22,6 +23,9 @@ import {
   Maximize2,
   Minimize2,
   AlertCircle,
+  Tag,
+  Type,
+  MapPin,
 } from 'lucide-react';
 
 interface Step5Readiness {
@@ -146,7 +150,7 @@ export const Step5Card: React.FC<Step5CardProps> = React.memo(({
       link.click();
       document.body.removeChild(link);
     } else {
-      alert('成片视频尚未导出完成，请点击【运行一键视频合成】生成 MP4 文件后再下载。');
+      notify('成片视频尚未导出完成，请点击【运行一键视频合成】生成 MP4 文件后再下载。', 'error');
     }
   };
 
@@ -415,6 +419,68 @@ export const Step5Card: React.FC<Step5CardProps> = React.memo(({
             </div>
           </div>
 
+          {/* 🎬 镜头微调：字幕位置与品牌 Stamp 配置 */}
+          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                <Sliders className="w-3.5 h-3.5 text-emerald-600" />
+                <span>字幕与品牌 Stamp 细节微调</span>
+              </span>
+              <span className="text-[10px] text-emerald-700 dark:text-emerald-400 font-mono font-semibold">
+                成片渲染前控制
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[11px] font-medium text-slate-600 dark:text-slate-400 block mb-1 flex items-center gap-1">
+                  <Type className="w-3 h-3 text-slate-500" />
+                  <span>字幕垂直放置位置</span>
+                </label>
+                <select
+                  value={inputs.subtitlePosition || 'bottom'}
+                  onChange={(e) => onUpdateInputs({ subtitlePosition: e.target.value as any })}
+                  className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:border-emerald-500 font-medium shadow-sm"
+                >
+                  <option value="bottom">底部（标准居中）</option>
+                  <option value="center">中间（醒目突出）</option>
+                  <option value="top">顶部（避让安全区）</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-medium text-slate-600 dark:text-slate-400 block mb-1 flex items-center gap-1">
+                  <MapPin className="w-3 h-3 text-slate-500" />
+                  <span>品牌 Stamp 位置</span>
+                </label>
+                <select
+                  value={inputs.brandStampPosition || 'top-right'}
+                  onChange={(e) => onUpdateInputs({ brandStampPosition: e.target.value as any })}
+                  className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:border-emerald-500 font-medium shadow-sm"
+                >
+                  <option value="top-right">右上角 (Top Right)</option>
+                  <option value="top-left">左上角 (Top Left)</option>
+                  <option value="bottom-right">右下角 (Bottom Right)</option>
+                  <option value="bottom-left">左下角 (Bottom Left)</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[11px] font-medium text-slate-600 dark:text-slate-400 block mb-1 flex items-center gap-1">
+                <Tag className="w-3 h-3 text-slate-500" />
+                <span>品牌 Stamp 水印文字</span>
+              </label>
+              <input
+                type="text"
+                value={inputs.brandStampText ?? 'BUV 笔薇'}
+                onChange={(e) => onUpdateInputs({ brandStampText: e.target.value })}
+                placeholder="例如: BUV 笔薇 / AIGC 独家小剪辑"
+                className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-800 dark:text-slate-100 focus:outline-none focus:border-emerald-500 font-medium shadow-sm"
+              />
+            </div>
+          </div>
+
           {/* Aggregated Sources Summary */}
           <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
             <span className="text-emerald-800 font-bold block">上游流水线产物就绪状态：</span>
@@ -506,6 +572,49 @@ export const Step5Card: React.FC<Step5CardProps> = React.memo(({
               <div className="space-y-4 animate-fade-in">
                 {/* Real Rendered Video Player Frame */}
                 <div className="relative mx-auto w-full max-w-sm rounded-2xl bg-slate-950 border border-emerald-500/30 overflow-hidden shadow-2xl flex flex-col justify-center items-center p-3">
+                  {/* Brand Stamp Preview Overlay */}
+                  {inputs.brandStampText && (
+                    <div
+                      className={`absolute z-20 px-2 py-1 bg-slate-950/80 border border-emerald-400/60 text-emerald-300 text-[11px] font-bold rounded-lg backdrop-blur-md shadow-lg flex items-center gap-1 transition-all ${
+                        inputs.brandStampPosition === 'top-left'
+                          ? 'top-5 left-5'
+                          : inputs.brandStampPosition === 'bottom-left'
+                          ? 'bottom-12 left-5'
+                          : inputs.brandStampPosition === 'bottom-right'
+                          ? 'bottom-12 right-5'
+                          : 'top-5 right-5'
+                      }`}
+                    >
+                      <Tag className="w-3 h-3 text-emerald-400" />
+                      <span>{inputs.brandStampText}</span>
+                    </div>
+                  )}
+
+                  {/* Subtitle Live Overlay Preview */}
+                  <div
+                    className={`absolute z-20 w-4/5 text-center transition-all pointer-events-none ${
+                      inputs.subtitlePosition === 'top'
+                        ? 'top-10'
+                        : inputs.subtitlePosition === 'center'
+                        ? 'top-1/2 -translate-y-1/2'
+                        : 'bottom-12'
+                    }`}
+                  >
+                    <span
+                      className={`px-3 py-1 rounded text-xs font-black shadow-xl inline-block ${
+                        inputs.subtitleStyle === '黄字黑边'
+                          ? 'bg-yellow-400 text-black border border-black font-extrabold'
+                          : inputs.subtitleStyle === '白字柔影'
+                          ? 'bg-white/90 text-slate-900 shadow-md font-bold'
+                          : inputs.subtitleStyle === '极简小绿红书体'
+                          ? 'bg-emerald-600 text-white font-bold'
+                          : 'bg-slate-950 text-emerald-400 border border-emerald-500 font-mono'
+                      }`}
+                    >
+                      {currentSubtitle || step3Output?.title || '【字幕预览】精简有效的高光短视频'}
+                    </span>
+                  </div>
+
                   {output.output?.videoUrl ? (
                     <div className="w-full flex flex-col items-center">
                       <video

@@ -7,6 +7,13 @@ import { test, expect } from '@playwright/test';
 const BASE = process.env.E2E_BASE_URL || 'http://localhost:3004';
 
 test.describe('API readiness & contracts', () => {
+  test.beforeEach(async ({ request }) => {
+    const response = await request.post(`${BASE}/api/auth/login`, {
+      data: { username: 'haini', password: '888' },
+    });
+    expect(response.ok()).toBeTruthy();
+  });
+
   test('health returns readiness shape', async ({ request }) => {
     const res = await request.get(`${BASE}/api/health?probe=1`);
     expect(res.ok()).toBeTruthy();
@@ -14,6 +21,11 @@ test.describe('API readiness & contracts', () => {
     expect(body.status).toBe('ok');
     expect(body.readiness).toBeTruthy();
     expect(body.readiness).toHaveProperty('yunwu');
+    expect(body.readiness.database?.ready).toBe(true);
+    expect(body.readiness.storage?.ready).toBe(true);
+    expect(body.readiness.storage?.freeBytes).toBeGreaterThan(
+      body.readiness.storage?.minimumFreeBytes
+    );
     expect(body.readiness).toHaveProperty('seedance');
     expect(body.readiness).toHaveProperty('ffmpeg');
     expect(body.readiness).toHaveProperty('publicBaseUrl');

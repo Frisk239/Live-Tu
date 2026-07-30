@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:security
+      - run: npm run test:orchestrator
+      - run: npm run test:migrations
+      - run: npm run test:multi-shot
+      - run: npm run test:production
+      - name: Build production container
+        run: docker build --tag live-tu:ci .
+
+      - name: Validate production Compose and Caddy
+        working-directory: app/deploy
+        env:
+          APP_DOMAIN: app.example.invalid
+          ACME_EMAIL: ops@example.invalid
+          ADMIN_USERNAME: audit-admin
+          ADMIN_PASSWORD: audit-password-123
+          MODEL_KEY_ENCRYPTION_SECRET: audit-encryption-secret-at-least-32chars
+          MEDIA_URL_SIGNING_SECRET: audit-media-signing-secret-at-least-32chars
+          METRICS_TOKEN: audit-metrics-token
+          YUNWU_API_KEY: audit-yunwu-key
+          SEEDANCE_BASE_URL: https://seedance.example.invalid
+          SEEDANCE_ACCOUNT: audit
+          SEEDANCE_PASSWORD: audit-password
+          MINIO_ROOT_USER: audit-root
+          MINIO_ROOT_PASSWORD: audit-root-password
+          MINIO_ACCESS_KEY: audit-key
+          MINIO_SECRET_KEY: audit-secret
+        run: |
+          docker compose -f compose.production.yml config --quiet
+          docker run --rm \
+            -e APP_DOMAIN="$APP_DOMAIN" \
+            -e ACME_EMAIL="$ACME_EMAIL" \
+            -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d caddy validate --config /etc/caddy/Caddyfile
+
+      - run: npx playwright install --with-deps chromium
+      - name: Start development server
+        run: |
+          npm run dev > /tmp/live-tu-server.log 2>&1 &
+          echo $! > /tmp/live-tu-server.pid
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:3004/api/live > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/live-tu-server.log
+          exit 1
+        env:
+          PORT: 3004
+          ALLOW_MOCK_FALLBACK: "false"
+
+      - run: npm run test:e2e:all
+        env:
+          E2E_BASE_URL: http://127.0.0.1:3004
+
+      - name: Print server log on failure
+        if: failure()
+        run: cat /tmp/live-tu-server.log || true

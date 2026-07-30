@@ -13,6 +13,37 @@ export interface Step1Inputs {
   imageModel?: string;
 }
 
+export interface ShotItem {
+  shotIndex: number;
+  startTime: string;
+  endTime: string;
+  shotType: string;
+  cameraMovement: string;
+  description: string;
+  keyframeUrl?: string;
+  mood: string;
+}
+
+export interface VideoStructure {
+  totalShots: number;
+  avgShotDuration: string;
+  pacing: 'fast' | 'medium' | 'slow';
+  narrativeArc: string;
+  hookTiming: string;
+}
+
+export interface OriginalScriptAnalysis {
+  hasVoiceover: boolean;
+  estimatedScript: string;
+  sellingPoints: string[];
+}
+
+export interface AudioAnalysis {
+  hasBgm: boolean;
+  estimatedBpm: string;
+  musicStyle: string;
+}
+
 export interface Step1Output {
   scene: string;
   subject: string;
@@ -24,6 +55,18 @@ export interface Step1Output {
   camera: string;
   static_image_prompt: string;
   rationale: string;
+  /** 视频拆解引擎扩展字段 (由多模态 LLM 拆解镜头表时填充) */
+  shotList?: ShotItem[];
+  videoStructure?: VideoStructure;
+  originalScript?: OriginalScriptAnalysis;
+  audioAnalysis?: AudioAnalysis;
+}
+
+export interface VideoDeconstructionOutput extends Step1Output {
+  shotList: ShotItem[];
+  videoStructure: VideoStructure;
+  originalScript: OriginalScriptAnalysis;
+  audioAnalysis: AudioAnalysis;
 }
 
 export interface CandidateImageItem {
@@ -52,6 +95,29 @@ export interface Step2Inputs {
   selectedImageId?: string;
 }
 
+export interface MultiShotItemTask {
+  id?: string;
+  shotIndex: number;
+  shotType?: string;
+  cameraMovement?: string;
+  description?: string;
+  keyframeUrl?: string;
+  video_prompt?: string;
+  seedanceTaskId?: string;
+  status: 'pending' | 'generating' | 'completed' | 'failed';
+  video_url?: string;
+  error_message?: string;
+}
+
+export interface MultiShotGenerationResult {
+  sessionId: string;
+  totalShots: number;
+  estimatedCompletionTimeSec: number;
+  shots: MultiShotItemTask[];
+  concatenatedVideoUrl?: string;
+  concatStatus?: 'pending' | 'processing' | 'completed' | 'failed';
+}
+
 export interface Step2Output {
   motion_type: 'zoom_in' | 'zoom_out' | 'pan_left' | 'pan_right' | 'tilt_up' | 'tilt_down' | 'rotate' | 'static_micro_motion';
   motion_intensity: 'subtle' | 'medium' | 'strong';
@@ -61,6 +127,9 @@ export interface Step2Output {
   audio_layer: string;
   negative_prompt: string;
   previewVideoUrl?: string;
+  /** 多镜头分段生成扩展 */
+  isMultiShot?: boolean;
+  multiShotResult?: MultiShotGenerationResult;
   /** 星河 Seedance 中转任务字段 */
   videoProvider?: string;
   seedanceConfigured?: boolean;
@@ -129,6 +198,9 @@ export interface Step4Output {
 export interface Step5Inputs {
   aspectRatio: '9:16' | '3:4' | '1:1';
   subtitleStyle: '黄字黑边' | '白字柔影' | '极简小绿红书体' | '极速黑卡';
+  subtitlePosition?: 'bottom' | 'center' | 'top';
+  brandStampText?: string;
+  brandStampPosition?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
 }
 
 export interface TimelineItem {
@@ -171,6 +243,7 @@ export interface MaterialItem {
   duration?: string;
   createdAt: string;
   dimensions?: string;
+  tags?: string[];
 }
 
 export interface WorkspaceSession {
@@ -222,6 +295,8 @@ export interface PresetTemplate {
   tag: string;
   description: string;
   coverImage: string;
+  category?: string;
+  formula?: string;
   /** Full 5-step snapshot; aligned with backend `/api/presets` field name */
   pipelineData: PipelineData;
   createdAt?: string;

@@ -1,9 +1,13 @@
 import { db } from './db';
+import fs from 'node:fs';
+import path from 'node:path';
+import { decryptSecret } from './secrets';
 
 export interface LlmGatewayParams {
   system: string;
   user: string;
   imageUrl?: string;
+  imageUrls?: string[];
   modelId?: string;
   temperature?: number;
 }
@@ -36,8 +40,39 @@ export function extractJsonObject(text: string): any {
   }
 }
 
+/** Helper to format image URL for LLM (converts local /uploads/... to data URI base64 if needed) */
+function formatImageUrlForLlm(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('data:image/')) return trimmed;
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
+  if (!trimmed.startsWith('/uploads/') && !trimmed.startsWith('uploads/')) return trimmed;
+
+  try {
+    const uploadsRoot = path.resolve(
+      process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
+    );
+    const relPath = trimmed.replace(/^\/?uploads\//, '');
+    const absPath = path.resolve(uploadsRoot, relPath);
+    if (
+      absPath.startsWith(`${uploadsRoot}${path.sep}`) &&
+      fs.existsSync(absPath) &&
+      fs.statSync(absPath).size <= 20 * 1024 * 1024
+    ) {
+      const buf = fs.readFileSync(absPath);
+      const ext = path.extname(absPath).toLowerCase().replace('.', '');
+      if (!['jpg', 'jpeg', 'png', 'webp'].includes(ext)) return trimmed;
+      const mime = ext === 'jpg' ? 'jpeg' : ext || 'png';
+      return `data:image/${mime};base64,${buf.toString('base64')}`;
+    }
+  } catch (err: any) {
+    console.warn('[llm-gateway] Local image base64 conversion failed:', err.message);
+  }
+  return trimmed;
+}
+
 export async function callLlmGateway(params: LlmGatewayParams): Promise<LlmGatewayResponse> {
-  const { system, user, imageUrl, modelId, temperature = 0.7 } = params;
+  const { system, user, imageUrl, imageUrls, modelId, temperature = 0.7 } = params;
 
   // 1. Resolve Model Configuration from SQLite
   let targetModel: any = null;
@@ -59,7 +94,9 @@ export async function callLlmGateway(params: LlmGatewayParams): Promise<LlmGatew
 
   // Fallback defaults if DB has no model records
   let baseUrl = targetModel?.base_url || process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1';
-  let apiKey = targetModel?.api_key || process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
+  let apiKey = targetModel?.api_key
+    ? decryptSecret(targetModel.api_key)
+    : process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
   let modelCode = targetModel?.model_code || process.env.TEXT_MODEL || 'gemini-3.6-flash';
   let modelName = targetModel?.name || 'Gemini 3.6 Flash';
   let providerName = targetModel?.provider || 'LLM Gateway';
@@ -83,10 +120,17 @@ export async function callLlmGateway(params: LlmGatewayParams): Promise<LlmGatew
   const systemPrompt = `${system}\n\n你必须只返回合法 JSON 对象，不要 Markdown，不要代码块，不要额外解释。`;
 
   let userMessageContent: any;
-  if (imageUrl && imageUrl.trim().length > 0) {
+  const validImageUrls = Array.isArray(imageUrls) && imageUrls.length > 0
+    ? imageUrls.filter((u) => u && typeof u === 'string' && u.trim().length > 0)
+    : (imageUrl && imageUrl.trim().length > 0 ? [imageUrl.trim()] : []);
+
+  if (validImageUrls.length > 0) {
     userMessageContent = [
       { type: 'text', text: user },
-      { type: 'image_url', image_url: { url: imageUrl.trim() } },
+      ...validImageUrls.map((url) => ({
+        type: 'image_url',
+        image_url: { url: formatImageUrlForLlm(url), detail: 'high' },
+      })),
     ];
   } else {
     userMessageContent = user;
@@ -201,7 +245,9 @@ export async function callImageGenerationGateway(params: ImageGenParams): Promis
   }
 
   let baseUrl = targetModel?.base_url || process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1';
-  let apiKey = targetModel?.api_key || process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
+  let apiKey = targetModel?.api_key
+    ? decryptSecret(targetModel.api_key)
+    : process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
   let modelCode = targetModel?.model_code || process.env.IMAGE_MODEL || 'gpt-image-1';
   let modelName = targetModel?.name || 'GPT Image 1';
 
@@ -281,4 +327,3 @@ export async function callImageGenerationGateway(params: ImageGenParams): Promis
     };
   }
 }
-

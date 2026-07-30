@@ -1,0 +1,52 @@
+services:
+  live-tu:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3004:3004"
+    environment:
+      NODE_ENV: production
+      PORT: 3004
+      DATA_DIR: /var/lib/live-tu/data
+      UPLOADS_DIR: /var/lib/live-tu/uploads
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME is required}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      MODEL_KEY_ENCRYPTION_SECRET: ${MODEL_KEY_ENCRYPTION_SECRET:?MODEL_KEY_ENCRYPTION_SECRET is required}
+      MEDIA_URL_SIGNING_SECRET: ${MEDIA_URL_SIGNING_SECRET:?MEDIA_URL_SIGNING_SECRET is required}
+      METRICS_TOKEN: ${METRICS_TOKEN:?METRICS_TOKEN is required}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      MIN_FREE_STORAGE_BYTES: ${MIN_FREE_STORAGE_BYTES:-1073741824}
+      MAX_REMOTE_MEDIA_BYTES: ${MAX_REMOTE_MEDIA_BYTES:-209715200}
+      MATERIAL_IMPORT_ROOT: ${MATERIAL_IMPORT_ROOT:-}
+      EXPENSIVE_REQUESTS_PER_MINUTE: ${EXPENSIVE_REQUESTS_PER_MINUTE:-20}
+      MAX_USER_STORAGE_BYTES: ${MAX_USER_STORAGE_BYTES:-5368709120}
+      REMOTE_MEDIA_HOST_ALLOWLIST: ${REMOTE_MEDIA_HOST_ALLOWLIST:-}
+      SHUTDOWN_GRACE_MS: ${SHUTDOWN_GRACE_MS:-30000}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+      YUNWU_BASE_URL: ${YUNWU_BASE_URL:-https://api3.wlai.vip/v1}
+      YUNWU_API_KEY: ${YUNWU_API_KEY:?YUNWU_API_KEY is required}
+      SEEDANCE_BASE_URL: ${SEEDANCE_BASE_URL:?SEEDANCE_BASE_URL is required}
+      SEEDANCE_ACCOUNT: ${SEEDANCE_ACCOUNT:?SEEDANCE_ACCOUNT is required}
+      SEEDANCE_PASSWORD: ${SEEDANCE_PASSWORD:?SEEDANCE_PASSWORD is required}
+      MINIO_ENDPOINT: ${MINIO_DOCKER_ENDPOINT:-host.docker.internal}
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      MINIO_BUCKET: ${MINIO_BUCKET:-buv-materials}
+      MINIO_ENSURE_PUBLIC_READ: ${MINIO_ENSURE_PUBLIC_READ:-false}
+      MINIO_PUBLIC_URL: ${MINIO_PUBLIC_URL:-}
+      ALLOW_MOCK_FALLBACK: "false"
+    volumes:
+      - live-tu-data:/var/lib/live-tu/data
+      - live-tu-uploads:/var/lib/live-tu/uploads
+      - live-tu-backups:/var/lib/live-tu/backups
+    stop_grace_period: 40s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  live-tu-data:
+  live-tu-uploads:
+  live-tu-backups:

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ProductItem, SellingPointsAiModel } from '../types';
 import { PRODUCT_TEMPLATES } from '../data/presets';
+import { notify } from '../services/notifications';
 import {
   ShieldCheck,
   Award,
@@ -105,7 +106,7 @@ export const KnowledgePageView: React.FC<KnowledgePageViewProps> = ({
   const handleDeleteProduct = (productId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (products.length <= 1) {
-      alert('卖点库至少保留 1 个产品，无法删除！');
+      notify('卖点库至少保留 1 个产品，无法删除！', 'error');
       return;
     }
     const filtered = products.filter((p) => p.id !== productId);

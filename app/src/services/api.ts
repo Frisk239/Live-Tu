@@ -34,13 +34,113 @@ export interface BgmTrack {
   created_at?: string;
 }
 
+export interface PipelineRunSnapshot {
+  id: string;
+  ownerId: string;
+  status: 'queued' | 'running' | 'waiting_external' | 'completed' | 'failed' | 'cancelled';
+  currentStep: number;
+  errorCode?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+  steps: Array<{
+    step: number;
+    status: 'pending' | 'running' | 'waiting_external' | 'completed' | 'failed' | 'cancelled' | 'stale';
+    attempt: number;
+    output?: any;
+    errorCode?: string;
+    errorMessage?: string;
+    updatedAt: string;
+  }>;
+}
+
 export const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || '/api';
 
 export const apiService = {
+  auth: {
+    async login(username: string, password: string) {
+      const res = await fetch(`${API_BASE_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '登录失败');
+      return json.user as { id: string; username: string; role: 'admin' | 'operator' };
+    },
+
+    async me() {
+      const res = await fetch(`${API_BASE_URL}/auth/me`);
+      if (!res.ok) return null;
+      const json = await res.json();
+      return json.user as { id: string; username: string; role: 'admin' | 'operator' };
+    },
+
+    async logout() {
+      await fetch(`${API_BASE_URL}/auth/logout`, { method: 'POST' });
+    },
+  },
+
+  runs: {
+    async list(): Promise<PipelineRunSnapshot[]> {
+      const res = await fetch(`${API_BASE_URL}/runs`);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '读取后台任务列表失败');
+      return json.data || [];
+    },
+
+    async start(
+      pipelineData: PipelineData,
+      productId: string | undefined,
+      productInfo: ProductItem | undefined,
+      idempotencyKey: string
+    ): Promise<PipelineRunSnapshot> {
+      const res = await fetch(`${API_BASE_URL}/runs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify({ pipelineData, productId, productInfo }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '创建后台任务失败');
+      return json.data;
+    },
+
+    async get(id: string): Promise<PipelineRunSnapshot> {
+      const res = await fetch(`${API_BASE_URL}/runs/${encodeURIComponent(id)}`);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '读取后台任务失败');
+      return json.data;
+    },
+
+    async cancel(id: string): Promise<PipelineRunSnapshot> {
+      const res = await fetch(`${API_BASE_URL}/runs/${encodeURIComponent(id)}/cancel`, {
+        method: 'POST',
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '取消后台任务失败');
+      return json.data;
+    },
+
+    async retry(id: string, step: number): Promise<PipelineRunSnapshot> {
+      const res = await fetch(`${API_BASE_URL}/runs/${encodeURIComponent(id)}/retry`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ step }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '重试后台任务失败');
+      return json.data;
+    },
+  },
+
   // --- 1. Model Configuration REST API ---
   models: {
     async fetchModels(): Promise<ModelConfigState> {
       try {
+        localStorage.removeItem('aigc_model_config');
         const res = await fetch(`${API_BASE_URL}/models/config`);
         if (!res.ok) throw new Error('Failed to fetch model configuration');
         const json = await res.json();
@@ -55,29 +155,23 @@ export const apiService = {
           defaultVideoModel: json.defaultVideoModel || 'Seedance 2.0 Fast',
         };
       } catch (err) {
-        console.warn('[API Client] Falling back to local model configuration');
-        const local = JSON.parse(localStorage.getItem('aigc_model_config') || 'null');
-        if (local && (local.textModels?.length > 0 || local.imageModels?.length > 0 || local.videoModels?.length > 0)) {
-          return local;
-        }
+        localStorage.removeItem('aigc_model_config');
         throw err;
       }
     },
 
     async saveConfig(config: ModelConfigState): Promise<{ success: boolean }> {
-      try {
-        const res = await fetch(`${API_BASE_URL}/models/config`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(config),
-        });
-        if (!res.ok) throw new Error('Save model config failed');
-        return await res.json();
-      } catch (err) {
-        console.log('[API Client] Saved model config locally');
-        localStorage.setItem('aigc_model_config', JSON.stringify(config));
-        return { success: true };
+      localStorage.removeItem('aigc_model_config');
+      const res = await fetch(`${API_BASE_URL}/models/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) {
+        throw new Error(json.error || `Save model config failed (${res.status})`);
       }
+      return json;
     },
 
     async testConnection(model: ModelMetadata): Promise<ApiTestConnectionResponse> {
@@ -123,7 +217,9 @@ export const apiService = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(product),
       });
-      return await res.json();
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '创建产品失败');
+      return json;
     },
 
     async updateProduct(id: string, product: Partial<ProductItem>): Promise<{ success: boolean }> {
@@ -132,14 +228,18 @@ export const apiService = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(product),
       });
-      return await res.json();
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '更新产品失败');
+      return json;
     },
 
     async deleteProduct(id: string): Promise<{ success: boolean }> {
       const res = await fetch(`${API_BASE_URL}/products/${id}`, {
         method: 'DELETE',
       });
-      return await res.json();
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '删除产品失败');
+      return json;
     },
   },
 
@@ -158,41 +258,48 @@ export const apiService = {
     },
 
     async uploadMaterial(file: File): Promise<MaterialItem> {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = async () => {
-          try {
-            const dataUrl = reader.result as string;
-            const res = await fetch(`${API_BASE_URL}/materials/upload`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                name: file.name,
-                dataUrl,
-                mediaType: file.type.startsWith('video') ? 'video' : 'image',
-                size: (file.size / (1024 * 1024)).toFixed(1) + ' MB',
-              }),
-            });
-            if (!res.ok) throw new Error('Upload material failed');
-            const json = await res.json();
-            resolve(json.data);
-          } catch (err) {
-            reject(err);
-          }
-        };
-        reader.onerror = () => reject(new Error('FileReader failed'));
-        reader.readAsDataURL(file);
+      const form = new FormData();
+      form.append('file', file, file.name);
+      form.append('name', file.name);
+      const res = await fetch(`${API_BASE_URL}/materials/upload-file`, {
+        method: 'POST',
+        body: form,
       });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || `上传素材失败 (${res.status})`);
+      }
+      return json.data;
     },
 
     async deleteMaterial(id: string): Promise<{ success: boolean }> {
+      const res = await fetch(`${API_BASE_URL}/materials/${id}`, { method: 'DELETE' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '删除素材失败');
+      return json;
+    },
+
+    async updateMaterialTags(id: string, tags: string[]): Promise<{ success: boolean; tags?: string[] }> {
+      const res = await fetch(`${API_BASE_URL}/materials/${id}/tags`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '更新素材标签失败');
+      return json;
+    },
+
+    async importDirectory(dirPath?: string): Promise<{ success: boolean; message: string; importedCount: number; items: MaterialItem[] }> {
       try {
-        const res = await fetch(`${API_BASE_URL}/materials/${id}`, {
-          method: 'DELETE',
+        const res = await fetch(`${API_BASE_URL}/materials/import-directory`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dirPath }),
         });
         return await res.json();
-      } catch (err) {
-        return { success: false };
+      } catch (err: any) {
+        return { success: false, message: err.message, importedCount: 0, items: [] };
       }
     },
   },
@@ -221,14 +328,10 @@ export const apiService = {
     },
 
     async deleteTask(id: string): Promise<{ success: boolean }> {
-      try {
-        const res = await fetch(`${API_BASE_URL}/tasks/${id}`, {
-          method: 'DELETE',
-        });
-        return await res.json();
-      } catch (err) {
-        return { success: false };
-      }
+      const res = await fetch(`${API_BASE_URL}/tasks/${id}`, { method: 'DELETE' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '删除任务失败');
+      return json;
     },
 
     async runPipelineStep(stepId: StepId, inputs: any, modelInfo?: any): Promise<any> {
@@ -282,16 +385,23 @@ export const apiService = {
       styleTags?: string[];
       file?: File;
       url?: string;
+      licenseConfirmed: boolean;
     }): Promise<{ success: boolean; data?: BgmTrack; error?: string }> {
       try {
-        let fileDataUrl: string | undefined;
         if (params.file) {
-          fileDataUrl = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = () => reject(new Error('FileReader failed'));
-            reader.readAsDataURL(params.file!);
+          const form = new FormData();
+          form.set('file', params.file);
+          form.set('name', params.name);
+          if (params.artist) form.set('artist', params.artist);
+          if (params.bpm !== undefined) form.set('bpm', String(params.bpm));
+          if (params.mood) form.set('mood', params.mood);
+          if (params.styleTags) form.set('styleTags', params.styleTags.join(','));
+          form.set('licenseConfirmed', String(params.licenseConfirmed));
+          const res = await fetch(`${API_BASE_URL}/bgm/upload-file`, {
+            method: 'POST',
+            body: form,
           });
+          return await res.json();
         }
         const res = await fetch(`${API_BASE_URL}/bgm/upload`, {
           method: 'POST',
@@ -302,8 +412,8 @@ export const apiService = {
             bpm: params.bpm,
             mood: params.mood,
             styleTags: params.styleTags,
-            fileDataUrl,
             url: params.url,
+            licenseConfirmed: params.licenseConfirmed,
           }),
         });
         return await res.json();
@@ -313,12 +423,10 @@ export const apiService = {
     },
 
     async deleteBgm(id: string): Promise<{ success: boolean }> {
-      try {
-        const res = await fetch(`${API_BASE_URL}/bgm/${id}`, { method: 'DELETE' });
-        return await res.json();
-      } catch {
-        return { success: false };
-      }
+      const res = await fetch(`${API_BASE_URL}/bgm/${id}`, { method: 'DELETE' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '删除 BGM 失败');
+      return json;
     },
   },
 

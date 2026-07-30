@@ -8,12 +8,12 @@ const BASE = process.env.E2E_BASE_URL || 'http://localhost:3004';
 test.describe('Step5 readiness & draft UX', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
+      localStorage.clear();
       localStorage.setItem('aigc_onboarding_completed', 'true');
-      localStorage.removeItem('aigc_is_logged_in');
     });
     await page.goto(BASE);
-    await page.getByPlaceholder('请输入测试账号 (haini)').fill('haini');
-    await page.getByPlaceholder('请输入登录密码 (888)').fill('888');
+    await page.getByPlaceholder('请输入账号').fill('haini');
+    await page.getByPlaceholder('请输入登录密码').fill('888');
     await page.getByRole('button', { name: '立即登录工作台' }).click();
     await expect(page.locator('aside')).toBeVisible({ timeout: 15000 });
   });
@@ -35,20 +35,16 @@ test.describe('Step5 readiness & draft UX', () => {
     await expect(runBtn).toBeDisabled();
   });
 
-  test('draft save label can open tasks when present', async ({ page }) => {
-    // Trigger a draft by setting media via sample if available
-    const sample = page.getByText(/晨间阳光浴室|小红书爆款/).first();
-    if (await sample.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await sample.click();
-      // wait debounce draft
-      await page.waitForTimeout(2500);
-      const chip = page.getByRole('button', { name: /草稿已保存/ });
-      if (await chip.isVisible({ timeout: 5000 }).catch(() => false)) {
-        await chip.click();
-        await expect(page.getByRole('heading', { name: /任务中心/ })).toBeVisible({ timeout: 10000 });
-      }
-    } else {
-      test.skip(true, 'no sample media to trigger draft');
-    }
+  test('draft save label opens the persisted task center', async ({ page }) => {
+    const sample = page.getByRole('button', { name: /晨间阳光浴室/ });
+    await expect(sample).toBeVisible({ timeout: 10_000 });
+    await sample.click();
+
+    const chip = page.getByRole('button', { name: /草稿已保存/ });
+    await expect(chip).toBeVisible({ timeout: 10_000 });
+    await chip.click();
+    await expect(page.getByRole('heading', { name: /任务中心/ })).toBeVisible({
+      timeout: 10_000,
+    });
   });
 });

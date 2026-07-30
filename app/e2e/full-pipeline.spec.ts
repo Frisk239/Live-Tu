@@ -33,8 +33,8 @@ test.describe('BUV full-ish pipeline', () => {
     test.skip(!yunwuOk, 'YUNWU not configured — skip real Step1');
 
     // Login
-    await page.getByPlaceholder('请输入测试账号 (haini)').fill('haini');
-    await page.getByPlaceholder('请输入登录密码 (888)').fill('888');
+    await page.getByPlaceholder('请输入账号').fill('haini');
+    await page.getByPlaceholder('请输入登录密码').fill('888');
     await page.getByRole('button', { name: '立即登录工作台' }).click();
     await expect(page.locator('aside')).toBeVisible({ timeout: 15000 });
 
@@ -94,6 +94,11 @@ test.describe('BUV full-ish pipeline', () => {
   });
 
   test('seedance status endpoint when configured', async ({ page }) => {
+    const login = await page.request.post('/api/auth/login', {
+      data: { username: 'haini', password: '888' },
+    });
+    expect(login.ok()).toBeTruthy();
+
     const health = await page.evaluate(async () => {
       const res = await fetch('/api/health?probe=1');
       return res.json();
@@ -123,8 +128,8 @@ test.describe('BUV full-ish pipeline', () => {
   }) => {
     test.setTimeout(60_000);
 
-    await page.getByPlaceholder('请输入测试账号 (haini)').fill('haini');
-    await page.getByPlaceholder('请输入登录密码 (888)').fill('888');
+    await page.getByPlaceholder('请输入账号').fill('haini');
+    await page.getByPlaceholder('请输入登录密码').fill('888');
     await page.getByRole('button', { name: '立即登录工作台' }).click();
     await expect(page.locator('aside')).toBeVisible({ timeout: 15000 });
 

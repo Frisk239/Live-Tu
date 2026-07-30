@@ -5,30 +5,72 @@ import { Navbar } from './components/Navbar';
 import { Sidebar, MainViewType } from './components/Sidebar';
 import { LoginScreen } from './components/LoginScreen';
 import { StepProgress, AutoPipelineProgress } from './components/StepProgress';
-import { Step1Card } from './components/Step1Card';
-import { Step2Card } from './components/Step2Card';
-import { Step3Card } from './components/Step3Card';
-import { Step4Card } from './components/Step4Card';
-import { Step5Card } from './components/Step5Card';
 import { OnboardingModal } from './components/OnboardingModal';
 import { SessionManagerModal } from './components/SessionManagerModal';
 
-// Full View Pages for Direct View Switching
-import { MaterialsPageView } from './views/MaterialsPageView';
-import { TasksPageView } from './views/TasksPageView';
-import { PresetsPageView } from './views/PresetsPageView';
-import { ModelsPageView } from './views/ModelsPageView';
-import { KnowledgePageView } from './views/KnowledgePageView';
-import { BgmPageView } from './views/BgmPageView';
-
 import { PackageCheck, Edit3 } from 'lucide-react';
-import { apiService } from './services/api';
+import { apiService, PipelineRunSnapshot } from './services/api';
+import { NotificationViewport, notify } from './services/notifications';
+
+const MaterialsPageView = React.lazy(() =>
+  import('./views/MaterialsPageView').then((module) => ({ default: module.MaterialsPageView }))
+);
+const TasksPageView = React.lazy(() =>
+  import('./views/TasksPageView').then((module) => ({ default: module.TasksPageView }))
+);
+const PresetsPageView = React.lazy(() =>
+  import('./views/PresetsPageView').then((module) => ({ default: module.PresetsPageView }))
+);
+const ModelsPageView = React.lazy(() =>
+  import('./views/ModelsPageView').then((module) => ({ default: module.ModelsPageView }))
+);
+const KnowledgePageView = React.lazy(() =>
+  import('./views/KnowledgePageView').then((module) => ({ default: module.KnowledgePageView }))
+);
+const BgmPageView = React.lazy(() =>
+  import('./views/BgmPageView').then((module) => ({ default: module.BgmPageView }))
+);
+const Step1Card = React.lazy(() =>
+  import('./components/Step1Card').then((module) => ({ default: module.Step1Card }))
+);
+const Step2Card = React.lazy(() =>
+  import('./components/Step2Card').then((module) => ({ default: module.Step2Card }))
+);
+const Step3Card = React.lazy(() =>
+  import('./components/Step3Card').then((module) => ({ default: module.Step3Card }))
+);
+const Step4Card = React.lazy(() =>
+  import('./components/Step4Card').then((module) => ({ default: module.Step4Card }))
+);
+const Step5Card = React.lazy(() =>
+  import('./components/Step5Card').then((module) => ({ default: module.Step5Card }))
+);
 
 export default function App() {
-  // Authentication State (Credentials: haini / 888)
-  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
-    return localStorage.getItem('aigc_is_logged_in') === 'true';
-  });
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isAuthChecked, setIsAuthChecked] = useState(false);
+  const [authUser, setAuthUser] = useState<{
+    id: string;
+    username: string;
+    role: 'admin' | 'operator';
+  } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    apiService.auth.me()
+      .then((user) => {
+        if (active) {
+          setAuthUser(user);
+          setIsLoggedIn(Boolean(user));
+        }
+      })
+      .finally(() => {
+        if (active) setIsAuthChecked(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Main Active View State (Persisted in localStorage to prevent reset to pipeline)
   const [activeView, setActiveView] = useState<MainViewType>(() => {
@@ -50,6 +92,7 @@ export default function App() {
       apiService.tasks.fetchTasks().then((list) => {
         if (list?.length) setTasks(list);
       }).catch(() => {});
+      apiService.runs.list().then(setPipelineRuns).catch(() => {});
     }
   }, []);
 
@@ -103,6 +146,7 @@ export default function App() {
 
   // Bootstrap all persistent resources from SQLite-backed APIs
   useEffect(() => {
+    if (!isLoggedIn) return;
     let cancelled = false;
 
     const bootstrap = async () => {
@@ -177,52 +221,58 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isLoggedIn]);
 
-  const handleUpdateProducts = (nextProducts: ProductItem[]) => {
+  const handleUpdateProducts = async (nextProducts: ProductItem[]) => {
     const prevIds = new Set(products.map((p) => p.id));
     const nextIds = new Set(nextProducts.map((p) => p.id));
-
-    // Handle deleted items
-    for (const p of products) {
-      if (!nextIds.has(p.id)) {
-        apiService.products.deleteProduct(p.id).catch(() => {});
-      }
+    try {
+      await Promise.all([
+        ...products
+          .filter((product) => !nextIds.has(product.id))
+          .map((product) => apiService.products.deleteProduct(product.id)),
+        ...nextProducts.map((product) =>
+          prevIds.has(product.id)
+            ? apiService.products.updateProduct(product.id, product)
+            : apiService.products.createProduct(product)
+        ),
+      ]);
+      setProducts(nextProducts);
+    } catch (error: any) {
+      notify(error?.message || '产品知识库保存失败，未应用更改', 'error');
     }
-
-    // Handle created or updated items
-    for (const p of nextProducts) {
-      if (!prevIds.has(p.id)) {
-        apiService.products.createProduct(p).catch(() => {});
-      } else {
-        apiService.products.updateProduct(p.id, p).catch(() => {});
-      }
-    }
-
-    setProducts(nextProducts);
   };
 
   const [modelConfig, setModelConfig] = useState<ModelConfigState>(DEFAULT_MODEL_CONFIG);
-  const [userRole, setUserRole] = useState<'admin' | 'user'>('admin');
+  const userRole: 'admin' | 'user' = authUser?.role === 'admin' ? 'admin' : 'user';
 
   // Materials & Tasks State
   const [materials, setMaterials] = useState<MaterialItem[]>([]);
 
-  const handleDeleteMaterial = (id: string) => {
-    apiService.materials.deleteMaterial(id).catch(() => {});
-    setMaterials((prev) => prev.filter((m) => m.id !== id));
+  const handleDeleteMaterial = async (id: string) => {
+    if (!window.confirm('确认删除该素材及其关联文件吗？此操作不可撤销。')) return;
+    try {
+      await apiService.materials.deleteMaterial(id);
+      setMaterials((prev) => prev.filter((material) => material.id !== id));
+      notify('素材已删除', 'success');
+    } catch (error: any) {
+      notify(error?.message || '素材删除失败', 'error');
+    }
   };
 
   const [tasks, setTasks] = useState<WorkspaceSession[]>([]);
+  const [pipelineRuns, setPipelineRuns] = useState<PipelineRunSnapshot[]>([]);
   const [isSessionManagerOpen, setIsSessionManagerOpen] = useState(false);
 
   const handleDeleteWorkspace = async (id: string) => {
+    if (!window.confirm('确认删除该任务记录吗？此操作不可撤销。')) return;
     try {
       await apiService.tasks.deleteTask(id);
-    } catch (err) {
-      console.warn('[App] deleteTask failed:', err);
+      setTasks((prev) => prev.filter((task) => task.id !== id));
+      notify('任务记录已删除', 'success');
+    } catch (err: any) {
+      notify(err?.message || '任务删除失败', 'error');
     }
-    setTasks((prev) => prev.filter((t) => t.id !== id));
   };
 
   const handleDeleteTask = handleDeleteWorkspace;
@@ -325,7 +375,30 @@ export default function App() {
     return null;
   };
 
-  const handleCreateNewWorkspace = useCallback(() => {
+  const handleCreateNewWorkspace = async () => {
+    const currentSerialized = JSON.stringify({ currentStep, pipelineData });
+    if (currentSerialized !== lastSavedSnapshotRef.current) {
+      const saved = await persistTaskSnapshot(pipelineData, {
+        status: 'draft',
+        currentStep,
+        asDraft: true,
+      });
+      if (!saved) {
+        notify('当前工作区尚未保存，新建操作已取消', 'error');
+        return;
+      }
+      lastSavedSnapshotRef.current = currentSerialized;
+    }
+    if (activeRunIdRef.current) {
+      try {
+        await apiService.runs.cancel(activeRunIdRef.current);
+        activeRunIdRef.current = null;
+        localStorage.removeItem('aigc_active_pipeline_run_id');
+      } catch (error: any) {
+        notify(error?.message || '后台任务取消失败，新建操作已取消', 'error');
+        return;
+      }
+    }
     if (activeAbortControllerRef.current) {
       activeAbortControllerRef.current.abort();
       activeAbortControllerRef.current = null;
@@ -355,7 +428,7 @@ export default function App() {
       localStorage.setItem('aigc_cached_current_step', '1');
     } catch {}
     setActiveView('pipeline');
-  }, [setDraftTaskIdSynced]);
+  };
 
   const handleLoadWorkspace = useCallback((session: WorkspaceSession) => {
     if (session.pipelineData) {
@@ -389,12 +462,12 @@ export default function App() {
           createdAt: res.data.createdAt,
         };
         setPresets((prev) => [mapped, ...prev.filter((p) => p.id !== mapped.id)]);
-        alert('✅ 已保存为预设模版');
+        notify('✅ 已保存为预设模版', 'success');
       } else {
-        alert('保存预设失败');
+        notify('保存预设失败', 'error');
       }
     } catch (err) {
-      alert('保存预设失败，请检查后端');
+      notify('保存预设失败，请检查后端', 'error');
     }
   };
 
@@ -535,14 +608,21 @@ export default function App() {
   }, [pipelineData, currentStep, isAutoPipelineRunning]);
 
   // Handle Login Success
-  const handleLoginSuccess = () => {
+  const handleLoginSuccess = async (username: string, password: string) => {
+    const user = await apiService.auth.login(username, password);
+    setAuthUser(user);
     setIsLoggedIn(true);
-    localStorage.setItem('aigc_is_logged_in', 'true');
 
     // Requirement 4: Pop up onboarding guide immediately for new user login
     if (localStorage.getItem('aigc_onboarding_completed') !== 'true') {
       setIsOnboardingOpen(true);
     }
+  };
+
+  const handleLogout = async () => {
+    await apiService.auth.logout();
+    setAuthUser(null);
+    setIsLoggedIn(false);
   };
 
   // Sync handlers for user-controlled re-inheritance
@@ -613,6 +693,7 @@ export default function App() {
 
   // Global AbortController for cancelling in-flight fetch requests & polling loops
   const activeAbortControllerRef = useRef<AbortController | null>(null);
+  const activeRunIdRef = useRef<string | null>(null);
 
   const getNewAbortSignal = useCallback(() => {
     if (activeAbortControllerRef.current) {
@@ -623,7 +704,113 @@ export default function App() {
     return controller.signal;
   }, []);
 
-  const handleAbortCurrentStep = useCallback((stepId?: StepId) => {
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    let runId = localStorage.getItem('aigc_active_pipeline_run_id');
+
+    let disposed = false;
+    let timer: number | undefined;
+
+    const poll = async () => {
+      if (!runId) return;
+      try {
+        const run = await apiService.runs.get(runId);
+        if (disposed) return;
+        const activeStep = Math.min(5, Math.max(1, run.currentStep)) as StepId;
+        setCurrentStep(activeStep);
+        setPipelineData((previous) => {
+          const next = { ...previous } as PipelineData;
+          for (const step of run.steps) {
+            const key = `step${step.step}` as keyof PipelineData;
+            const current = next[key] as any;
+            (next as any)[key] = {
+              ...current,
+              status:
+                step.status === 'completed'
+                  ? 'completed'
+                  : step.status === 'failed'
+                    ? 'failed'
+                    : ['running', 'waiting_external'].includes(step.status)
+                      ? 'running'
+                      : 'pending',
+              output: step.output ?? current.output,
+            };
+          }
+          return next;
+        });
+
+        if (['completed', 'failed', 'cancelled'].includes(run.status)) {
+          localStorage.removeItem('aigc_active_pipeline_run_id');
+          activeRunIdRef.current = null;
+          setIsAutoPipelineRunning(false);
+          setAutoProgress({
+            step: activeStep,
+            phase: run.status === 'completed' ? 'done' : 'error',
+            message:
+              run.status === 'completed'
+                ? '后台任务已完成并恢复到工作台'
+                : run.status === 'cancelled'
+                  ? '后台任务已取消'
+                  : `Step ${activeStep} 失败：${run.errorMessage || run.errorCode || '未知错误'}`,
+          });
+          return;
+        }
+
+        setAutoProgress({
+          step: activeStep,
+          phase: activeStep === 5 ? 'render' : 'llm',
+          message:
+            run.status === 'waiting_external'
+              ? `Step ${activeStep}/5 · 外部任务继续运行中`
+              : `Step ${activeStep}/5 · 已恢复后台执行状态`,
+        });
+        timer = window.setTimeout(poll, 2_000);
+      } catch (error) {
+        if (!disposed) {
+          console.warn('[App] recover background run failed:', error);
+          timer = window.setTimeout(poll, 5_000);
+        }
+      }
+    };
+
+    const recover = async () => {
+      if (!runId) {
+        try {
+          const runs = await apiService.runs.list();
+          const active = runs.find((run) =>
+            ['queued', 'running', 'waiting_external'].includes(run.status)
+          );
+          runId = active?.id || null;
+        } catch (error) {
+          console.warn('[App] discover background runs failed:', error);
+        }
+      }
+      if (!runId || disposed) return;
+      localStorage.setItem('aigc_active_pipeline_run_id', runId);
+      activeRunIdRef.current = runId;
+      setIsAutoPipelineRunning(true);
+      await poll();
+    };
+
+    void recover();
+    return () => {
+      disposed = true;
+      if (timer) window.clearTimeout(timer);
+    };
+  }, [isLoggedIn]);
+
+  const handleAbortCurrentStep = useCallback(async (stepId?: StepId) => {
+    const runId = activeRunIdRef.current;
+    if (runId) {
+      try {
+        await apiService.runs.cancel(runId);
+        activeRunIdRef.current = null;
+        localStorage.removeItem('aigc_active_pipeline_run_id');
+      } catch (error: any) {
+        notify(error?.message || '后台任务取消失败，任务可能仍在运行', 'error');
+        return;
+      }
+    }
     if (activeAbortControllerRef.current) {
       activeAbortControllerRef.current.abort();
       activeAbortControllerRef.current = null;
@@ -648,7 +835,18 @@ export default function App() {
     });
   }, [currentStep]);
 
-  const handleAbortFullPipeline = useCallback(() => {
+  const handleAbortFullPipeline = useCallback(async () => {
+    const runId = activeRunIdRef.current;
+    if (runId) {
+      try {
+        await apiService.runs.cancel(runId);
+        activeRunIdRef.current = null;
+        localStorage.removeItem('aigc_active_pipeline_run_id');
+      } catch (error: any) {
+        notify(error?.message || '后台任务取消失败，任务可能仍在运行', 'error');
+        return;
+      }
+    }
     if (activeAbortControllerRef.current) {
       activeAbortControllerRef.current.abort();
       activeAbortControllerRef.current = null;
@@ -750,7 +948,7 @@ export default function App() {
   }, []);
 
   // Full end-to-end automated reverse inference runner
-  const runFullPipelineAuto = async () => {
+  const runFullPipelineAutoLegacy = async () => {
     if (isAutoPipelineRunning) return;
     const signal = getNewAbortSignal();
     setIsAutoPipelineRunning(true);
@@ -977,10 +1175,131 @@ export default function App() {
         title: `全自动失败 @ Step${failedStep}: ${msg.slice(0, 40)}`,
         asDraft: true,
       });
-      alert(`全自动已停在 Step ${failedStep}\n${msg}`);
+      notify(`全自动已停在 Step ${failedStep}\n${msg}`, 'error');
     } finally {
       setIsAutoPipelineRunning(false);
       setTimeout(() => setAutoProgress(null), 4000);
+    }
+  };
+
+  const runFullPipelineAuto = async () => {
+    if (isAutoPipelineRunning) return;
+    const signal = getNewAbortSignal();
+    const idempotencyKey = crypto.randomUUID();
+    setIsAutoPipelineRunning(true);
+    handleSetActiveView('pipeline');
+    setAutoProgress({ step: 1, phase: 'llm', message: '正在创建可恢复的后台任务…' });
+
+    const applyRunSnapshot = (run: Awaited<ReturnType<typeof apiService.runs.get>>) => {
+      const activeStep = Math.min(5, Math.max(1, run.currentStep)) as StepId;
+      setCurrentStep(activeStep);
+      setPipelineData((previous) => {
+        const next = { ...previous } as PipelineData;
+        for (const step of run.steps) {
+          const key = `step${step.step}` as keyof PipelineData;
+          const current = next[key] as any;
+          (next as any)[key] = {
+            ...current,
+            status:
+              step.status === 'completed'
+                ? 'completed'
+                : step.status === 'failed'
+                  ? 'failed'
+                  : ['running', 'waiting_external'].includes(step.status)
+                    ? 'running'
+                    : 'pending',
+            output: step.output ?? current.output,
+          };
+        }
+        return next;
+      });
+
+      const currentStepState = run.steps.find((step) => step.step === activeStep);
+      const waitingExternal = currentStepState?.status === 'waiting_external';
+      setAutoProgress({
+        step: activeStep,
+        phase: activeStep === 5 ? 'render' : 'llm',
+        message: waitingExternal
+          ? `Step ${activeStep}/5 · 外部生成任务运行中，可安全离开页面`
+          : `Step ${activeStep}/5 · 后台执行中…`,
+      });
+    };
+
+    try {
+      let run = await apiService.runs.start(
+        pipelineData,
+        activeProduct?.id,
+        activeProduct,
+        idempotencyKey
+      );
+      activeRunIdRef.current = run.id;
+      localStorage.setItem('aigc_active_pipeline_run_id', run.id);
+      applyRunSnapshot(run);
+
+      while (!['completed', 'failed', 'cancelled'].includes(run.status)) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = window.setTimeout(resolve, 2_000);
+          signal.addEventListener(
+            'abort',
+            () => {
+              window.clearTimeout(timer);
+              reject(new DOMException('Aborted', 'AbortError'));
+            },
+            { once: true }
+          );
+        });
+        run = await apiService.runs.get(run.id);
+        applyRunSnapshot(run);
+      }
+
+      if (run.status === 'completed') {
+        const completedData = run.steps.reduce((snapshot, step) => {
+          const key = `step${step.step}` as keyof PipelineData;
+          return {
+            ...snapshot,
+            [key]: {
+              ...(snapshot as any)[key],
+              status: 'completed',
+              output: step.output,
+            },
+          };
+        }, pipelineData as PipelineData);
+        setPipelineData(completedData);
+        setAutoProgress({ step: 5, phase: 'done', message: '全自动后台任务已完成' });
+        setStaleUpstream({ step2: false, step3: false, step4: false, step5: false });
+        await persistTaskSnapshot(completedData, {
+          status: 'completed',
+          currentStep: 5,
+          title: (run.steps[2]?.output as any)?.title || '全自动爆款视频产物',
+          asDraft: false,
+        });
+        setDraftSavedLabel(`全自动生成成功！${new Date().toLocaleTimeString()}`);
+      } else if (run.status === 'failed') {
+        throw new Error(
+          `Step ${run.currentStep} 失败：${run.errorMessage || run.errorCode || '未知错误'}`
+        );
+      } else {
+        setAutoProgress({
+          step: run.currentStep as StepId,
+          phase: 'error',
+          message: '后台任务已取消',
+        });
+      }
+    } catch (error: any) {
+      if (error?.name !== 'AbortError') {
+        console.error('Background pipeline run error:', error);
+        setAutoProgress({
+          step: currentStep,
+          phase: 'error',
+          message: String(error?.message || '后台流水线失败').slice(0, 120),
+        });
+      }
+    } finally {
+      activeRunIdRef.current = null;
+      localStorage.removeItem('aigc_active_pipeline_run_id');
+      setIsAutoPipelineRunning(false);
+      activeAbortControllerRef.current = null;
+      setTimeout(() => setAutoProgress(null), 4_000);
     }
   };
 
@@ -1048,7 +1367,7 @@ export default function App() {
   const handleSelectPreset = (preset: PresetTemplate) => {
     const rawData = (preset.pipelineData || {}) as Partial<PipelineData>;
     if (!rawData?.step1 && !rawData?.step2 && !rawData?.step3 && !rawData?.step4 && !rawData?.step5) {
-      alert('该预设缺少流水线数据，无法载入');
+      notify('该预设缺少流水线数据，无法载入', 'error');
       return;
     }
 
@@ -1166,7 +1485,7 @@ export default function App() {
           return next;
         });
       } else {
-        alert(result.error || 'Step 1 运行失败');
+        notify(result.error || 'Step 1 运行失败', 'error');
         setPipelineData((prev) => ({
           ...prev,
           step1: { ...prev.step1, status: 'failed' },
@@ -1233,7 +1552,7 @@ export default function App() {
         });
         setStaleUpstream((s) => ({ ...s, step2: false }));
       } else {
-        alert(result.error || 'Step 2 运行失败');
+        notify(result.error || 'Step 2 运行失败', 'error');
         setPipelineData((prev) => ({
           ...prev,
           step2: { ...prev.step2, status: 'failed' },
@@ -1302,7 +1621,7 @@ export default function App() {
         });
         setStaleUpstream((s) => ({ ...s, step3: false }));
       } else {
-        alert(result.error || 'Step 3 运行失败');
+        notify(result.error || 'Step 3 运行失败', 'error');
         setPipelineData((prev) => ({
           ...prev,
           step3: { ...prev.step3, status: 'failed' },
@@ -1357,7 +1676,7 @@ export default function App() {
         });
         setStaleUpstream((s) => ({ ...s, step4: false }));
       } else {
-        alert(result.error || 'Step 4 运行失败');
+        notify(result.error || 'Step 4 运行失败', 'error');
         setPipelineData((prev) => ({
           ...prev,
           step4: { ...prev.step4, status: 'failed' },
@@ -1423,7 +1742,7 @@ export default function App() {
         if (result.source) setStepSources((s) => ({ ...s, 5: String(result.source) }));
         setStaleUpstream((s) => ({ ...s, step5: false }));
       } else {
-        alert(result.error || 'Step 5 运行失败');
+        notify(result.error || 'Step 5 运行失败', 'error');
         setPipelineData((prev) => ({
           ...prev,
           step5: { ...prev.step5, status: 'failed' },
@@ -1596,13 +1915,21 @@ export default function App() {
   const goToStep4 = useCallback(() => setCurrentStep(4), []);
   const goToStep5 = useCallback(() => setCurrentStep(5), []);
 
-  // Render Login Screen if not authenticated
+  if (!isAuthChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 text-sm text-slate-500">
+        正在验证登录状态…
+      </div>
+    );
+  }
+
   if (!isLoggedIn) {
     return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
   }
 
   return (
     <div className="flex min-h-screen bg-[#f8fafc] text-slate-900 font-sans selection:bg-indigo-600 selection:text-white">
+      <NotificationViewport />
       {/* Resizable Sidebar */}
       <Sidebar
         sidebarWidth={sidebarWidth}
@@ -1613,6 +1940,8 @@ export default function App() {
         onChangeView={(view) => handleSetActiveView(view)}
         onOpenOnboarding={() => setIsOnboardingOpen(true)}
         onResetAll={handleResetAll}
+        onLogout={handleLogout}
+        isAdmin={userRole === 'admin'}
         activeProduct={activeProduct}
         products={products}
         onSelectActiveProduct={(id) => setActiveProductId(id)}
@@ -1633,12 +1962,30 @@ export default function App() {
         <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6">
           {/* VIEW ROUTING */}
 
-
+          <React.Suspense
+            fallback={
+              <div className="py-20 text-center text-sm font-semibold text-slate-500">
+                正在加载页面…
+              </div>
+            }
+          >
           {/* 1. MATERIALS PAGE VIEW */}
           {activeView === 'materials' && (
             <MaterialsPageView
               materials={materials}
-              onAddMaterials={(newItems) => setMaterials((prev) => [...newItems, ...prev])}
+              onAddMaterials={(newItems) =>
+                setMaterials((prev) => {
+                  const merged = new Map<string, MaterialItem>(
+                    prev.map((item): [string, MaterialItem] => [item.id, item])
+                  );
+                  for (const item of newItems) merged.set(item.id, item);
+                  const newIds = new Set(newItems.map((item) => item.id));
+                  return [
+                    ...newItems,
+                    ...[...merged.values()].filter((item) => !newIds.has(item.id)),
+                  ];
+                })
+              }
               onDeleteMaterial={handleDeleteMaterial}
               onSelectMaterial={(material) => {
                 setPipelineData((prev) => ({
@@ -1659,6 +2006,50 @@ export default function App() {
           {activeView === 'tasks' && (
             <TasksPageView
               tasks={tasks}
+              pipelineRuns={pipelineRuns}
+              onRefreshRuns={async () => setPipelineRuns(await apiService.runs.list())}
+              onCancelRun={async (id) => {
+                await apiService.runs.cancel(id);
+                setPipelineRuns(await apiService.runs.list());
+              }}
+              onRetryRun={async (id, step) => {
+                const run = await apiService.runs.retry(id, step);
+                localStorage.setItem('aigc_active_pipeline_run_id', run.id);
+                activeRunIdRef.current = run.id;
+                setPipelineRuns(await apiService.runs.list());
+                setIsAutoPipelineRunning(true);
+                setCurrentStep(Math.min(5, Math.max(1, run.currentStep)) as StepId);
+                handleSetActiveView('pipeline');
+              }}
+              onResumeRun={(run) => {
+                setPipelineData((previous) => {
+                  const next = { ...previous } as PipelineData;
+                  for (const step of run.steps) {
+                    const key = `step${step.step}` as keyof PipelineData;
+                    const current = next[key] as any;
+                    (next as any)[key] = {
+                      ...current,
+                      status:
+                        step.status === 'completed'
+                          ? 'completed'
+                          : step.status === 'failed'
+                            ? 'failed'
+                            : ['running', 'waiting_external'].includes(step.status)
+                              ? 'running'
+                              : 'pending',
+                      output: step.output ?? current.output,
+                    };
+                  }
+                  return next;
+                });
+                setCurrentStep(Math.min(5, Math.max(1, run.currentStep)) as StepId);
+                if (['queued', 'running', 'waiting_external'].includes(run.status)) {
+                  localStorage.setItem('aigc_active_pipeline_run_id', run.id);
+                  activeRunIdRef.current = run.id;
+                  setIsAutoPipelineRunning(true);
+                }
+                handleSetActiveView('pipeline');
+              }}
               onSelectTask={(task) => {
                 const data = task.pipelineData;
                 if (data?.step1) {
@@ -1711,6 +2102,7 @@ export default function App() {
           {activeView === 'bgm' && (
             <BgmPageView onBackToPipeline={() => handleSetActiveView('pipeline')} />
           )}
+          </React.Suspense>
 
           {/* 6. MAIN PIPELINE VIEW */}
           {activeView === 'pipeline' && (
@@ -1786,6 +2178,13 @@ export default function App() {
               />
 
               {/* Active Step Cards Container */}
+              <React.Suspense
+                fallback={
+                  <div className="rounded-3xl border border-slate-200 bg-white py-24 text-center text-sm font-semibold text-slate-500">
+                    正在加载当前步骤…
+                  </div>
+                }
+              >
               <div className="space-y-6">
                 {currentStep === 1 && (
                   <Step1Card
@@ -1885,6 +2284,7 @@ export default function App() {
                   />
                 )}
               </div>
+              </React.Suspense>
             </div>
           )}
         </main>

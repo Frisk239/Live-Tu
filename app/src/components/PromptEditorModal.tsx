@@ -8,6 +8,7 @@ import {
   Save,
   Wand2,
 } from 'lucide-react';
+import { useModalA11y } from '../hooks/useModalA11y';
 
 interface PromptEditorModalProps {
   isOpen: boolean;
@@ -36,6 +37,7 @@ export const PromptEditorModal: React.FC<PromptEditorModalProps> = ({
   const [copied, setCopied] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [isEnhancing, setIsEnhancing] = useState(false);
+  const dialogRef = useModalA11y<HTMLDivElement>(isOpen, onClose);
 
   useEffect(() => {
     setPromptText(initialPrompt);
@@ -80,7 +82,14 @@ export const PromptEditorModal: React.FC<PromptEditorModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
-      <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden text-slate-900 flex flex-col max-h-[90vh]">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="prompt-editor-title"
+        tabIndex={-1}
+        className="bg-white border border-slate-200/90 rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden text-slate-900 flex flex-col max-h-[90vh]"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/80">
           <div className="flex items-center gap-3">
@@ -89,7 +98,7 @@ export const PromptEditorModal: React.FC<PromptEditorModalProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="font-bold text-slate-900 text-base">{title}</h3>
+                <h3 id="prompt-editor-title" className="font-bold text-slate-900 text-base">{title}</h3>
                 {modelName && (
                   <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-700 border border-blue-200/60">
                     {modelName} 专属适配
@@ -103,6 +112,8 @@ export const PromptEditorModal: React.FC<PromptEditorModalProps> = ({
           </div>
 
           <button
+            type="button"
+            aria-label="关闭提示词编辑器"
             onClick={onClose}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
           >

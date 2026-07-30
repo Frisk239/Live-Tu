@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
+import { requireRole } from '../lib/auth';
 import { callLlmGateway } from '../lib/llm-gateway';
 
 export const productsRouter = Router();
@@ -75,7 +76,7 @@ productsRouter.get('/:id', (req, res) => {
 });
 
 // POST /api/products — 新增产品
-productsRouter.post('/', (req, res) => {
+productsRouter.post('/', requireRole('admin'), (req, res) => {
   try {
     const {
       name,
@@ -135,7 +136,7 @@ productsRouter.post('/', (req, res) => {
 });
 
 // PUT /api/products/:id — 更新产品
-productsRouter.put('/:id', (req, res) => {
+productsRouter.put('/:id', requireRole('admin'), (req, res) => {
   try {
     const { id } = req.params;
 
@@ -214,7 +215,7 @@ productsRouter.put('/:id', (req, res) => {
 });
 
 // DELETE /api/products/:id — 删除产品
-productsRouter.delete('/:id', (req, res) => {
+productsRouter.delete('/:id', requireRole('admin'), (req, res) => {
   try {
     const stmt = db.prepare('DELETE FROM products WHERE id = ?');
     stmt.run(req.params.id);
@@ -251,13 +252,19 @@ export async function handleSellingPointsOptimize(req: any, res: any) {
     }
   } catch (err: any) {
     console.warn('Selling points AI optimization fallback:', err.message);
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(502).json({
+        success: false,
+        error: '卖点优化服务暂时不可用，未生成任何推测性功效数据',
+      });
+    }
   }
 
-  // Graceful Fallback
+  // Development-only fallback for local UI work. Production must never invent efficacy claims.
   return res.json({
     success: true,
     data: {
-      name: product?.name || 'BUV 小绿泥洁面 (AI 优化版)',
+      name: product?.name || '默认产品 (AI 优化版)',
       positioning: product?.positioning || '油皮专研 · 深层净澈 · 温和控油',
       price: product?.price || '49元/件',
       salesRecord: product?.salesRecord || '爆款销量第一认证',

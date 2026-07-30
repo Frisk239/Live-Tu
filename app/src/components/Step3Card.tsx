@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Step3Inputs, Step3Output, Step2Output, StepStatus } from '../types';
 import { copyToClipboard, downloadTextFile } from '../utils/format';
+import { notify } from '../services/notifications';
 import {
   FileText,
   Play,
@@ -225,7 +226,7 @@ export const Step3Card: React.FC<Step3CardProps> = React.memo(({
           <button
             onClick={() => {
               if (!isCompleted) {
-                alert('请先运行当前步骤生成爆款文案再进入下一步');
+                notify('请先运行当前步骤生成爆款文案再进入下一步', 'error');
                 return;
               }
               onNext();

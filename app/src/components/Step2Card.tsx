@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { CandidateImageItem, Step2Inputs, Step2Output, Step1Output, StepStatus } from '../types';
 import { copyToClipboard, downloadJsonFile } from '../utils/format';
+import { notify } from '../services/notifications';
 import {
   Video,
   Play,
@@ -32,6 +33,7 @@ import {
 import { ModelConfigState } from '../data/models';
 import { PromptEditorModal } from './PromptEditorModal';
 import { StepModelPicker } from './StepModelPicker';
+import { ShotGenerationTracker } from './ShotGenerationTracker';
 
 interface Step2CardProps {
   inputs: Step2Inputs;
@@ -114,7 +116,7 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
       step1Output?.static_image_prompt ||
       '高清商业爆款产品质感拉丝特写，小红书极简风摄影';
     if (!prompt.trim()) {
-      alert('请先填写或解构出 static_image_prompt 生图提示词');
+      notify('请先填写或解构出 static_image_prompt 生图提示词', 'error');
       return;
     }
     setIsGeneratingCandidates(true);
@@ -153,10 +155,10 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
           imageUrl: newCandidates[0].url,
         });
       } else {
-        alert('生成素材图失败，请检查画图大模型配置与 API Key');
+        notify('生成素材图失败，请检查画图大模型配置与 API Key', 'error');
       }
     } catch (err: any) {
-      alert(`生成生图素材失败: ${err?.message || '网络异常'}`);
+      notify(`生成生图素材失败: ${err?.message || '网络异常'}`, 'error');
     } finally {
       setIsGeneratingCandidates(false);
     }
@@ -409,7 +411,7 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
             type="button"
             onClick={() => {
               if (!isCompleted) {
-                alert('请先运行当前步骤生成视频 Prompt 再进入下一步');
+                notify('请先运行当前步骤生成视频 Prompt 再进入下一步', 'error');
                 return;
               }
               onNext();
@@ -773,6 +775,23 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
               </div>
             ) : activeTab === 'visual' ? (
               <div className="space-y-4">
+                {/* Multi-Shot Generation Tracker Component */}
+                {output.isMultiShot && output.multiShotResult && (
+                  <ShotGenerationTracker
+                    multiShotResult={output.multiShotResult}
+                    onUpdateMultiShotResult={(updated) => {
+                      if (onUpdateOutput) {
+                        onUpdateOutput({ multiShotResult: updated });
+                      }
+                    }}
+                    onConcatComplete={(concatVideoUrl) => {
+                      if (onUpdateOutput) {
+                        onUpdateOutput({ previewVideoUrl: concatVideoUrl });
+                      }
+                    }}
+                  />
+                )}
+
                 {/* Motion Type & Intensity Row */}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">

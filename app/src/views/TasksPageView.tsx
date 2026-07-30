@@ -13,12 +13,22 @@ import {
   Loader2,
   AlertCircle,
   Clock,
+  RefreshCw,
+  RotateCcw,
+  Ban,
+  Play,
 } from 'lucide-react';
 import { TaskItem } from '../types';
 import { downloadJsonFile } from '../utils/format';
+import type { PipelineRunSnapshot } from '../services/api';
 
 interface TasksPageViewProps {
   tasks: TaskItem[];
+  pipelineRuns: PipelineRunSnapshot[];
+  onRefreshRuns: () => Promise<void>;
+  onCancelRun: (id: string) => Promise<void>;
+  onRetryRun: (id: string, step: number) => Promise<void>;
+  onResumeRun: (run: PipelineRunSnapshot) => void;
   onSelectTask: (task: TaskItem) => void;
   onDeleteTask: (id: string) => void;
   onBackToPipeline: () => void;
@@ -77,12 +87,19 @@ function StatusBadge({ task }: { task: TaskItem }) {
 
 export const TasksPageView: React.FC<TasksPageViewProps> = ({
   tasks,
+  pipelineRuns,
+  onRefreshRuns,
+  onCancelRun,
+  onRetryRun,
+  onResumeRun,
   onSelectTask,
   onDeleteTask,
   onBackToPipeline,
 }) => {
   const [selectedTaskDetail, setSelectedTaskDetail] = useState<TaskItem | null>(null);
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'draft' | 'failed'>('all');
+  const [runActionId, setRunActionId] = useState<string | null>(null);
+  const [runActionError, setRunActionError] = useState<string | null>(null);
 
   const draftCount = tasks.filter(isDraftTask).length;
   const completedCount = tasks.filter((t) => t.status === 'completed').length;
@@ -132,6 +149,137 @@ export const TasksPageView: React.FC<TasksPageViewProps> = ({
           <span className="text-emerald-600 font-bold text-sm">{completedCount}</span>
         </div>
       </div>
+
+      <section className="p-5 rounded-3xl bg-slate-950 text-white border border-slate-800 shadow-surface-sm">
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-sm font-extrabold">生产运行记录</h2>
+            <p className="text-[11px] text-slate-400 mt-1">
+              后端持久化任务；关闭页面或服务重启后仍可追踪、取消和从失败步骤恢复。
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setRunActionError(null);
+              void onRefreshRuns().catch((error) =>
+                setRunActionError(error?.message || '刷新运行记录失败')
+              );
+            }}
+            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            刷新
+          </button>
+        </div>
+
+        {runActionError && (
+          <div role="alert" className="mb-3 rounded-xl bg-rose-950/70 border border-rose-800 px-3 py-2 text-xs text-rose-200">
+            {runActionError}
+          </div>
+        )}
+
+        {pipelineRuns.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-700 py-8 text-center text-xs text-slate-400">
+            暂无生产运行记录
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {pipelineRuns.slice(0, 20).map((run) => {
+              const active = ['queued', 'running', 'waiting_external'].includes(run.status);
+              const failed = run.status === 'failed';
+              const completedSteps = run.steps.filter((step) => step.status === 'completed').length;
+              const busy = runActionId === run.id;
+              return (
+                <div
+                  key={run.id}
+                  className="rounded-2xl border border-slate-800 bg-slate-900/80 p-3 flex flex-col md:flex-row md:items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`h-2 w-2 rounded-full ${
+                        run.status === 'completed'
+                          ? 'bg-emerald-400'
+                          : failed
+                            ? 'bg-rose-400'
+                            : run.status === 'cancelled'
+                              ? 'bg-slate-500'
+                              : 'bg-amber-400 animate-pulse'
+                      }`} />
+                      <span className="text-xs font-bold">
+                        {run.status === 'waiting_external' ? '等待视频生成' : run.status}
+                      </span>
+                      <span className="text-[11px] text-slate-400">
+                        Step {run.currentStep}/5 · 已完成 {completedSteps}/5
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 font-mono mt-1 truncate">
+                      {run.id} · {run.updatedAt}
+                    </p>
+                    {run.errorMessage && (
+                      <p className="text-[11px] text-rose-300 mt-1 line-clamp-2">
+                        {run.errorMessage}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => onResumeRun(run)}
+                      className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-bold flex items-center gap-1.5"
+                    >
+                      <Play className="w-3.5 h-3.5" />
+                      打开
+                    </button>
+                    {failed && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={async () => {
+                          setRunActionId(run.id);
+                          setRunActionError(null);
+                          try {
+                            await onRetryRun(run.id, run.currentStep);
+                          } catch (error: any) {
+                            setRunActionError(error?.message || '恢复任务失败');
+                          } finally {
+                            setRunActionId(null);
+                          }
+                        }}
+                        className="px-3 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 text-xs font-extrabold flex items-center gap-1.5"
+                      >
+                        <RotateCcw className={`w-3.5 h-3.5 ${busy ? 'animate-spin' : ''}`} />
+                        从 Step {run.currentStep} 恢复
+                      </button>
+                    )}
+                    {active && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={async () => {
+                          setRunActionId(run.id);
+                          setRunActionError(null);
+                          try {
+                            await onCancelRun(run.id);
+                          } catch (error: any) {
+                            setRunActionError(error?.message || '取消任务失败');
+                          } finally {
+                            setRunActionId(null);
+                          }
+                        }}
+                        className="px-3 py-2 rounded-xl bg-rose-950 hover:bg-rose-900 disabled:opacity-50 text-rose-200 text-xs font-bold flex items-center gap-1.5"
+                      >
+                        <Ban className="w-3.5 h-3.5" />
+                        取消
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
 
       {/* Filter Bar */}
       <div className="p-4 rounded-2xl bg-white border border-slate-200/80 shadow-surface-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">

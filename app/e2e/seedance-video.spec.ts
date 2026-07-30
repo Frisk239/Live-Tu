@@ -10,8 +10,18 @@ const PUBLIC_IMAGE =
   'https://images.unsplash.com/photo-1556228720-195a672e8a03?auto=format&fit=crop&w=800&q=80';
 
 test.describe('Seedance image-to-video long path', () => {
+  test.skip(
+    process.env.E2E_ALLOW_PAID !== 'true',
+    'Set E2E_ALLOW_PAID=true to authorize a real paid Seedance generation'
+  );
+
   test('step1 → step2 submit + poll until url or soft continue', async ({ request }) => {
     test.setTimeout(240_000);
+
+    const loginResponse = await request.post(`${BASE}/api/auth/login`, {
+      data: { username: 'haini', password: '888' },
+    });
+    expect(loginResponse.ok()).toBeTruthy();
 
     const health = await (await request.get(`${BASE}/api/health?probe=1`)).json();
     const seedanceReady = Boolean(

@@ -6,14 +6,22 @@ import {
   Step2OutputSchema,
   Step3OutputSchema,
   Step4OutputSchema,
+  VideoDeconstructionOutputSchema,
   validateStepOutput,
   Step1Output,
   Step2Output,
   Step3Output,
   Step4Output,
+  VideoDeconstructionOutput,
 } from '../lib/schema-validators';
 import {
+  preprocessVideo,
+  getVideoPreprocessCache,
+  saveVideoPreprocessResult,
+} from '../lib/video-preprocessor';
+import {
   createSeedanceVideo,
+  getSeedanceVideo,
   normalizeSeedanceTask,
   hasSeedanceConfig,
   buildSeedanceGenerationBody,
@@ -24,6 +32,36 @@ import path from 'node:path';
 import { z } from 'zod';
 
 export const pipelineRouter = Router();
+
+function canAccessLocalPipelineMedia(req: any, mediaUrl: string, ownerId?: string): boolean {
+  if (!mediaUrl.startsWith('/uploads/') && !mediaUrl.startsWith('uploads/')) return true;
+  const normalized = mediaUrl.startsWith('/') ? mediaUrl : `/${mediaUrl}`;
+  const effectiveOwnerId = req.authUser?.id || ownerId;
+  if (!effectiveOwnerId && !req.authUser?.role) return false;
+  const ownerClause = req.authUser?.role === 'admin' ? '' : 'AND materials.owner_id = ?';
+  const params = req.authUser?.role === 'admin'
+    ? [normalized, normalized]
+    : [normalized, normalized, effectiveOwnerId];
+  const material = db.prepare(
+    `SELECT materials.id
+       FROM materials
+      WHERE (materials.url = ? OR '/' || REPLACE(materials.file_path, '\\', '/') = ?)
+        ${ownerClause}
+      LIMIT 1`
+  ).get(...params);
+  if (material) return true;
+  const keyframeParams = req.authUser?.role === 'admin'
+    ? [`%"${normalized}"%`]
+    : [`%"${normalized}"%`, effectiveOwnerId];
+  return Boolean(db.prepare(
+    `SELECT materials.id
+       FROM video_preprocess_cache
+       JOIN materials ON materials.id = video_preprocess_cache.id
+      WHERE video_preprocess_cache.keyframe_urls LIKE ?
+        ${ownerClause}
+      LIMIT 1`
+  ).get(...keyframeParams));
+}
 
 /** When true, failed LLM/external calls may return synthetic mock data with source:'mock' */
 function allowMockFallback(): boolean {
@@ -79,8 +117,8 @@ function getProductContext(productId?: string, bodyProductInfo?: any) {
     }
   }
   return {
-    id: 'prod_buv_cleanser',
-    name: bodyProductInfo?.name || 'BUV 笔薇 小绿泥洁面',
+    id: 'prod_default',
+    name: bodyProductInfo?.name || '默认产品',
     category: bodyProductInfo?.category || '美妆护肤/洁面',
     positioning: bodyProductInfo?.positioning || '油皮专研 · 温和净澈 · 植萃护肤',
     model343: bodyProductInfo?.model343
@@ -130,6 +168,20 @@ function scanProhibitedWords(data: any, prohibitedWords: string[]) {
   return warnings;
 }
 
+function isVideoMedia(url: string): boolean {
+  if (!url) return false;
+  const lower = url.toLowerCase().split('?')[0];
+  return (
+    lower.endsWith('.mp4') ||
+    lower.endsWith('.webm') ||
+    lower.endsWith('.mov') ||
+    lower.endsWith('.avi') ||
+    lower.endsWith('.mkv') ||
+    lower.includes('/video') ||
+    lower.includes('video/')
+  );
+}
+
 /**
  * 通用 Harness 自愈与结构校验 Loop
  */
@@ -140,7 +192,8 @@ async function executeWithSelfCorrection<T>(
   imageUrl: string | undefined,
   modelId: string | undefined,
   schema: z.ZodSchema<T>,
-  maxCorrectionAttempts = 2
+  maxCorrectionAttempts = 2,
+  imageUrls?: string[]
 ): Promise<{ success: boolean; data: T | null; source: string; modelUsed: string; error?: string }> {
   let currentSystem = systemPrompt;
   let currentUser = userPrompt;
@@ -154,6 +207,7 @@ async function executeWithSelfCorrection<T>(
         system: currentSystem,
         user: currentUser,
         imageUrl,
+        imageUrls,
         modelId,
       });
 
@@ -187,7 +241,10 @@ pipelineRouter.post('/generate-image', async (req, res) => {
     return res.status(400).json({ success: false, error: 'prompt 参数必填且必须为字符串' });
   }
 
-  const materialsDir = path.join(process.cwd(), 'uploads', 'materials');
+  const materialsDir = path.join(
+    path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')),
+    'materials'
+  );
   if (!fs.existsSync(materialsDir)) {
     fs.mkdirSync(materialsDir, { recursive: true });
   }
@@ -213,7 +270,7 @@ pipelineRouter.post('/generate-image', async (req, res) => {
       const filename = `gen_img_${Date.now()}.svg`;
       const targetPath = path.join(materialsDir, filename);
       const product = getProductContext(productId);
-      const safeName = String(product.name || 'BUV').replace(/[<>&"']/g, '');
+      const safeName = String(product.name || '默认产品').replace(/[<>&"']/g, '');
       const safePrompt = String(prompt).slice(0, 45).replace(/[<>&"']/g, '');
       const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="1440"><rect width="1080" height="1440" fill="#E8F5E9"/><text x="540" y="700" text-anchor="middle" fill="#2E7D32" font-size="40" font-family="sans-serif">${safeName}</text><text x="540" y="780" text-anchor="middle" fill="#388E3C" font-size="24" font-family="sans-serif">演示占位图 (ALLOW_MOCK_FALLBACK)</text><text x="540" y="860" text-anchor="middle" fill="#666" font-size="20" font-family="sans-serif">${safePrompt}</text></svg>`;
       fs.writeFileSync(targetPath, svgContent, 'utf-8');
@@ -251,12 +308,27 @@ pipelineRouter.post('/generate-image', async (req, res) => {
     const filePath = imageUrl.startsWith('/uploads/')
       ? imageUrl.replace(/^\//, '')
       : imageUrl;
+    const ownerId = req.authUser?.id || req.body?._ownerId || null;
+    if (!ownerId) {
+      return res.status(400).json({ success: false, error: '无法确定生成素材的所有者' });
+    }
     try {
       const stmt = db.prepare(`
-        INSERT INTO materials (id, name, file_path, url, media_type, size, duration, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO materials (
+          id, name, file_path, url, media_type, size, duration, created_at, owner_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      stmt.run(id, name, filePath, imageUrl, 'image', '0.3 MB', null, new Date().toISOString());
+      stmt.run(
+        id,
+        name,
+        filePath,
+        imageUrl,
+        'image',
+        '0.3 MB',
+        null,
+        new Date().toISOString(),
+        ownerId
+      );
     } catch (err: any) {
       console.warn('[generate-image] materials insert skipped:', err.message);
     }
@@ -275,8 +347,8 @@ pipelineRouter.post('/generate-image', async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 });
-
 // Step 1: 多模态视觉拆解与静态图 Prompt 生成
+// Step 1: 多模态视觉拆解与静态图 Prompt 生成 / 视频结构化拆解
 pipelineRouter.post('/step1', async (req, res) => {
   const inputs = req.body.inputs || req.body;
   const {
@@ -291,9 +363,204 @@ pipelineRouter.post('/step1', async (req, res) => {
   } = inputs;
 
   const targetMediaUrl = mediaUrl || imageUrl || req.body.mediaUrl || req.body.imageUrl || '';
+  if (!canAccessLocalPipelineMedia(req, targetMediaUrl, inputs._ownerId)) {
+    return res.status(404).json({ success: false, error: '素材不存在或无权访问' });
+  }
   const product = getProductContext(productId, productInfo);
   const visionModelId = textModel || 'Gemini 3.6 Flash';
+  const isVideo = isVideoMedia(targetMediaUrl);
 
+  if (isVideo) {
+    // ------------------ 视频拆解分支 ------------------
+    let keyframeUrls: string[] = [];
+    try {
+      let preprocessRes = await getVideoPreprocessCache(targetMediaUrl);
+      if (!preprocessRes) {
+        preprocessRes = await preprocessVideo(targetMediaUrl);
+        await saveVideoPreprocessResult(targetMediaUrl, preprocessRes);
+      }
+      keyframeUrls = preprocessRes.keyframeUrls || [];
+    } catch (err: any) {
+      console.warn('[Step1 Video Preprocess Warning]:', err.message);
+    }
+
+    const videoSystemPrompt = `你是一个顶级美妆短视频结构化拆解与镜头分析专家。你将接收到由爆款视频中抽取的顺序关键帧序列。
+严格遵守以下 Harness 约束：
+
+${HARNESS_CONSTRAINTS.JSON_ONLY}
+${HARNESS_CONSTRAINTS.STRUCTURED_OUTPUT}
+${HARNESS_CONSTRAINTS.SAFETY}
+${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
+
+【目标产品品牌上下文】
+- 产品名称：${product.name}
+- 品牌定位：${product.positioning}
+- 核心卖点特色：${product.customSellingPoints}
+
+【输出 JSON 规范 (VideoDeconstructionOutput)】
+你必须输出符合以下 Zod Schema 的纯 JSON 对象：
+{
+  "scene": "15-30字主场景总体描述",
+  "subject": "15-30字主体动作描述",
+  "style": "爆款视频视觉风格（如：小红书治愈生活风/抖音硬核卡点测评）",
+  "palette": ["HEX颜色+描述"],
+  "lighting": "光线质感与照射分布",
+  "composition": "画面构图法则",
+  "mood": "视频整体情绪与调性",
+  "camera": "主镜头与运镜语言概括",
+  "static_image_prompt": "高质感英文文生图 Prompt (8k, commercial photography, cinematic lighting)",
+  "rationale": "视频拆解分析总结与爆款转化归因",
+  "shotList": [
+    {
+      "shotIndex": 1,
+      "startTime": "00:00",
+      "endTime": "00:03",
+      "shotType": "特写",
+      "cameraMovement": "平滑推进",
+      "description": "镜头细节与动作描述",
+      "keyframeUrl": "对应的关键帧URL",
+      "mood": "情绪标签"
+    }
+  ],
+  "videoStructure": {
+    "totalShots": 3,
+    "avgShotDuration": "3.0s",
+    "pacing": "fast",
+    "narrativeArc": "痛点引入 -> 质感特写 -> 效果对比",
+    "hookTiming": "前0-3秒黄金Hook"
+  },
+  "originalScript": {
+    "hasVoiceover": true,
+    "estimatedScript": "推测或提取的原视频口播文案脚本",
+    "sellingPoints": ["核心卖点1", "核心卖点2"]
+  },
+  "audioAnalysis": {
+    "hasBgm": true,
+    "estimatedBpm": "115",
+    "musicStyle": "轻快卡点 Ambient"
+  }
+}`;
+
+    const videoUserPrompt = `【视频拆解任务】
+- 目标产品：${product.name} (${product.positioning})
+- 目标平台：${platform}
+- 博主类型：${bloggerType}
+- 爆款原因：${viralReason || '多镜头节奏紧凑，画面质感通透，卡点精准种草'}
+- 关键帧图片总数：${keyframeUrls.length} 张
+请根据所提供的视频顺序关键帧序列，进行深度镜头拆解并输出纯 JSON。`;
+
+    const hRes = await executeWithSelfCorrection<VideoDeconstructionOutput>(
+      'Step1-VideoDeconstruction',
+      videoSystemPrompt,
+      videoUserPrompt,
+      undefined,
+      visionModelId,
+      VideoDeconstructionOutputSchema,
+      2,
+      keyframeUrls
+    );
+
+    if (hRes.success && hRes.data) {
+      if (Array.isArray(hRes.data.shotList)) {
+        hRes.data.shotList = hRes.data.shotList.map((shot, idx) => ({
+          ...shot,
+          keyframeUrl: shot.keyframeUrl || keyframeUrls[idx % keyframeUrls.length] || '',
+        }));
+      }
+      return res.json({
+        success: true,
+        data: hRes.data,
+        source: hRes.source,
+        modelUsed: hRes.modelUsed,
+      });
+    }
+
+    if (!allowMockFallback()) {
+      return res.status(502).json({
+        success: false,
+        error: `Step 1 视频拆解失败: ${hRes.error || '未能生成合规 JSON'}。请检查模型 API Key 配置。`,
+        source: 'error',
+      });
+    }
+
+    // Video mock fallback
+    const mockVideoResult: VideoDeconstructionOutput = {
+      scene: `晨间阳光浴室，高质感镜前展台，呈现 ${product.name} 全套使用流程`,
+      subject: `博主纤手取膏体细腻涂抹，呈现 ${product.name} 高清拉丝质感与吸收效果`,
+      style: platform === 'xiaohongshu' ? '小红书治愈生活风' : '抖音硬核卡点测评风',
+      palette: ['#A8D5BA 薄荷绿', '#FFFFFF 纯白', '#F5F5F0 柔光白', '#333333 质感黑'],
+      lighting: '自然透亮晨光 + 主体柔和轮廓高光',
+      composition: '三分法构图与微距中心聚焦',
+      mood: '清爽治愈与高感知护肤仪式感',
+      camera: '微距推进特写 + 45度俯拍平移',
+      static_image_prompt: `A high-end commercial video frame of ${product.name}, ultra-realistic texture, soft morning lighting, 8k resolution, cinematic composition`,
+      rationale: `针对【${product.name}】的爆款视频拆解：通过前3秒高冲击 Hook 吸引眼球，中段配合产品核心卖点特写展示，强化【${product.positioning}】信任，结尾快速促转化。`,
+      shotList: keyframeUrls.length > 0
+        ? keyframeUrls.map((url, index) => ({
+            shotIndex: index + 1,
+            startTime: `00:0${index * 2}`,
+            endTime: `00:0${(index + 1) * 2}`,
+            shotType: index === 0 ? '全景 Hook' : index === 1 ? '微距特写' : '核心功能展示',
+            cameraMovement: index % 2 === 0 ? '平滑推进 (Zoom in)' : '水平平移 (Pan)',
+            description: `镜头 ${index + 1}：展示 ${product.name} 的外观细节与核心亮点`,
+            keyframeUrl: url,
+            mood: '高感知质感',
+          }))
+        : [
+            {
+              shotIndex: 1,
+              startTime: '00:00',
+              endTime: '00:03',
+              shotType: '黄金 Hook 特写',
+              cameraMovement: '快速推进',
+              description: `展现 ${product.name} 的核心产品特写与外观亮色`,
+              keyframeUrl: '',
+              mood: '惊艳吸睛',
+            },
+            {
+              shotIndex: 2,
+              startTime: '00:03',
+              endTime: '00:06',
+              shotType: '微距细节展示',
+              cameraMovement: '45度下倾',
+              description: `展示 ${product.name} 的细节质感与材质延展`,
+              keyframeUrl: '',
+              mood: '高级治愈',
+            },
+            {
+              shotIndex: 3,
+              startTime: '00:06',
+              endTime: '00:09',
+              shotType: '使用/效果对比',
+              cameraMovement: '平行跟拍',
+              description: `展示 ${product.name} 使用场景与效果感知`,
+              keyframeUrl: '',
+              mood: '强效信任',
+            },
+          ],
+      videoStructure: {
+        totalShots: Math.max(keyframeUrls.length, 3),
+        avgShotDuration: '2.8s',
+        pacing: platform === 'douyin' ? 'fast' : 'medium',
+        narrativeArc: '吸睛 Hook (0-3s) -> 产品细节与核心功能展示 (3-7s) -> 效果感知与行动号召 (7-10s)',
+        hookTiming: '前2.5秒产品核心亮点与醒目标题',
+      },
+      originalScript: {
+        hasVoiceover: true,
+        estimatedScript: `为你推荐【${product.name}】！核心卖点专研，体验感直接拉满～`,
+        sellingPoints: [product.positioning, '核心功能实测证明', '高质感外观细节'],
+      },
+      audioAnalysis: {
+        hasBgm: true,
+        estimatedBpm: '118',
+        musicStyle: '轻快卡点 Ambient / Lofi Rhythm',
+      },
+    };
+
+    return res.json({ success: true, data: mockVideoResult, source: 'mock' });
+  }
+
+  // ------------------ 单图拆解分支 (向下兼容) ------------------
   const systemPrompt = `你是一个顶级美妆电商爆款视觉拆解专家。严格遵守以下 Harness 约束：
 
 ${HARNESS_CONSTRAINTS.JSON_ONLY}
@@ -372,7 +639,7 @@ ${targetMediaUrl ? '- 请结合所上传的画面素材进行深度视觉解析�
   return res.json({ success: true, data: mockResult, source: 'mock' });
 });
 
-// Step 2: 静态图 → 视频生成运镜 Prompt & 星河 Seedance 图生视频接入
+// Step 2: 静态图 → 视频生成运镜 Prompt & 星河 Seedance 图生视频接入 / 多镜头分段生成
 pipelineRouter.post('/step2', async (req, res) => {
   const inputs = req.body.inputs || req.body;
   const {
@@ -385,12 +652,204 @@ pipelineRouter.post('/step2', async (req, res) => {
     textModel,
     productId,
     productInfo,
+    shotList: inputShotList,
+    pipelineData,
   } = inputs;
 
+  const targetShotList = inputShotList || pipelineData?.step1?.output?.shotList || req.body.pipelineData?.step1?.output?.shotList;
+  if (Array.isArray(targetShotList) && targetShotList.length > 12) {
+    return res.status(400).json({
+      success: false,
+      error: '单次多镜头生成最多支持 12 个镜头',
+    });
+  }
   const targetImageUrl = imageUrl || mediaUrl || '';
+  if (!canAccessLocalPipelineMedia(req, targetImageUrl, inputs._ownerId)) {
+    return res.status(404).json({ success: false, error: '首帧素材不存在或无权访问' });
+  }
   const product = getProductContext(productId, productInfo);
   const motionLlmId = textModel || 'Gemini 3.6 Flash';
 
+  // ------------------ 多镜头分段生成分支 ------------------
+  if (Array.isArray(targetShotList) && targetShotList.length > 0) {
+    const sessionId = `shot_sess_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const seedanceConfigured = hasSeedanceConfig();
+    const modelId = String(videoModel || '').includes('Fast')
+      ? 'doubao-seedance-2-0-fast'
+      : 'doubao-seedance-2-0';
+    const reqHost = `${req.protocol}://${req.get('host')}`;
+
+    const shotTasks: Array<{
+      id: string;
+      shotIndex: number;
+      shotType: string;
+      cameraMovement: string;
+      description: string;
+      keyframeUrl: string;
+      video_prompt: string;
+      seedanceTaskId?: string;
+      status: 'pending' | 'generating' | 'completed' | 'failed';
+      video_url?: string;
+      error_message?: string;
+    }> = [];
+
+    for (let idx = 0; idx < targetShotList.length; idx++) {
+      const shot = targetShotList[idx];
+      const shotIndex = shot.shotIndex || (idx + 1);
+      const kfUrl = shot.keyframeUrl || targetImageUrl || '';
+
+      const shotSystemPrompt = `你是一个专业 AIGC 短视频镜头运镜专家。根据特定的单个镜头信息生成结构化视频运镜指令 Prompt。
+${HARNESS_CONSTRAINTS.JSON_ONLY}
+
+【输出 JSON 格式】
+{
+  "video_prompt": "英文结构化 Seedance 运镜指令 (60fps, smooth motion, high detail, product focus)",
+  "camera_description": "中文运镜简述"
+}`;
+
+      const shotUserPrompt = `【镜头 ${shotIndex} 运镜生成】
+- 目标产品：${product.name}
+- 镜头类型：${shot.shotType || '特写'}
+- 运镜方式：${shot.cameraMovement || '推进'}
+- 镜头描述：${shot.description || '产品特写'}
+- 调性：${videoTone}
+请输出纯 JSON。`;
+
+      let videoPrompt = `A smooth cinematic video shot for ${product.name}, ${shot.shotType || 'close-up'}, ${shot.cameraMovement || 'zoom in'}, 60fps, high detail`;
+      try {
+        const shotRes = await callLlmGateway({
+          system: shotSystemPrompt,
+          user: shotUserPrompt,
+          imageUrl: kfUrl || undefined,
+          modelId: motionLlmId,
+        });
+        if (shotRes.success && shotRes.data && shotRes.data.video_prompt) {
+          videoPrompt = shotRes.data.video_prompt;
+        }
+      } catch (err: any) {
+        console.warn(`[Step2 MultiShot] LLM prompt gen for shot ${shotIndex} failed:`, err.message);
+      }
+
+      const taskId = `shot_task_${sessionId}_${shotIndex}`;
+      let shotSeedanceTaskId: string | undefined = undefined;
+      let shotStatus: 'pending' | 'generating' | 'completed' | 'failed' = 'pending';
+      let shotVideoUrl: string | undefined = undefined;
+      let shotErrorMsg: string | undefined = undefined;
+
+      try {
+        db.prepare(`
+          INSERT INTO shot_generation_tasks (
+            id, session_id, owner_id, shot_index, status
+          ) VALUES (?, ?, ?, ?, 'pending')
+        `).run(taskId, sessionId, req.authUser?.id || null, shotIndex);
+      } catch (err: any) {
+        console.error(`[Step2 MultiShot] Could not persist shot ${shotIndex}:`, err.message);
+        return res.status(500).json({
+          success: false,
+          error: '多镜头任务无法持久化，未提交视频生成',
+        });
+      }
+
+      if (seedanceConfigured && kfUrl) {
+        try {
+          const prepared = buildSeedanceGenerationBody({
+            prompt: videoPrompt,
+            model: modelId,
+            duration: 5,
+            resolution: '720p',
+            aspectRatio: '9:16',
+            imageUrl: kfUrl,
+          }, reqHost);
+
+          if (prepared.materials.length > 0) {
+            const seedanceRes = await createSeedanceVideo(prepared.body);
+            const task = normalizeSeedanceTask(seedanceRes);
+            shotSeedanceTaskId = task.id;
+            shotStatus = (task.status === 'success' || task.status === 'completed') ? 'completed' : 'generating';
+            shotVideoUrl = task.url || undefined;
+          } else {
+            shotStatus = 'pending';
+            shotErrorMsg = prepared.warnings[0] || '等待首帧图可访问';
+          }
+        } catch (err: any) {
+          console.warn(`[Step2 MultiShot] Seedance submission for shot ${shotIndex} failed:`, err.message);
+          shotStatus = allowMockFallback() ? 'completed' : 'failed';
+          shotErrorMsg = err.message;
+          if (allowMockFallback()) {
+            shotVideoUrl = `/uploads/renders/mock_shot_${shotIndex}.mp4`;
+          }
+        }
+      } else if (allowMockFallback()) {
+        shotStatus = 'completed';
+        shotVideoUrl = kfUrl || `/uploads/renders/mock_shot_${shotIndex}.mp4`;
+      }
+
+      try {
+        db.prepare(`
+          UPDATE shot_generation_tasks
+             SET status = ?,
+                 seedance_task_id = ?,
+                 video_url = ?,
+                 error_message = ?,
+                 updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?
+        `).run(
+          shotStatus,
+          shotSeedanceTaskId || null,
+          shotVideoUrl || null,
+          shotErrorMsg || null,
+          taskId
+        );
+      } catch (err: any) {
+        console.error(`[Step2 MultiShot] DB update failed:`, err.message);
+        return res.status(500).json({
+          success: false,
+          error: '多镜头任务状态无法持久化，请稍后从任务中心恢复',
+        });
+      }
+
+      shotTasks.push({
+        id: taskId,
+        shotIndex,
+        shotType: shot.shotType || '特写',
+        cameraMovement: shot.cameraMovement || '平滑推进',
+        description: shot.description || '',
+        keyframeUrl: kfUrl,
+        video_prompt: videoPrompt,
+        seedanceTaskId: shotSeedanceTaskId,
+        status: shotStatus,
+        video_url: shotVideoUrl,
+        error_message: shotErrorMsg,
+      });
+    }
+
+    const multiShotResult = {
+      sessionId,
+      totalShots: targetShotList.length,
+      estimatedCompletionTimeSec: targetShotList.length * 15,
+      shots: shotTasks,
+      concatStatus: 'pending' as const,
+    };
+
+    return res.json({
+      success: true,
+      data: {
+        motion_type: 'zoom_in',
+        motion_intensity: 'medium',
+        motion_description: `分段多镜头生成：包含 ${targetShotList.length} 个独立拆解镜头，任务已存入 shot_generation_tasks 并分别提交生成`,
+        duration_sec: String(targetShotList.length * 4),
+        video_prompt: shotTasks[0]?.video_prompt || `Multi-shot video prompt for ${product.name}`,
+        audio_layer: '多镜头卡点音轨与沉浸过渡音效',
+        negative_prompt: '避免镜头卡顿、跳帧或剧烈形变',
+        isMultiShot: true,
+        multiShotResult,
+        seedanceConfigured,
+      },
+      source: seedanceConfigured ? 'multi_shot_seedance' : (allowMockFallback() ? 'multi_shot_mock' : 'multi_shot_pending'),
+    });
+  }
+
+  // ------------------ 单图普通生成分支 (向下兼容) ------------------
   const systemPrompt = `你是一个专业 AIGC 短视频运镜专家。严格遵守以下 Harness 约束：
 
 ${HARNESS_CONSTRAINTS.JSON_ONLY}
@@ -424,7 +883,7 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
     'Step2',
     systemPrompt,
     userPrompt,
-    undefined,
+    targetImageUrl || undefined,
     motionLlmId,
     Step2OutputSchema
   );
@@ -517,7 +976,191 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
   return res.json({ success: true, data, source: gatewaySource });
 });
 
-// Step 3: 爆款文案撰写 + 品牌知识库注入 + 违禁词合规扫描与自纠错
+// GET /api/pipeline/shot-tasks/:sessionId — 多镜头分段生成任务轮询
+pipelineRouter.get('/shot-tasks/:sessionId', async (req, res) => {
+  const { sessionId } = req.params;
+  try {
+    const rows = req.authUser && req.authUser.role !== 'admin'
+      ? db.prepare(
+          `SELECT * FROM shot_generation_tasks
+            WHERE session_id = ? AND owner_id = ?
+            ORDER BY shot_index ASC`
+        ).all(sessionId, req.authUser.id) as any[]
+      : db.prepare(
+          'SELECT * FROM shot_generation_tasks WHERE session_id = ? ORDER BY shot_index ASC'
+        ).all(sessionId) as any[];
+
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ success: false, error: '未找到对应多镜头 session 记录' });
+    }
+
+    const shots: any[] = [];
+    let completedCount = 0;
+    const completedUrls: string[] = [];
+
+    for (const r of rows) {
+      let currentStatus = r.status;
+      let currentVideoUrl = r.video_url;
+      let currentError = r.error_message;
+
+      if ((currentStatus === 'generating' || currentStatus === 'pending') && r.seedance_task_id && hasSeedanceConfig()) {
+        try {
+          const raw = await getSeedanceVideo(r.seedance_task_id).catch(() => null);
+          if (raw) {
+            const normalized = normalizeSeedanceTask(raw);
+            if (normalized.url) {
+              currentStatus = 'completed';
+              currentVideoUrl = normalized.url;
+              db.prepare('UPDATE shot_generation_tasks SET status = ?, video_url = ? WHERE id = ?')
+                .run('completed', currentVideoUrl, r.id);
+            } else if (normalized.status === 'failed' || normalized.status === 'error') {
+              currentStatus = 'failed';
+              currentError = normalized.error || 'Seedance 渲染失败';
+              db.prepare('UPDATE shot_generation_tasks SET status = ?, error_message = ? WHERE id = ?')
+                .run('failed', currentError, r.id);
+            }
+          }
+        } catch (err: any) {
+          console.warn(`[shot-tasks poll] shot ${r.shot_index} error:`, err.message);
+        }
+      }
+
+      if (currentStatus === 'completed') {
+        completedCount++;
+        if (currentVideoUrl) completedUrls.push(currentVideoUrl);
+      }
+
+      shots.push({
+        id: r.id,
+        shotIndex: r.shot_index,
+        status: currentStatus,
+        seedanceTaskId: r.seedance_task_id,
+        video_url: currentVideoUrl,
+        error_message: currentError,
+        created_at: r.created_at,
+      });
+    }
+
+    let concatenatedVideoUrl: string | undefined = rows[0]?.concatenated_video_url || undefined;
+    let concatStatus: 'pending' | 'processing' | 'completed' | 'failed' =
+      rows[0]?.concat_status || 'pending';
+
+    if (
+      !concatenatedVideoUrl &&
+      concatStatus !== 'processing' &&
+      completedCount === rows.length &&
+      completedUrls.length === rows.length &&
+      completedUrls.length > 0
+    ) {
+      const claim = db.prepare(
+        `UPDATE shot_generation_tasks
+            SET concat_status = 'processing', updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND COALESCE(concat_status, 'pending') = 'pending'`
+      ).run(rows[0].id);
+      if (claim.changes === 0) {
+        concatStatus = 'processing';
+      } else {
+        concatStatus = 'processing';
+      try {
+        const renderRes = await runFfmpegRender({
+          videoSourceUrls: completedUrls,
+          outputFilename: `concat_${sessionId}.mp4`,
+          durationSec: completedUrls.length * 4,
+          ownerId: req.authUser?.id || rows[0]?.owner_id,
+        });
+        if (renderRes.success && renderRes.data?.videoUrl) {
+          concatenatedVideoUrl = renderRes.data.videoUrl;
+            concatStatus = 'completed';
+            db.prepare(
+              `UPDATE shot_generation_tasks
+                  SET concat_status = 'completed', concatenated_video_url = ?,
+                      updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = ?`
+            ).run(concatenatedVideoUrl, sessionId);
+          } else {
+            throw new Error(renderRes.error || 'FFmpeg concatenation failed');
+        }
+      } catch (err: any) {
+        console.warn(`[shot-tasks concat] Auto-concat error:`, err.message);
+          concatStatus = 'failed';
+          db.prepare(
+            `UPDATE shot_generation_tasks
+                SET concat_status = 'failed', updated_at = CURRENT_TIMESTAMP
+              WHERE session_id = ?`
+          ).run(sessionId);
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        sessionId,
+        totalShots: rows.length,
+        completedShots: completedCount,
+        shots,
+        concatenatedVideoUrl,
+        concatStatus,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/pipeline/concat-shots — FFmpeg 多镜头片段拼接
+pipelineRouter.post('/concat-shots', async (req, res) => {
+  const { sessionId, videoUrls } = req.body;
+  let targetUrls: string[] = videoUrls || [];
+
+  if ((!targetUrls || targetUrls.length === 0) && sessionId) {
+    const rows = req.authUser && req.authUser.role !== 'admin'
+      ? db.prepare(
+          `SELECT video_url FROM shot_generation_tasks
+            WHERE session_id = ? AND owner_id = ? AND status = 'completed'
+            ORDER BY shot_index ASC`
+        ).all(sessionId, req.authUser.id) as any[]
+      : db.prepare(
+          `SELECT video_url FROM shot_generation_tasks
+            WHERE session_id = ? AND status = 'completed'
+            ORDER BY shot_index ASC`
+        ).all(sessionId) as any[];
+    targetUrls = rows.map((r) => r.video_url).filter(Boolean);
+  }
+
+  if (!targetUrls || targetUrls.length === 0) {
+    return res.status(400).json({ success: false, error: '未找到已完成的视频片段 URL 列表' });
+  }
+  if (targetUrls.some((url) => !canAccessLocalPipelineMedia(req, url, req.body?._ownerId))) {
+    return res.status(403).json({ success: false, error: 'One or more media files are not accessible to this user' });
+  }
+
+  try {
+    const renderRes = await runFfmpegRender({
+      videoSourceUrls: targetUrls,
+      outputFilename: `concat_${sessionId || Date.now()}.mp4`,
+      durationSec: targetUrls.length * 4,
+      ownerId: req.authUser?.id || req.body?._ownerId,
+    });
+
+    if (!renderRes.success || !renderRes.data) {
+      return res.status(500).json({ success: false, error: renderRes.error || '多片段 FFmpeg 拼接失败' });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        concatenatedVideoUrl: renderRes.data.videoUrl,
+        downloadUrl: renderRes.data.downloadUrl,
+        renderEngine: renderRes.data.renderEngine,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Step 3: 爆款文案撰写 + 品牌知识库注入 + 原视频爆款话术参考 + 违禁词合规扫描与自纠错
 pipelineRouter.post('/step3', async (req, res) => {
   const inputs = req.body.inputs || req.body;
   const {
@@ -527,9 +1170,20 @@ pipelineRouter.post('/step3', async (req, res) => {
     textModel,
     productId,
     productInfo,
+    pipelineData,
+    originalScript: directOriginalScript,
   } = inputs;
 
   const product = getProductContext(productId, productInfo);
+  const originalScript = directOriginalScript || pipelineData?.step1?.output?.originalScript || req.body.pipelineData?.step1?.output?.originalScript;
+
+  let originalScriptReferencePrompt = '';
+  if (originalScript && (originalScript.estimatedScript || (Array.isArray(originalScript.sellingPoints) && originalScript.sellingPoints.length > 0))) {
+    originalScriptReferencePrompt = `\n\n【原视频爆款话术与叙事风格参考】
+- 原视频口播内容参考：${originalScript.estimatedScript || '未解析到具体口播内容'}
+- 原视频爆款卖点/Hook拆解：${Array.isArray(originalScript.sellingPoints) ? originalScript.sellingPoints.join('、') : '无'}
+【重要指令】：请深度借鉴原视频的 Hook 引入技巧、叙事切入点与情绪递进逻辑，生成针对目标产品【${product.name}】的同款风格爆款文案，切勿凭空编造事实或违背目标产品定位！`;
+  }
 
   const systemPrompt = `你是一个顶级短视频带货文案主创与品牌广告合规官。严格遵守以下 Harness 约束：
 
@@ -548,7 +1202,7 @@ ${JSON.stringify(product.prohibitedWords)}
 - 核心定位：${product.positioning}
 - 3:4:3配方架构：${product.model343}
 - SGS权威检测数据：${product.sgsData}
-- 核心卖点：${product.customSellingPoints}
+- 核心卖点：${product.customSellingPoints}${originalScriptReferencePrompt}
 
 【通用 Few-Shot 输出示例】
 {
@@ -585,6 +1239,9 @@ ${JSON.stringify(product.prohibitedWords)}
   let modelUsed = hRes.modelUsed;
 
   if (data) {
+    if (originalScriptReferencePrompt) {
+      data.refOriginalScriptUsed = true;
+    }
     const warnings = scanProhibitedWords(data, product.prohibitedWords);
     if (warnings.length > 0) {
       console.warn('[Harness Step3] 触发违禁词自纠错重试，检测到的违规项:', warnings.map(w => w.word).join(', '));
@@ -624,12 +1281,13 @@ ${JSON.stringify(product.prohibitedWords)}
       title: targetPlatform === 'douyin' ? `搞定问题肌！${product.name} SGS实测体验！🔥` : `早晨的快乐是它给的！${product.name} 沉浸使用感🍃`,
       hook: `你还在为了油光和黑头烦恼？试试【${product.name}】的核心爆款配方！`,
       body: `来看 SGS 权威报告！【${product.name}】凭什么口碑风靡全网？\n\n核心就在它的科学配方体系：${product.model343}！SGS权威实测数据：${product.sgsData}。洗完一润二修三控油，膏体薄荷绿质感拉丝，自然清爽不紧绷！`,
-      hashtags: [`#${product.name.split(' ')[0] || 'BUV'}`, `#${product.name}`, '#美妆爆款', '#SGS实测'],
+      hashtags: [`#${product.name.split(' ')[0] || '默认产品'}`, `#${product.name}`, '#美妆爆款', '#SGS实测'],
       cta: '点击下方链接，领专属限时体验福利！',
       platform_fit: {
         douyin: `宝藏好物推荐！【${product.name}】实测效果直接拉满！点击下方小黄车领专属优惠～`,
         xiaohongshu: `沉浸式种草！【${product.name}】质地超级治愈🍃 强烈推荐给所有宝子们～`,
       },
+      refOriginalScriptUsed: Boolean(originalScriptReferencePrompt),
     };
     source = 'mock';
   }
@@ -637,7 +1295,7 @@ ${JSON.stringify(product.prohibitedWords)}
   return res.json({ success: true, data, source, modelUsed });
 });
 
-// Step 4: BGM 库检索与 LLM 语义卡点匹配
+// Step 4: BGM 库检索与 LLM 语义卡点匹配 + 原视频 BPM 优先检索
 pipelineRouter.post('/step4', async (req, res) => {
   const inputs = req.body.inputs || req.body;
   const {
@@ -648,18 +1306,50 @@ pipelineRouter.post('/step4', async (req, res) => {
     textModel,
     productId,
     productInfo,
+    pipelineData,
+    audioAnalysis: directAudioAnalysis,
   } = inputs;
   const bgmLlmId = textModel || musicModel || 'Gemini 3.6 Flash';
 
   const product = getProductContext(productId, productInfo);
+  const audioAnalysis = directAudioAnalysis || pipelineData?.step1?.output?.audioAnalysis || req.body.pipelineData?.step1?.output?.audioAnalysis;
 
-  // 从 SQLite 按调性智能筛选前 15 条候选 BGM
+  let targetBpm: number | null = null;
+  if (audioAnalysis?.estimatedBpm) {
+    const parsed = parseInt(String(audioAnalysis.estimatedBpm).replace(/\D/g, ''), 10);
+    if (!isNaN(parsed) && parsed >= 40 && parsed <= 220) {
+      targetBpm = parsed;
+    }
+  }
+
+  // 从 SQLite 按调性智能筛选候选 BGM + 原视频 BPM 范围过滤 (targetBpm ± 10)
   let bgmRows: any[] = [];
   try {
-    if (tonePreference && tonePreference.trim().length > 0) {
-      const stmt = db.prepare('SELECT * FROM bgm_library WHERE mood LIKE ? OR style_tags LIKE ? ORDER BY created_at DESC LIMIT 15');
-      bgmRows = stmt.all(`%${tonePreference}%`, `%${tonePreference}%`) as any[];
+    if (targetBpm !== null) {
+      const minBpm = Math.max(40, targetBpm - 10);
+      const maxBpm = Math.min(220, targetBpm + 10);
+      const stmt = db.prepare('SELECT * FROM bgm_library WHERE bpm BETWEEN ? AND ? ORDER BY created_at DESC LIMIT 15');
+      bgmRows = stmt.all(minBpm, maxBpm) as any[];
     }
+
+    if (!bgmRows || bgmRows.length === 0) {
+      let bpmMin = 80, bpmMax = 140;
+      if (tonePreference && tonePreference.trim().length > 0) {
+        if (tonePreference.includes('卡点') || tonePreference.includes('Electronic') || tonePreference.includes('Trap')) {
+          bpmMin = 110;
+          bpmMax = 140;
+        } else if (tonePreference.includes('治愈') || tonePreference.includes('Ambient') || tonePreference.includes('Lofi')) {
+          bpmMin = 70;
+          bpmMax = 100;
+        } else if (tonePreference.includes('R&B') || tonePreference.includes('ASMR')) {
+          bpmMin = 85;
+          bpmMax = 120;
+        }
+        const stmt = db.prepare('SELECT * FROM bgm_library WHERE (mood LIKE ? OR style_tags LIKE ?) AND bpm BETWEEN ? AND ? ORDER BY created_at DESC LIMIT 15');
+        bgmRows = stmt.all(`%${tonePreference}%`, `%${tonePreference}%`, bpmMin, bpmMax) as any[];
+      }
+    }
+
     if (!bgmRows || bgmRows.length === 0) {
       const stmt = db.prepare('SELECT * FROM bgm_library ORDER BY created_at DESC LIMIT 15');
       bgmRows = stmt.all() as any[];
@@ -707,12 +1397,15 @@ ${JSON.stringify(bgmCandidates, null, 2)}
   ]
 }`;
 
-  const userPrompt = `【BGM匹配任务】
+  let userPrompt = `【BGM匹配任务】
 - 目标产品：${product.name}
 - 视频文案标题：${copywritingTitle || product.name}
 - 视频调性偏好：${tonePreference}
-- 商业授权场景：${commercialScenario}
-请结合候选库进行语义最佳匹配，并输出规范 JSON。`;
+- 商业授权场景：${commercialScenario}`;
+  if (targetBpm !== null) {
+    userPrompt += `\n- 原视频分析 BPM：${targetBpm} (请优先推荐与原视频 BPM (${targetBpm}±10) 匹配度最高且符合 ${tonePreference} 调性的 BGM)`;
+  }
+  userPrompt += `\n请结合候选库进行语义最佳匹配，并输出规范 JSON。`;
 
   const hRes = await executeWithSelfCorrection<Step4Output>(
     'Step4',
@@ -768,7 +1461,7 @@ ${JSON.stringify(bgmCandidates, null, 2)}
           sync_point: '1.0s 节奏点',
         })),
     };
-    source = 'library';
+    source = (!hRes.data && allowMockFallback()) ? 'mock' : 'library';
   } else {
     const recName = data.bgm_recommendation.track_name;
     const inLib = bgmRows.find((b) => b.track_name === recName);
@@ -782,10 +1475,15 @@ ${JSON.stringify(bgmCandidates, null, 2)}
     }
   }
 
+  if (targetBpm !== null && data?.bgm_recommendation) {
+    data.bgm_recommendation.originalVideoBpm = String(targetBpm);
+    data.bgm_recommendation.bpmAlignmentNote = `已针对原视频 BPM (${targetBpm}) 匹配最契合的 BGM (${data.bgm_recommendation.bpm} BPM)`;
+  }
+
   return res.json({ success: true, data, source });
 });
 
-// Step 5: 成品合成 Timeline 构建与 FFmpeg 渲染导出
+// Step 5: 成品合成 Timeline 构建与 FFmpeg 渲染导出 (支持多镜头 Timeline 编排)
 pipelineRouter.post('/step5', async (req, res) => {
   const inputs = req.body.inputs || req.body;
   const {
@@ -795,26 +1493,45 @@ pipelineRouter.post('/step5', async (req, res) => {
     productInfo,
     title = '',
     hook = '',
+    cta = '',
     videoSourceUrl = '',
     audioSourceUrl = '',
     previewVideoUrl = '',
   } = inputs;
+
   const product = getProductContext(productId, productInfo);
+  const pipelineData = inputs.pipelineData || req.body.pipelineData;
+  const shotList = inputs.shotList || pipelineData?.step1?.output?.shotList;
+  if (Array.isArray(shotList) && shotList.length > 12) {
+    return res.status(400).json({
+      success: false,
+      error: '单次成片最多支持 12 个镜头',
+    });
+  }
+  const step2Output = inputs.step2Output || pipelineData?.step2?.output;
+  const step3Output = inputs.step3Output || pipelineData?.step3?.output;
+  const concatenatedVideoUrl = inputs.concatenatedVideoUrl || step2Output?.concatenatedVideoUrl || step2Output?.multiShotResult?.concatenatedVideoUrl;
+
+  const rawVideoClips = inputs.videoSourceUrls || inputs.videoClips || (step2Output?.multiShotResult?.shots ? step2Output.multiShotResult.shots.map((s: any) => s.video_url).filter(Boolean) : []);
 
   const timestamp = Date.now();
   const filename = `v_${timestamp}.mp4`;
 
-  const resolvedVideo = videoSourceUrl || previewVideoUrl || inputs.videoUrl || '';
+  const resolvedVideo = videoSourceUrl || concatenatedVideoUrl || previewVideoUrl || inputs.videoUrl || '';
   const resolvedAudio = audioSourceUrl || inputs.bgmUrl || '';
 
-  const subtitleLines = [
-    title || hook || `体验 ${product.name}！`,
-    product.sgsData ? `SGS: ${String(product.sgsData).split(',')[0]}` : '',
-  ].filter(Boolean);
-
   const brandStamp = `${product.name}`;
-  const timeline = [
-    { at: '0.0s', action: 'video_in', source: resolvedVideo || 'video_step2.mp4', text: 'Step2 视频轨' },
+  const timeline: Array<{
+    at: string;
+    action: string;
+    source?: string;
+    text?: string;
+    volume?: number;
+    position?: string;
+    startSec?: number;
+    endSec?: number;
+  }> = [
+    { at: '0.0s', action: 'video_in', source: (rawVideoClips.length > 1 ? `Multi-clip (${rawVideoClips.length} clips)` : (resolvedVideo || 'video_step2.mp4')), text: 'Step2 视频轨' },
     {
       at: '0.0s',
       action: 'audio_in',
@@ -822,43 +1539,134 @@ pipelineRouter.post('/step5', async (req, res) => {
       volume: 0.3,
       text: 'BGM 音轨',
     },
-    ...subtitleLines.map((text, i) => ({
-      at: `${(i * 1.2).toFixed(1)}s`,
-      action: 'subtitle_in' as const,
-      text,
-      position: 'bottom_center',
-    })),
-    { at: '2.8s', action: 'brand_stamp', text: brandStamp, position: 'top_right' },
   ];
 
+  const renderSubtitles: Array<{ text: string; at?: string; startSec?: number; endSec?: number }> = [];
+
+  if (Array.isArray(shotList) && shotList.length > 0) {
+    let currentSec = 0;
+    shotList.forEach((shot: any, idx: number) => {
+      let startSec = currentSec;
+      let endSec = currentSec + 3;
+      if (shot.startTime && shot.endTime) {
+        const parseTime = (tStr: string) => {
+          const parts = String(tStr).split(':').map(Number);
+          if (parts.length === 2) return parts[0] * 60 + parts[1];
+          if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+          return Number(tStr) || 0;
+        };
+        const pStart = parseTime(shot.startTime);
+        const pEnd = parseTime(shot.endTime);
+        if (pEnd > pStart) {
+          startSec = pStart;
+          endSec = pEnd;
+        }
+      }
+      currentSec = endSec;
+
+      let subText = '';
+      if (idx === 0) {
+        subText = hook || title || step3Output?.hook || step3Output?.title || shot.description || `【${product.name}】`;
+      } else if (idx === 1) {
+        subText = (step3Output?.body || inputs.body || product.sgsData || shot.description || '').slice(0, 32);
+      } else if (idx === 2) {
+        subText = cta || step3Output?.cta || inputs.cta || `点击下方链接领限时福利`;
+      } else {
+        subText = shot.description || `镜头 ${idx + 1}`;
+      }
+
+      if (subText) {
+        timeline.push({
+          at: `${startSec.toFixed(1)}s-${endSec.toFixed(1)}s`,
+          action: 'subtitle_in',
+          text: subText,
+          position: 'bottom_center',
+          startSec,
+          endSec,
+        });
+
+        renderSubtitles.push({
+          text: subText,
+          at: `${startSec.toFixed(1)}s`,
+          startSec,
+          endSec,
+        });
+      }
+    });
+  } else {
+    const defaultLines = [
+      title || hook || step3Output?.title || step3Output?.hook || `体验 ${product.name}！`,
+      product.sgsData ? `SGS: ${String(product.sgsData).split(',')[0]}` : '',
+    ].filter(Boolean);
+
+    defaultLines.forEach((text, i) => {
+      const startSec = i * 2;
+      const endSec = (i + 1) * 2;
+      timeline.push({
+        at: `${startSec.toFixed(1)}s-${endSec.toFixed(1)}s`,
+        action: 'subtitle_in',
+        text,
+        position: 'bottom_center',
+        startSec,
+        endSec,
+      });
+      renderSubtitles.push({ text, at: `${startSec.toFixed(1)}s`, startSec, endSec });
+    });
+  }
+
+  timeline.push({ at: '2.8s', action: 'brand_stamp', text: brandStamp, position: 'top_right' });
+
   let videoForRender = resolvedVideo;
-  if (!videoForRender && allowMockFallback()) {
-    const sampleCandidates = [
-      path.join(process.cwd(), 'uploads', 'renders', 'test_render_1785200791697.mp4'),
-      path.join(process.cwd(), 'uploads', 'renders', 'v_1785200791691.mp4'),
-    ];
-    const found = sampleCandidates.find((p) => fs.existsSync(p));
-    if (found) {
-      videoForRender = `/uploads/renders/${path.basename(found)}`;
+  let isMockFallback = false;
+  if (allowMockFallback() && !videoForRender && rawVideoClips.length === 0) {
+    const rendersDir = path.join(
+      path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')),
+      'renders'
+    );
+    if (fs.existsSync(rendersDir)) {
+      const files = fs.readdirSync(rendersDir).filter((f) => f.endsWith('.mp4') && fs.statSync(path.join(rendersDir, f)).size > 100);
+      if (files.length > 0) {
+        videoForRender = `/uploads/renders/${files[0]}`;
+        if (allowMockFallback()) isMockFallback = true;
+      }
+    }
+    if (!videoForRender && rawVideoClips.length === 0) {
+      const materialsDir = path.join(
+        path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')),
+        'materials'
+      );
+      if (fs.existsSync(materialsDir)) {
+        const files = fs.readdirSync(materialsDir).filter((f) => f.endsWith('.mp4') && fs.statSync(path.join(materialsDir, f)).size > 100);
+        if (files.length > 0) {
+          videoForRender = `/uploads/materials/${files[0]}`;
+          if (allowMockFallback()) isMockFallback = true;
+        }
+      }
     }
   }
 
-  if (!videoForRender) {
+  if (!videoForRender && rawVideoClips.length === 0) {
     return res.status(400).json({
       success: false,
-      error: 'Step 5 缺少视频源：请先完成 Step2 并等待 Seedance 生成 previewVideoUrl',
+      error: 'Step 5 缺少视频源：请先完成 Step2 并等待 Seedance 生成 previewVideoUrl 或多片段 concatenatedVideoUrl',
       source: 'error',
     });
   }
 
+  const durationSec = renderSubtitles.length > 0
+    ? Math.max(...renderSubtitles.map((s) => s.endSec || 4), 4)
+    : 4;
+
   const renderResult = await runFfmpegRender({
     aspectRatio,
-    videoSourceUrl: videoForRender,
+    videoSourceUrl: rawVideoClips.length > 1 ? undefined : videoForRender,
+    videoSourceUrls: rawVideoClips.length > 1 ? rawVideoClips : undefined,
     audioSourceUrl: resolvedAudio,
-    subtitles: subtitleLines.map((text) => ({ text })),
+    subtitles: renderSubtitles,
     brandStamp,
     outputFilename: filename,
-    durationSec: 4,
+    durationSec,
+    ownerId: req.authUser?.id || inputs._ownerId,
   });
 
   if (!renderResult.success || !renderResult.data) {
@@ -876,7 +1684,7 @@ pipelineRouter.post('/step5', async (req, res) => {
   const out = renderResult.data;
   return res.json({
     success: true,
-    source: renderResult.source || 'ffmpeg',
+    source: isMockFallback ? 'mock' : (renderResult.source || 'ffmpeg'),
     data: {
       timeline,
       output: {
@@ -890,7 +1698,7 @@ pipelineRouter.post('/step5', async (req, res) => {
       qa_checklist: [
         `✓ 画面比例匹配 (${out.resolution} ${aspectRatio})`,
         `✓ 字幕样式 [${subtitleStyle}]`,
-        `✓ 视频源: ${videoForRender}`,
+        rawVideoClips.length > 1 ? `✓ 多片段视频源 (${rawVideoClips.length} clips)` : `✓ 视频源: ${videoForRender}`,
         resolvedAudio ? `✓ BGM: ${resolvedAudio}` : '○ 未附带 BGM（仅视频轨）',
         `✓ 渲染引擎: ${out.renderEngine}`,
       ],

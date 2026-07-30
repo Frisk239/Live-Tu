@@ -1,6 +1,8 @@
 import { Router } from 'express';
-import fs from 'node:fs';
 import path from 'node:path';
+import { createSignedMediaUrl } from '../lib/signed-media';
+import { cacheRemoteMedia } from './render';
+import { registerOwnedMedia } from '../lib/media-ownership';
 
 export const seedanceRouter = Router();
 
@@ -118,6 +120,7 @@ export function resolvePublicMediaUrl(url: string, requestBaseUrl?: string): { u
   }
 
   const publicBase = (process.env.PUBLIC_BASE_URL || process.env.APP_PUBLIC_URL || requestBaseUrl || '').replace(/\/$/, '');
+  const minioPublicBase = (process.env.MINIO_PUBLIC_URL || '').replace(/\/$/, '');
 
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     try {
@@ -131,6 +134,9 @@ export function resolvePublicMediaUrl(url: string, requestBaseUrl?: string): { u
       }
 
       if (publicHost && host === publicHost) {
+        if (u.pathname.startsWith('/uploads/')) {
+          return { url: createSignedMediaUrl(u.pathname, publicBase) };
+        }
         return { url: trimmed };
       }
 
@@ -143,8 +149,14 @@ export function resolvePublicMediaUrl(url: string, requestBaseUrl?: string): { u
         host.startsWith('10.') ||
         /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
       ) {
+        if (minioPublicBase && u.pathname.startsWith(`/${process.env.MINIO_BUCKET || 'buv-materials'}/`)) {
+          return { url: `${minioPublicBase}${u.pathname}${u.search}` };
+        }
         if (publicBase) {
           const relativePath = u.pathname + u.search;
+          if (u.pathname.startsWith('/uploads/')) {
+            return { url: createSignedMediaUrl(u.pathname, publicBase) };
+          }
           return { url: `${publicBase}${relativePath}` };
         }
         return {
@@ -166,6 +178,9 @@ export function resolvePublicMediaUrl(url: string, requestBaseUrl?: string): { u
     };
   }
   const pathPart = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  if (pathPart.startsWith('/uploads/')) {
+    return { url: createSignedMediaUrl(pathPart, publicBase) };
+  }
   return { url: `${publicBase}${pathPart}` };
 }
 
@@ -266,6 +281,10 @@ export async function createSeedanceVideo(input: SeedanceCreateInput | Record<st
   });
 }
 
+export async function getSeedanceVideo(id: string): Promise<any> {
+  return seedanceFetch(`/api/v1/videos/generations/${encodeURIComponent(id)}`);
+}
+
 export function normalizeSeedanceTask(payload: any) {
   const data = payload?.data || payload || {};
   return {
@@ -286,7 +305,8 @@ export function normalizeSeedanceTask(payload: any) {
  */
 export async function cacheRemoteVideoToUploads(
   remoteUrl: string,
-  preferredName?: string
+  _preferredName?: string,
+  ownerId?: string
 ): Promise<{ localUrl: string; absolutePath: string } | null> {
   if (!remoteUrl || !(remoteUrl.startsWith('http://') || remoteUrl.startsWith('https://'))) {
     return null;
@@ -295,27 +315,9 @@ export async function cacheRemoteVideoToUploads(
     return { localUrl: remoteUrl.startsWith('/') ? remoteUrl : `/${remoteUrl}`, absolutePath: '' };
   }
 
-  const rendersDir = path.join(process.cwd(), 'uploads', 'renders');
-  if (!fs.existsSync(rendersDir)) {
-    fs.mkdirSync(rendersDir, { recursive: true });
-  }
-
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
-    const res = await fetch(remoteUrl, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!res.ok) {
-      console.warn('[seedance] cache download failed', res.status);
-      return null;
-    }
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.length < 64) return null;
-
-    const base = preferredName || `seedance_${Date.now()}`;
-    const filename = base.endsWith('.mp4') ? base : `${base}.mp4`;
-    const absolutePath = path.join(rendersDir, filename);
-    fs.writeFileSync(absolutePath, buf);
+    const absolutePath = await cacheRemoteMedia(remoteUrl, 'video', ownerId || 'system');
+    const filename = path.basename(absolutePath);
     return { localUrl: `/uploads/renders/${filename}`, absolutePath };
   } catch (err: any) {
     console.warn('[seedance] cacheRemoteVideoToUploads:', err.message);
@@ -377,7 +379,7 @@ seedanceRouter.get('/generations/:id', async (req, res) => {
   }
 
   try {
-    const payload = await seedanceFetch(`/api/v1/videos/generations/${encodeURIComponent(req.params.id)}`);
+    const payload = await getSeedanceVideo(req.params.id);
     const task = normalizeSeedanceTask(payload);
 
     if (
@@ -388,8 +390,13 @@ seedanceRouter.get('/generations/:id', async (req, res) => {
         task.status === 'succeeded' ||
         Boolean(task.url && task.status !== 'processing' && task.status !== 'queued'))
     ) {
-      const cached = await cacheRemoteVideoToUploads(task.url, `seedance_${task.id || Date.now()}`);
+      const cached = await cacheRemoteVideoToUploads(
+        task.url,
+        `seedance_${task.id || Date.now()}`,
+        req.authUser?.id
+      );
       if (cached?.localUrl) {
+        if (req.authUser?.id) registerOwnedMedia(cached.localUrl, req.authUser.id, 'seedance');
         (task as any).remoteUrl = task.url;
         task.url = cached.localUrl;
         (task as any).cachedLocally = true;
@@ -407,10 +414,11 @@ seedanceRouter.post('/cache', async (req, res) => {
   try {
     const { url, name } = req.body || {};
     if (!url) return res.status(400).json({ success: false, error: 'url 必填' });
-    const cached = await cacheRemoteVideoToUploads(String(url), name);
+    const cached = await cacheRemoteVideoToUploads(String(url), name, req.authUser?.id);
     if (!cached) {
       return res.status(502).json({ success: false, error: '下载并缓存视频失败' });
     }
+    if (req.authUser?.id) registerOwnedMedia(cached.localUrl, req.authUser.id, 'seedance');
     return res.json({
       success: true,
       data: { videoUrl: cached.localUrl, downloadUrl: cached.localUrl },

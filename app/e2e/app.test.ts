@@ -7,8 +7,8 @@ test('Live-Tu full pipeline UI end-to-end test - verifies product is sufficient 
   await expect(page).toHaveTitle(/爆款视频&Live图解析生成/);
   
   // Fill login credentials
-  await page.getByPlaceholder('请输入测试账号 (haini)').fill('haini');
-  await page.getByPlaceholder('请输入登录密码 (888)').fill('888');
+  await page.getByPlaceholder('请输入账号').fill('haini');
+  await page.getByPlaceholder('请输入登录密码').fill('888');
   await page.getByRole('button', { name: '立即登录工作台' }).click();
   
   // Wait for main app to load

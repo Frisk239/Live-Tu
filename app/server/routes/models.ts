@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
+import { decryptSecret, encryptSecret, isMaskedSecret } from '../lib/secrets';
 
 export const modelsRouter = Router();
 
@@ -13,7 +14,7 @@ modelsRouter.get('/config', (req, res) => {
       name: r.name,
       provider: r.provider,
       baseUrl: r.base_url,
-      apiKey: r.api_key ? (r.api_key.length > 8 ? `${r.api_key.slice(0, 4)}***${r.api_key.slice(-4)}` : '***') : '',
+      apiKey: r.api_key ? '••••••••' : '',
       modelCode: r.model_code,
       recommendedScenario: r.recommended_scenario,
       speedRating: r.speed_rating,
@@ -79,13 +80,19 @@ modelsRouter.post('/config', (req, res) => {
       for (const m of list) {
         if (!m.id) continue;
         const isDef = m.id === defaultId || m.isDefault ? 1 : 0;
+        const existing = db.prepare('SELECT api_key FROM model_config WHERE id = ?').get(m.id) as
+          | { api_key: string }
+          | undefined;
+        const storedApiKey = isMaskedSecret(String(m.apiKey || ''))
+          ? existing?.api_key || ''
+          : encryptSecret(String(m.apiKey).trim());
         upsertStmt.run(
           m.id,
           m.name || m.id,
           category,
           m.provider || '',
           m.baseUrl || '',
-          m.apiKey || '',
+          storedApiKey,
           m.modelCode || m.id,
           m.recommendedScenario || '',
           m.speedRating || '标准',
@@ -143,6 +150,12 @@ modelsRouter.post('/test-connection', async (req, res) => {
 
     let baseUrl = (model.baseUrl || '').trim();
     let apiKey = (model.apiKey || '').trim();
+    if (isMaskedSecret(apiKey) && model.id) {
+      const stored = db.prepare('SELECT api_key FROM model_config WHERE id = ?').get(model.id) as
+        | { api_key: string }
+        | undefined;
+      apiKey = stored?.api_key ? decryptSecret(stored.api_key) : '';
+    }
 
     // Fallback to system env if empty
     if (!apiKey) {

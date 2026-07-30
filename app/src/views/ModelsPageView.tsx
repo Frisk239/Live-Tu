@@ -23,6 +23,7 @@ import {
   ModelMetadata,
 } from '../data/models';
 import { apiService, ApiTestConnectionResponse } from '../services/api';
+import { notify } from '../services/notifications';
 
 interface ModelsPageViewProps {
   config: ModelConfigState;
@@ -94,13 +95,15 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
   const [formDescription, setFormDescription] = useState('');
   const [formBadge, setFormBadge] = useState('');
 
-  const persistAndSyncConfig = async (nextConfig: ModelConfigState) => {
-    setLocalConfig(nextConfig);
-    onSaveConfig(nextConfig);
+  const persistAndSyncConfig = async (nextConfig: ModelConfigState): Promise<boolean> => {
     try {
       await apiService.models.saveConfig(nextConfig);
-    } catch (err) {
-      console.warn('[ModelsPageView] saveConfig failed:', err);
+      setLocalConfig(nextConfig);
+      onSaveConfig(nextConfig);
+      return true;
+    } catch (err: any) {
+      notify(err?.message || '模型配置保存失败，未应用任何更改', 'error');
+      return false;
     }
   };
 
@@ -114,7 +117,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
     persistAndSyncConfig(nextConfig);
   };
 
-  const handleSetDefault = (id: string, category: 'text' | 'image' | 'video') => {
+  const handleSetDefault = async (id: string, category: 'text' | 'image' | 'video') => {
     if (userRole !== 'admin') return;
     let nextConfig: ModelConfigState;
     if (category === 'text') {
@@ -136,7 +139,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
         videoModels: localConfig.videoModels.map((m) => ({ ...m, isDefault: m.id === id })),
       };
     }
-    persistAndSyncConfig(nextConfig);
+    if (!(await persistAndSyncConfig(nextConfig))) return;
     setSaveSuccess(true);
     setTimeout(() => {
       setSaveSuccess(false);
@@ -199,7 +202,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
     setIsFormOpen(true);
   };
 
-  const handleSaveForm = (e: React.FormEvent) => {
+  const handleSaveForm = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formName.trim()) return;
 
@@ -231,12 +234,11 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
       : [...list, updatedModel];
 
     const nextConfig = { ...localConfig, [key]: nextList as any };
-    persistAndSyncConfig(nextConfig);
-    setIsFormOpen(false);
+    if (await persistAndSyncConfig(nextConfig)) setIsFormOpen(false);
   };
 
   const handleSave = async () => {
-    await persistAndSyncConfig(localConfig);
+    if (!(await persistAndSyncConfig(localConfig))) return;
     setSaveSuccess(true);
     setTimeout(() => {
       setSaveSuccess(false);

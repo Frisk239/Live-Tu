@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
+import { requireRole } from '../lib/auth';
 
 export const presetsRouter = Router();
 
@@ -15,6 +16,8 @@ presetsRouter.get('/', (req, res) => {
       tag: r.tag,
       description: r.description,
       coverImage: r.cover_image,
+      category: r.category || 'universal',
+      formula: r.formula || 'hook_3s_contrast',
       createdAt: r.created_at,
       pipelineData: JSON.parse(r.pipeline_data || '{}'),
     }));
@@ -26,7 +29,7 @@ presetsRouter.get('/', (req, res) => {
 });
 
 // POST /api/presets — 保存新预设模版
-presetsRouter.post('/', (req, res) => {
+presetsRouter.post('/', requireRole('admin'), (req, res) => {
   try {
     const { title, tag = '爆款反推', description = '', coverImage = '', pipelineData = {} } = req.body;
     const presetId = `preset_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -62,7 +65,7 @@ presetsRouter.post('/', (req, res) => {
 });
 
 // DELETE /api/presets/:id — 删除预设模版
-presetsRouter.delete('/:id', (req, res) => {
+presetsRouter.delete('/:id', requireRole('admin'), (req, res) => {
   try {
     const { id } = req.params;
     const deleteStmt = db.prepare('DELETE FROM presets WHERE id = ?');

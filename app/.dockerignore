@@ -1,0 +1,9 @@
+node_modules
+dist
+data
+uploads
+test-results
+.env
+*.db
+*.db-shm
+*.db-wal

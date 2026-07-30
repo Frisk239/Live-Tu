@@ -1,0 +1,140 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: live-tu:${LIVE_TU_IMAGE_TAG:-production}
+    restart: unless-stopped
+    depends_on:
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    expose:
+      - "3004"
+    environment:
+      NODE_ENV: production
+      PORT: 3004
+      DATA_DIR: /var/lib/live-tu/data
+      UPLOADS_DIR: /var/lib/live-tu/uploads
+      BACKUP_DIR: /var/lib/live-tu/backups
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME is required}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      MODEL_KEY_ENCRYPTION_SECRET: ${MODEL_KEY_ENCRYPTION_SECRET:?MODEL_KEY_ENCRYPTION_SECRET is required}
+      MEDIA_URL_SIGNING_SECRET: ${MEDIA_URL_SIGNING_SECRET:?MEDIA_URL_SIGNING_SECRET is required}
+      MEDIA_URL_TTL_SECONDS: ${MEDIA_URL_TTL_SECONDS:-3600}
+      METRICS_TOKEN: ${METRICS_TOKEN:?METRICS_TOKEN is required}
+      COOKIE_SECURE: "true"
+      TRUST_PROXY: "1"
+      PUBLIC_BASE_URL: https://${APP_DOMAIN:?APP_DOMAIN is required}
+      YUNWU_BASE_URL: ${YUNWU_BASE_URL:-https://api3.wlai.vip/v1}
+      YUNWU_API_KEY: ${YUNWU_API_KEY:?YUNWU_API_KEY is required}
+      TEXT_MODEL: ${TEXT_MODEL:-gemini-3.6-flash}
+      SEEDANCE_BASE_URL: ${SEEDANCE_BASE_URL:?SEEDANCE_BASE_URL is required}
+      SEEDANCE_ACCOUNT: ${SEEDANCE_ACCOUNT:?SEEDANCE_ACCOUNT is required}
+      SEEDANCE_PASSWORD: ${SEEDANCE_PASSWORD:?SEEDANCE_PASSWORD is required}
+      SEEDANCE_MODEL: ${SEEDANCE_MODEL:-doubao-seedance-2-0-fast}
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: ${MINIO_PORT:-9000}
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      MINIO_BUCKET: ${MINIO_BUCKET:-buv-materials}
+      MINIO_ENSURE_PUBLIC_READ: "false"
+      MINIO_PUBLIC_URL: ""
+      ALLOW_MOCK_FALLBACK: "false"
+      MIN_FREE_STORAGE_BYTES: ${MIN_FREE_STORAGE_BYTES:-1073741824}
+      MAX_REMOTE_MEDIA_BYTES: ${MAX_REMOTE_MEDIA_BYTES:-209715200}
+      MATERIAL_IMPORT_ROOT: ${MATERIAL_IMPORT_ROOT:-}
+      EXPENSIVE_REQUESTS_PER_MINUTE: ${EXPENSIVE_REQUESTS_PER_MINUTE:-20}
+      MAX_USER_STORAGE_BYTES: ${MAX_USER_STORAGE_BYTES:-5368709120}
+      SHUTDOWN_GRACE_MS: ${SHUTDOWN_GRACE_MS:-30000}
+      PIPELINE_WORKER_CONCURRENCY: ${PIPELINE_WORKER_CONCURRENCY:-1}
+      ARTIFACT_RETENTION_DAYS: ${ARTIFACT_RETENTION_DAYS:-30}
+      RUN_RETENTION_DAYS: ${RUN_RETENTION_DAYS:-90}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
+    volumes:
+      - live-tu-data:/var/lib/live-tu/data
+      - live-tu-uploads:/var/lib/live-tu/uploads
+      - live-tu-backups:/var/lib/live-tu/backups
+    stop_grace_period: 40s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3004/api/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+  minio:
+    image: minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    expose:
+      - "9000"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - http://127.0.0.1:9000/minio/health/ready
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+  minio-init:
+    image: minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      MINIO_BUCKET: ${MINIO_BUCKET:-buv-materials}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$MINIO_BUCKET"
+        printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucket","s3:ListBucketMultipartUploads"],"Resource":["arn:aws:s3:::'"$$MINIO_BUCKET"'"]},{"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:AbortMultipartUpload","s3:ListMultipartUploadParts"],"Resource":["arn:aws:s3:::'"$$MINIO_BUCKET"'/*"]}]}' > /tmp/live-tu-policy.json
+        mc admin policy info local live-tu-app >/dev/null 2>&1 || mc admin policy create local live-tu-app /tmp/live-tu-policy.json
+        mc admin user add local "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY"
+        mc admin policy attach local live-tu-app --user "$$MINIO_ACCESS_KEY"
+
+  caddy:
+    image: caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?APP_DOMAIN is required}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  live-tu-data:
+  live-tu-uploads:
+  live-tu-backups:
+  minio-data:
+  caddy-data:
+  caddy-config:

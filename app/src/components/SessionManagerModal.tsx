@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { WorkspaceSession } from '../types';
 import { downloadJsonFile } from '../utils/format';
+import { useModalA11y } from '../hooks/useModalA11y';
 
 interface SessionManagerModalProps {
   isOpen: boolean;
@@ -40,6 +41,7 @@ export const SessionManagerModal: React.FC<SessionManagerModalProps> = ({
   const [sessionToDelete, setSessionToDelete] = useState<WorkspaceSession | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'completed' | 'generating'>('all');
+  const dialogRef = useModalA11y<HTMLDivElement>(isOpen, onClose);
 
   if (!isOpen) return null;
 
@@ -64,7 +66,14 @@ export const SessionManagerModal: React.FC<SessionManagerModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/40 backdrop-blur-xs">
-      <div className="bg-white text-slate-900 border border-slate-200/90 rounded-2xl shadow-xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden transition-all">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="session-manager-title"
+        tabIndex={-1}
+        className="bg-white text-slate-900 border border-slate-200/90 rounded-2xl shadow-xl w-full max-w-5xl max-h-[92vh] flex flex-col overflow-hidden transition-all"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/80">
           <div className="flex items-center gap-3">
@@ -72,7 +81,7 @@ export const SessionManagerModal: React.FC<SessionManagerModalProps> = ({
               <ListTodo className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-900">
+              <h2 id="session-manager-title" className="text-base font-bold text-slate-900">
                 工作台会话管理中心 (Workspace Sessions)
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
@@ -94,6 +103,8 @@ export const SessionManagerModal: React.FC<SessionManagerModalProps> = ({
             </button>
 
             <button
+              type="button"
+              aria-label="关闭工作区管理"
               onClick={onClose}
               className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
             >

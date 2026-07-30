@@ -18,8 +18,8 @@ test.describe('BUV workbench smoke', () => {
   });
 
   async function login(page: import('@playwright/test').Page) {
-    await page.getByPlaceholder('请输入测试账号 (haini)').fill('haini');
-    await page.getByPlaceholder('请输入登录密码 (888)').fill('888');
+    await page.getByPlaceholder('请输入账号').fill('haini');
+    await page.getByPlaceholder('请输入登录密码').fill('888');
     await page.getByRole('button', { name: '立即登录工作台' }).click();
     const closeGuide = page.locator('button[title="关闭引导"]');
     if (await closeGuide.isVisible({ timeout: 2000 }).catch(() => false)) {
@@ -50,9 +50,9 @@ test.describe('BUV workbench smoke', () => {
 
     const pages: Array<{ title: string; heading: RegExp }> = [
       { title: '确权 BGM 曲库管理', heading: /确权 BGM 曲库/ },
-      { title: '视频素材库页面', heading: /爆款短视频与图片素材库/ },
+      { title: '视频素材库页面', heading: /爆款短视频与素材库/ },
       { title: '后台任务中心页面', heading: /后台渲染与反推任务中心/ },
-      { title: '爆款视频与反推预设', heading: /爆款短视频模版与反推预设库/ },
+      { title: '8 大黄金爆款示范模板库与 AI 全链路反推', heading: /黄金爆款示范模板库/ },
       { title: '大模型与提示词配置页面', heading: /大模型与提示词规则配置中心/ },
       { title: '卖点库与品牌知识中心', heading: /品牌卖点与知识资产库/ },
     ];
@@ -63,6 +63,10 @@ test.describe('BUV workbench smoke', () => {
       await btn.click({ force: true });
       await page.waitForTimeout(500);
       await expect(page.locator('h1').filter({ hasText: p.heading }).first()).toBeVisible({ timeout: 10000 });
+      if (p.title === '后台任务中心页面') {
+        await expect(page.getByRole('heading', { name: '生产运行记录' })).toBeVisible();
+        await expect(page.getByText(/Step [1-5]\/5/).first()).toBeVisible();
+      }
     }
 
     await page.locator('aside button[title="5步短视频反推与生成主工程"]').click();
@@ -87,8 +91,8 @@ test.describe('BUV workbench smoke', () => {
   test('load preset into pipeline', async ({ page }) => {
     await login(page);
 
-    await page.locator('aside button[title="爆款视频与反推预设"]').click();
-    await expect(page.getByRole('heading', { name: /反推预设库/ })).toBeVisible({ timeout: 10000 });
+    await page.locator('aside button[title="8 大黄金爆款示范模板库与 AI 全链路反推"]').click();
+    await expect(page.getByRole('heading', { name: /黄金爆款示范模板库/ })).toBeVisible({ timeout: 10000 });
 
     const loadBtn = page.getByText('载入流水线').first();
     if (await loadBtn.isVisible({ timeout: 5000 }).catch(() => false)) {

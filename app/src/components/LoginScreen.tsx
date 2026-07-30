@@ -3,34 +3,27 @@ import { motion } from 'framer-motion';
 import { Sparkles, User, KeyRound, ArrowRight, AlertCircle } from 'lucide-react';
 
 interface LoginScreenProps {
-  onLoginSuccess: (username: string) => void;
+  onLoginSuccess: (username: string, password: string) => Promise<void>;
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
-  const [username, setUsername] = useState('haini');
-  const [password, setPassword] = useState('888');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setIsLoading(true);
 
-    setTimeout(() => {
-      if (username.trim() === 'haini' && password === '888') {
-        onLoginSuccess(username.trim());
-      } else {
-        setErrorMsg('账号或密码错误！默认测试账号：haini / 密码：888');
-        setIsLoading(false);
-      }
-    }, 400);
-  };
-
-  const handleQuickFill = () => {
-    setUsername('haini');
-    setPassword('888');
-    setErrorMsg('');
+    try {
+      await onLoginSuccess(username.trim(), password);
+    } catch (error: any) {
+      setErrorMsg(error?.message || '登录失败，请检查账号和密码');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -67,63 +60,64 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         {/* Login Form */}
         <form onSubmit={handleLogin} className="space-y-4">
           {errorMsg && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-center gap-2">
+            <div
+              role="alert"
+              aria-live="assertive"
+              className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-medium flex items-center gap-2"
+            >
               <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
               <span>{errorMsg}</span>
             </div>
           )}
 
           <div>
-            <label className="text-xs font-medium text-slate-700 block mb-1.5 flex items-center gap-1.5">
+            <label
+              htmlFor="login-username"
+              className="text-xs font-medium text-slate-700 block mb-1.5 flex items-center gap-1.5"
+            >
               <User className="w-3.5 h-3.5 text-slate-400" />
               <span>账号 (Username)</span>
             </label>
             <div className="relative">
               <input
+                id="login-username"
                 type="text"
+                autoComplete="username"
                 required
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="请输入测试账号 (haini)"
+                placeholder="请输入账号"
                 className="w-full px-3.5 py-2.5 rounded-lg bg-white border border-slate-200/90 text-slate-900 text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all shadow-2xs"
               />
             </div>
           </div>
 
           <div>
-            <label className="text-xs font-medium text-slate-700 block mb-1.5 flex items-center gap-1.5">
+            <label
+              htmlFor="login-password"
+              className="text-xs font-medium text-slate-700 block mb-1.5 flex items-center gap-1.5"
+            >
               <KeyRound className="w-3.5 h-3.5 text-slate-400" />
               <span>密码 (Password)</span>
             </label>
             <div className="relative">
               <input
+                id="login-password"
                 type="password"
+                autoComplete="current-password"
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="请输入登录密码 (888)"
+                placeholder="请输入登录密码"
                 className="w-full px-3.5 py-2.5 rounded-lg bg-white border border-slate-200/90 text-slate-900 text-sm focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 transition-all shadow-2xs"
               />
             </div>
           </div>
 
-          {/* Quick Credential Hint Button */}
-          <div className="flex items-center justify-between text-xs pt-1">
-            <span className="text-slate-500">
-              测试凭据: <strong className="text-slate-800 font-semibold">haini / 888</strong>
-            </span>
-            <button
-              type="button"
-              onClick={handleQuickFill}
-              className="text-blue-600 hover:text-blue-700 font-medium hover:underline cursor-pointer"
-            >
-              一键填入凭据
-            </button>
-          </div>
-
           <button
             type="submit"
             disabled={isLoading}
+            aria-busy={isLoading}
             className="w-full mt-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm shadow-md shadow-blue-600/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
           >
             {isLoading ? (

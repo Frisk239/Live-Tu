@@ -263,7 +263,9 @@ async function downloadRemoteMedia(
     throw new Error(`远程媒体下载失败: HTTP ${response.status}`);
   }
   const contentType = String(response.headers.get('content-type') || '').toLowerCase();
-  if (expectedKind === 'image' && !contentType.startsWith('image/')) {
+  const normalizedContentType = contentType.split(';', 1)[0].trim();
+  const supportedImageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  if (expectedKind === 'image' && !supportedImageTypes.has(normalizedContentType)) {
     throw new Error(`远程内容不是图片: ${contentType || 'missing content-type'}`);
   }
   if (

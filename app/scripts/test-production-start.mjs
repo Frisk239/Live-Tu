@@ -1,5 +1,11 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -127,6 +133,34 @@ try {
     !authenticatedHealth.readiness?.storage?.ready
   ) {
     throw new Error('Authenticated readiness details are unavailable');
+  }
+  if (
+    !authenticatedHealth.readiness.storage.data?.ready ||
+    !authenticatedHealth.readiness.storage.uploads?.ready
+  ) {
+    throw new Error('Readiness did not verify both DATA_DIR and UPLOADS_DIR');
+  }
+
+  const maintenanceLockPath = join(tempRoot, 'data', '.backup.lock');
+  writeFileSync(maintenanceLockPath, 'production maintenance test', { flag: 'wx' });
+  try {
+    const readDuringBackup = await fetch(`${baseUrl}/api/health`);
+    const mutationDuringBackup = await fetch(`${baseUrl}/api/products`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'must-not-be-created' }),
+    });
+    if (
+      !readDuringBackup.ok ||
+      mutationDuringBackup.status !== 503 ||
+      !mutationDuringBackup.headers.get('retry-after')
+    ) {
+      throw new Error(
+        `Backup maintenance guard failed (read=${readDuringBackup.status}, mutation=${mutationDuringBackup.status})`
+      );
+    }
+  } finally {
+    unlinkSync(maintenanceLockPath);
   }
 
   const imageForm = new FormData();

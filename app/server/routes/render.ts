@@ -293,13 +293,13 @@ async function downloadRemoteMedia(
     throw new Error(`远程媒体超过大小限制: ${declaredLength} bytes`);
   }
 
-  const extension = contentType.includes('image/png')
+  const extension = normalizedContentType === 'image/png'
     ? '.png'
-    : contentType.includes('image/jpeg')
+    : normalizedContentType === 'image/jpeg'
       ? '.jpg'
-      : contentType.includes('image/webp')
+      : normalizedContentType === 'image/webp'
         ? '.webp'
-        : contentType.includes('image/gif')
+        : normalizedContentType === 'image/gif'
           ? '.gif'
           : contentType.includes('audio/')
     ? '.audio'

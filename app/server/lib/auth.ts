@@ -127,10 +127,19 @@ export function initializeAuth() {
     throw new Error('生产环境 ADMIN_PASSWORD 至少需要 12 个字符');
   }
 
-  db.prepare(
+  const insertUser = db.prepare(
     `INSERT INTO users (id, username, password_hash, role)
-     VALUES (?, ?, ?, 'admin')`
-  ).run(randomUUID(), username, hashPassword(password));
+     VALUES (?, ?, ?, ?)`
+  );
+  // Development gets deterministic fixtures so the normal test account
+  // exercises the operator permission boundary. Production always creates
+  // only the explicitly configured administrator.
+  if (!isProduction && !process.env.ADMIN_USERNAME) {
+    insertUser.run(randomUUID(), 'haini', hashPassword('888'), 'operator');
+    insertUser.run(randomUUID(), 'admin', hashPassword('888'), 'admin');
+    return;
+  }
+  insertUser.run(randomUUID(), username, hashPassword(password), 'admin');
 }
 
 export function getUserPermissions(userId: string): string[] {

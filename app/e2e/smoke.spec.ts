@@ -18,7 +18,9 @@ test.describe('BUV workbench smoke', () => {
   });
 
   async function login(page: import('@playwright/test').Page) {
-    await page.getByPlaceholder('请输入账号').fill('haini');
+    // The development fixture uses haini/888 for operator checks and admin/888
+    // for this full-module smoke flow.
+    await page.getByPlaceholder('请输入账号').fill('admin');
     await page.getByPlaceholder('请输入登录密码').fill('888');
     await page.getByRole('button', { name: '立即登录工作台' }).click();
     const closeGuide = page.locator('button[title="关闭引导"]');

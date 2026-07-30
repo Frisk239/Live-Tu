@@ -72,3 +72,64 @@ test('deduplicates remote media downloads within an ownership scope', async () =
     globalThis.fetch = originalFetch;
   }
 });
+
+test('streams only bounded image MIME responses for generated-image caching', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(Buffer.alloc(64, 7), {
+      status: 200,
+      headers: {
+        'content-type': 'image/png',
+        'content-length': '64',
+      },
+    });
+  try {
+    const cached = await cacheRemoteMedia(
+      'https://93.184.216.34/generated-image.png',
+      'image',
+      'owner-image'
+    );
+    assert.match(cached, /\.png$/);
+    assert.equal(fs.statSync(cached).size, 64);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('rejects generated-image downloads with unsafe MIME or excessive size', async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () =>
+      new Response('<html>not an image</html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      });
+    await assert.rejects(
+      () => cacheRemoteMedia(
+        'https://93.184.216.34/not-image',
+        'image',
+        'owner-image'
+      ),
+      /类型|图片|image/i
+    );
+
+    globalThis.fetch = async () =>
+      new Response(Buffer.alloc(64), {
+        status: 200,
+        headers: {
+          'content-type': 'image/jpeg',
+          'content-length': String(21 * 1024 * 1024),
+        },
+      });
+    await assert.rejects(
+      () => cacheRemoteMedia(
+        'https://93.184.216.34/too-large.jpg',
+        'image',
+        'owner-image'
+      ),
+      /大小|limit/i
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

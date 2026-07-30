@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
 import { decryptSecret, encryptSecret, isMaskedSecret } from '../lib/secrets';
+import { requirePermission } from '../lib/auth';
 
 export const modelsRouter = Router();
 
-modelsRouter.get('/config', (req, res) => {
+modelsRouter.get('/config', requirePermission('module.models.read'), (req, res) => {
   try {
     const stmt = db.prepare('SELECT * FROM model_config');
     const rows = stmt.all() as any[];
@@ -49,7 +50,7 @@ modelsRouter.get('/config', (req, res) => {
   }
 });
 
-modelsRouter.post('/config', (req, res) => {
+modelsRouter.post('/config', requirePermission('module.models.write'), (req, res) => {
   try {
     const { textModels = [], imageModels = [], videoModels = [], defaultTextModel, defaultImageModel, defaultVideoModel } = req.body;
 
@@ -132,7 +133,7 @@ modelsRouter.post('/config', (req, res) => {
 });
 
 // Real model connectivity probing endpoint
-modelsRouter.post('/test-connection', async (req, res) => {
+modelsRouter.post('/test-connection', requirePermission('module.models.write'), async (req, res) => {
   const startTime = Date.now();
   try {
     const { model } = req.body;

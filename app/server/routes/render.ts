@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { assertSafeRemoteUrl } from '../lib/safe-url';
-import { registerOwnedMedia } from '../lib/media-ownership';
+import { canUseMediaReference, registerOwnedMedia } from '../lib/media-ownership';
 
 export const renderRouter = Router();
 const execAsync = promisify(exec);
@@ -224,7 +224,7 @@ const remoteMediaDownloads = new Map<string, Promise<string>>();
 
 async function downloadRemoteMedia(
   url: string,
-  expectedKind: 'media' | 'video',
+  expectedKind: 'media' | 'video' | 'image',
   cacheScope: string
 ): Promise<string> {
   let currentUrl = await assertSafeRemoteUrl(url);
@@ -232,7 +232,7 @@ async function downloadRemoteMedia(
     .update(`${cacheScope}\0${expectedKind}\0${currentUrl}`)
     .digest('hex')
     .slice(0, 40);
-  for (const extension of ['.mp4', '.webm', '.audio']) {
+  for (const extension of ['.mp4', '.webm', '.audio', '.png', '.jpg', '.webp', '.gif']) {
     const existing = path.join(rendersDir, `remote_${cacheId}${extension}`);
     try {
       if (fs.statSync(existing).size >= 32) return existing;
@@ -245,7 +245,11 @@ async function downloadRemoteMedia(
     response = await fetch(currentUrl, {
       redirect: 'manual',
       signal: AbortSignal.timeout(120_000),
-      headers: { Accept: 'video/*,audio/*,application/octet-stream' },
+      headers: {
+        Accept: expectedKind === 'image'
+          ? 'image/png,image/jpeg,image/webp,image/gif'
+          : 'video/*,audio/*,application/octet-stream',
+      },
     });
     if (response.status < 300 || response.status >= 400) break;
     const location = response.headers.get('location');
@@ -259,7 +263,11 @@ async function downloadRemoteMedia(
     throw new Error(`远程媒体下载失败: HTTP ${response.status}`);
   }
   const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  if (expectedKind === 'image' && !contentType.startsWith('image/')) {
+    throw new Error(`远程内容不是图片: ${contentType || 'missing content-type'}`);
+  }
   if (
+    expectedKind !== 'image' &&
     contentType &&
     !contentType.startsWith('video/') &&
     !contentType.startsWith('audio/') &&
@@ -275,13 +283,23 @@ async function downloadRemoteMedia(
   ) {
     throw new Error(`远程内容不是视频: ${contentType}`);
   }
-  const maximumBytes = Number(process.env.MAX_REMOTE_MEDIA_BYTES || 200 * 1024 * 1024);
+  const maximumBytes = expectedKind === 'image'
+    ? Number(process.env.MAX_REMOTE_IMAGE_BYTES || 20 * 1024 * 1024)
+    : Number(process.env.MAX_REMOTE_MEDIA_BYTES || 200 * 1024 * 1024);
   const declaredLength = Number(response.headers.get('content-length') || 0);
   if (declaredLength > maximumBytes) {
     throw new Error(`远程媒体超过大小限制: ${declaredLength} bytes`);
   }
 
-  const extension = contentType.includes('audio/')
+  const extension = contentType.includes('image/png')
+    ? '.png'
+    : contentType.includes('image/jpeg')
+      ? '.jpg'
+      : contentType.includes('image/webp')
+        ? '.webp'
+        : contentType.includes('image/gif')
+          ? '.gif'
+          : contentType.includes('audio/')
     ? '.audio'
     : contentType.includes('webm')
       ? '.webm'
@@ -320,7 +338,7 @@ async function downloadRemoteMedia(
 
 export function cacheRemoteMedia(
   url: string,
-  expectedKind: 'media' | 'video' = 'media',
+  expectedKind: 'media' | 'video' | 'image' = 'media',
   cacheScope = 'shared'
 ): Promise<string> {
   const key = `${cacheScope}\0${expectedKind}\0${url}`;
@@ -486,6 +504,7 @@ export async function runFfmpegRender(params: {
   outputFilename?: string;
   durationSec?: number;
   ownerId?: string;
+  isAdmin?: boolean;
 }): Promise<RenderResult> {
   const {
     aspectRatio = '9:16',
@@ -497,6 +516,7 @@ export async function runFfmpegRender(params: {
     outputFilename = `v_${Date.now()}.mp4`,
     durationSec = 4,
     ownerId,
+    isAdmin = false,
   } = params;
 
   const rawUrls: string[] = (Array.isArray(videoSourceUrls) && videoSourceUrls.length > 0)
@@ -508,6 +528,14 @@ export async function runFfmpegRender(params: {
   }
   if (rawUrls.length > 20) {
     return { success: false, error: '单次合成最多支持 20 个视频片段' };
+  }
+  if (
+    ownerId &&
+    [...rawUrls, audioSourceUrl]
+      .filter(Boolean)
+      .some((value) => !canUseMediaReference(value, ownerId, isAdmin))
+  ) {
+    return { success: false, error: 'One or more media files are not accessible to this user' };
   }
 
   const filename = createSafeRenderFilename(outputFilename);
@@ -697,6 +725,22 @@ export async function runFfmpegRender(params: {
 // POST /api/render/ffmpeg — 服务端 FFmpeg 真实视频合成与多片段拼接引擎
 renderRouter.post('/ffmpeg', async (req, res) => {
   try {
+    const videoSources = Array.isArray(req.body.videoSourceUrls || req.body.videoClips)
+      ? (req.body.videoSourceUrls || req.body.videoClips)
+      : [];
+    const requestedMedia = [
+      req.body.videoSourceUrl || '',
+      ...videoSources,
+      req.body.audioSourceUrl || '',
+    ].filter(Boolean);
+    const ownerId = req.authUser!.id;
+    const isAdmin = req.authUser!.role === 'admin';
+    if (requestedMedia.some((value) => !canUseMediaReference(String(value), ownerId, isAdmin))) {
+      return res.status(403).json({
+        success: false,
+        error: 'One or more media files are not accessible to this user',
+      });
+    }
     const result = await runFfmpegRender({
       aspectRatio: req.body.aspectRatio,
       videoSourceUrl: req.body.videoSourceUrl || '',
@@ -706,7 +750,8 @@ renderRouter.post('/ffmpeg', async (req, res) => {
       brandStamp: req.body.brandStamp || '',
       outputFilename: req.body.outputFilename,
       durationSec: req.body.durationSec,
-      ownerId: req.authUser!.id,
+      ownerId,
+      isAdmin,
     });
 
     if (!result.success) {

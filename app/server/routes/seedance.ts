@@ -3,6 +3,10 @@ import path from 'node:path';
 import { createSignedMediaUrl } from '../lib/signed-media';
 import { cacheRemoteMedia } from './render';
 import { registerOwnedMedia } from '../lib/media-ownership';
+import {
+  canAccessSeedanceTask,
+  registerSeedanceTaskOwner,
+} from '../lib/seedance-ownership';
 
 export const seedanceRouter = Router();
 
@@ -367,6 +371,16 @@ seedanceRouter.post('/generations', async (req, res) => {
   try {
     const payload = await createSeedanceVideo(req.body);
     const task = normalizeSeedanceTask(payload);
+    const ownerId = req.authUser?.id || String(req.body?._ownerId || '');
+    if (task.id) {
+      if (!ownerId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Seedance task owner is required',
+        });
+      }
+      registerSeedanceTaskOwner(String(task.id), ownerId, 'direct');
+    }
     return res.json({ success: true, data: task, source: 'seedance-relay' });
   } catch (err: any) {
     return res.status(err.status || 502).json({ success: false, error: err.message });
@@ -379,6 +393,22 @@ seedanceRouter.get('/generations/:id', async (req, res) => {
   }
 
   try {
+    if (
+      !req.internalWorker &&
+      (
+        !req.authUser ||
+        !canAccessSeedanceTask(
+          req.params.id,
+          req.authUser.id,
+          req.authUser.role === 'admin'
+        )
+      )
+    ) {
+      return res.status(404).json({
+        success: false,
+        error: 'Seedance task not found',
+      });
+    }
     const payload = await getSeedanceVideo(req.params.id);
     const task = normalizeSeedanceTask(payload);
 

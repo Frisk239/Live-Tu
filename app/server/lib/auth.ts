@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
 import { db } from './db';
+import type { PermissionKey } from './permission-catalog';
 
 const SESSION_COOKIE = 'live_tu_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -46,7 +47,9 @@ export type AuthUser = {
   id: string;
   username: string;
   role: 'admin' | 'operator';
+  permissions: string[];
 };
+type AuthUserRow = Omit<AuthUser, 'permissions'>;
 
 declare global {
   namespace Express {
@@ -130,6 +133,18 @@ export function initializeAuth() {
   ).run(randomUUID(), username, hashPassword(password));
 }
 
+export function getUserPermissions(userId: string): string[] {
+  return (
+    db.prepare(
+      `SELECT role_permissions.permission_key
+         FROM users
+         JOIN role_permissions ON role_permissions.role = users.role
+        WHERE users.id = ? AND users.enabled = 1
+        ORDER BY role_permissions.permission_key`
+    ).all(userId) as Array<{ permission_key: string }>
+  ).map((row) => row.permission_key);
+}
+
 function resolveUser(req: Request): AuthUser | null {
   const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
   if (!token) return null;
@@ -141,9 +156,9 @@ function resolveUser(req: Request): AuthUser | null {
       WHERE auth_sessions.token_hash = ?
         AND auth_sessions.expires_at > ?
         AND users.enabled = 1`
-  ).get(hashSessionToken(token), new Date().toISOString()) as AuthUser | undefined;
+  ).get(hashSessionToken(token), new Date().toISOString()) as AuthUserRow | undefined;
 
-  return row || null;
+  return row ? { ...row, permissions: getUserPermissions(row.id) } : null;
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -218,6 +233,18 @@ export function requireRole(role: AuthUser['role']) {
   };
 }
 
+export function requirePermission(permission: PermissionKey) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.authUser) {
+      return res.status(401).json({ success: false, error: '请先登录' });
+    }
+    if (!req.authUser.permissions.includes(permission)) {
+      return res.status(403).json({ success: false, error: '权限不足' });
+    }
+    next();
+  };
+}
+
 export function sameOriginOnly(req: Request, res: Response, next: NextFunction) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
   const origin = req.headers.origin;
@@ -255,7 +282,7 @@ authRouter.post('/login', (req, res) => {
 
   const row = db.prepare(
     'SELECT id, username, password_hash, role FROM users WHERE username = ? AND enabled = 1'
-  ).get(username) as (AuthUser & { password_hash: string }) | undefined;
+  ).get(username) as (AuthUserRow & { password_hash: string }) | undefined;
 
   if (!row || !verifyPassword(password, row.password_hash)) {
     const current = loginFailures.get(clientKey);
@@ -277,7 +304,12 @@ authRouter.post('/login', (req, res) => {
 
   return res.json({
     success: true,
-    user: { id: row.id, username: row.username, role: row.role },
+    user: {
+      id: row.id,
+      username: row.username,
+      role: row.role,
+      permissions: getUserPermissions(row.id),
+    },
   });
 });
 
@@ -294,7 +326,7 @@ authRouter.get('/me', requireAuth, (req, res) => {
   return res.json({ success: true, user: req.authUser });
 });
 
-authRouter.get('/users', requireAuth, requireRole('admin'), (_req, res) => {
+authRouter.get('/users', requireAuth, requirePermission('admin.users.manage'), (_req, res) => {
   const users = db.prepare(
     `SELECT id, username, role, enabled, created_at, updated_at
        FROM users
@@ -303,7 +335,7 @@ authRouter.get('/users', requireAuth, requireRole('admin'), (_req, res) => {
   return res.json({ success: true, data: users });
 });
 
-authRouter.get('/audit-logs', requireAuth, requireRole('admin'), (req, res) => {
+authRouter.get('/audit-logs', requireAuth, requirePermission('admin.audit.read'), (req, res) => {
   const requestedLimit = Number(req.query.limit || 100);
   const limit = Number.isFinite(requestedLimit)
     ? Math.min(500, Math.max(1, Math.floor(requestedLimit)))
@@ -320,7 +352,7 @@ authRouter.get('/audit-logs', requireAuth, requireRole('admin'), (req, res) => {
   return res.json({ success: true, data: rows });
 });
 
-authRouter.post('/users', requireAuth, requireRole('admin'), (req, res) => {
+authRouter.post('/users', requireAuth, requirePermission('admin.users.manage'), (req, res) => {
   const username = String(req.body?.username || '').trim();
   const password = String(req.body?.password || '');
   const role = req.body?.role === 'admin' ? 'admin' : 'operator';
@@ -347,10 +379,10 @@ authRouter.post('/users', requireAuth, requireRole('admin'), (req, res) => {
   }
 });
 
-authRouter.patch('/users/:id', requireAuth, requireRole('admin'), (req, res) => {
+authRouter.patch('/users/:id', requireAuth, requirePermission('admin.users.manage'), (req, res) => {
   const existing = db.prepare(
     'SELECT id, username, role, enabled FROM users WHERE id = ?'
-  ).get(req.params.id) as (AuthUser & { enabled: number }) | undefined;
+  ).get(req.params.id) as (AuthUserRow & { enabled: number }) | undefined;
   if (!existing) return res.status(404).json({ success: false, error: '用户不存在' });
 
   const nextRole = req.body?.role === undefined

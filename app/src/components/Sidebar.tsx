@@ -1,5 +1,6 @@
 import React from 'react';
 import { ProductItem } from '../types';
+import type { Permission } from '../services/api';
 import {
   BookOpen,
   Layers,
@@ -43,7 +44,7 @@ interface SidebarProps {
   onSelectActiveProduct?: (id: string) => void;
   onOpenSessionManager?: () => void;
   onLogout?: () => void;
-  isAdmin?: boolean;
+  can: (permission: Permission) => boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -58,7 +59,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectActiveProduct,
   onOpenSessionManager,
   onLogout,
-  isAdmin = false,
+  can,
 }) => {
   const currentWidthClass = isExpanded ? 'w-[240px]' : 'w-[68px]';
 
@@ -115,18 +116,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Workflow className="w-3.5 h-3.5 text-slate-400" />
               </div>
 
-              <button
-                onClick={() => onChangeView('pipeline')}
-                className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
-                  activeView === 'pipeline'
-                    ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
-                    : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
-                }`}
-                title="5步短视频反推与生成主工程"
-              >
-                <Workflow className="w-4 h-4 shrink-0" />
-                <span className="truncate">5步反推生成工作台</span>
-              </button>
+              {can('module.pipeline.read') && (
+                <button
+                  onClick={() => onChangeView('pipeline')}
+                  className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
+                    activeView === 'pipeline'
+                      ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
+                      : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
+                  }`}
+                  title="5步短视频反推与生成主工程"
+                >
+                  <Workflow className="w-4 h-4 shrink-0" />
+                  <span className="truncate">5步反推生成工作台</span>
+                </button>
+              )}
             </div>
 
             {/* Section 1: Active Product & Knowledge Base */}
@@ -166,7 +169,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               )}
 
               {/* Knowledge Base Direct Page Navigation */}
-              {isAdmin && (
+              {can('module.knowledge.read') && (
                 <button
                   onClick={() => onChangeView('knowledge')}
                   className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
@@ -190,7 +193,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
 
               {/* Workspace Sessions Modal Trigger */}
-              {onOpenSessionManager && (
+              {can('module.tasks.read') && onOpenSessionManager && (
                 <button
                   onClick={onOpenSessionManager}
                   className="flex items-center gap-2.5 rounded-lg text-xs font-semibold transition-all w-full px-3 py-2 cursor-pointer bg-blue-50/70 text-blue-700 hover:bg-blue-100/80 border border-blue-200/60"
@@ -202,55 +205,61 @@ export const Sidebar: React.FC<SidebarProps> = ({
               )}
 
               {/* Materials Library */}
-              <button
-                onClick={() => onChangeView('materials')}
-                className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
-                  activeView === 'materials'
-                    ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
-                    : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
-                }`}
-                title="视频素材库页面"
-              >
-                <Film className="w-4 h-4 shrink-0" />
-                <span className="truncate">视频素材库</span>
-              </button>
+              {can('module.materials.read') && (
+                <button
+                  onClick={() => onChangeView('materials')}
+                  className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
+                    activeView === 'materials'
+                      ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
+                      : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
+                  }`}
+                  title="视频素材库页面"
+                >
+                  <Film className="w-4 h-4 shrink-0" />
+                  <span className="truncate">视频素材库</span>
+                </button>
+              )}
 
               {/* Tasks Center */}
-              <button
-                onClick={() => onChangeView('tasks')}
-                className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
-                  activeView === 'tasks'
-                    ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
-                    : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
-                }`}
-                title="后台任务中心页面"
-              >
-                <FolderKanban className="w-4 h-4 shrink-0" />
-                <span className="truncate">历史会话全集</span>
-              </button>
+              {can('module.tasks.read') && (
+                <button
+                  onClick={() => onChangeView('tasks')}
+                  className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
+                    activeView === 'tasks'
+                      ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
+                      : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
+                  }`}
+                  title="后台任务中心页面"
+                >
+                  <FolderKanban className="w-4 h-4 shrink-0" />
+                  <span className="truncate">历史会话全集</span>
+                </button>
+              )}
 
               {/* Presets Library */}
-              <button
-                onClick={() => onChangeView('presets')}
-                className={`flex items-center justify-between rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
-                  activeView === 'presets'
-                    ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
-                    : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
-                }`}
-                title="8 大黄金爆款示范模板库与 AI 全链路反推"
-              >
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <Layers className="w-4 h-4 shrink-0 text-blue-600" />
-                  <span className="truncate">8大爆款模版库</span>
-                </div>
-                {isExpanded && (
-                  <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-1.5 py-0.2 rounded border border-blue-200 shrink-0">
-                    8 大公式
-                  </span>
-                )}
-              </button>
+              {can('module.presets.read') && (
+                <button
+                  onClick={() => onChangeView('presets')}
+                  className={`flex items-center justify-between rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
+                    activeView === 'presets'
+                      ? 'bg-blue-50 text-blue-700 font-semibold border border-blue-200/60'
+                      : 'text-slate-600 hover:bg-slate-100/80 hover:text-slate-900'
+                  }`}
+                  title="8 大黄金爆款示范模板库与 AI 全链路反推"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Layers className="w-4 h-4 shrink-0 text-blue-600" />
+                    <span className="truncate">8大爆款模版库</span>
+                  </div>
+                  {isExpanded && (
+                    <span className="text-[10px] bg-blue-100 text-blue-800 font-bold px-1.5 py-0.2 rounded border border-blue-200 shrink-0">
+                      8 大公式
+                    </span>
+                  )}
+                </button>
+              )}
 
-              {isAdmin && (
+              {can('module.models.read') && (
                 <button
                   onClick={() => onChangeView('models')}
                   className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
@@ -266,7 +275,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               )}
 
               {/* BGM Library */}
-              {isAdmin && (
+              {can('module.bgm.read') && (
                 <button
                   onClick={() => onChangeView('bgm')}
                   className={`flex items-center gap-2.5 rounded-lg text-xs font-medium transition-all w-full px-3 py-2 cursor-pointer ${
@@ -315,14 +324,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         {/* Bottom Section: Reset / Clear Footer */}
         <div className="p-2.5 border-t border-slate-200/80 bg-slate-50/50 flex flex-col items-center">
-          <button
-            onClick={onResetAll}
-            className={`flex items-center justify-center gap-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-rose-50 hover:text-rose-600 border border-slate-200/80 hover:border-rose-200 transition-all px-3 py-2 cursor-pointer bg-white shadow-2xs ${isExpanded ? 'w-full' : 'w-10 px-0'}`}
-            title="一键清空工作台全部输入、产物与离线缓存"
-          >
-            <RotateCcw className="w-4 h-4 shrink-0 text-slate-500" />
-            {isExpanded && <span>一键清空工作台</span>}
-          </button>
+          {can('module.pipeline.write') && (
+            <button
+              onClick={onResetAll}
+              className={`flex items-center justify-center gap-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-rose-50 hover:text-rose-600 border border-slate-200/80 hover:border-rose-200 transition-all px-3 py-2 cursor-pointer bg-white shadow-2xs ${isExpanded ? 'w-full' : 'w-10 px-0'}`}
+              title="一键清空工作台全部输入、产物与离线缓存"
+            >
+              <RotateCcw className="w-4 h-4 shrink-0 text-slate-500" />
+              {isExpanded && <span>一键清空工作台</span>}
+            </button>
+          )}
           <button
             onClick={onLogout}
             className={`mt-1.5 flex items-center justify-center gap-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-all px-3 py-2 cursor-pointer ${isExpanded ? 'w-full' : 'w-10 px-0'}`}

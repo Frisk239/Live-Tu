@@ -47,6 +47,7 @@ test('persists multi-shot tasks before provider work and isolates sessions by ow
       id: userId,
       username: userId,
       role: userId === 'admin-one' ? 'admin' : 'operator',
+      permissions: [],
     };
     next();
   });

@@ -1,4 +1,12 @@
-import { cpSync, createReadStream, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { createHash } from 'node:crypto';
 import { relative, resolve, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -17,6 +25,31 @@ if (!existsSync(databasePath)) {
 }
 if (backupRoot === dataDir || backupRoot === uploadsDir) {
   throw new Error('备份目录不能与数据目录或上传目录相同');
+}
+
+mkdirSync(dataDir, { recursive: true });
+const maintenanceLockPath = join(dataDir, '.backup.lock');
+const mutationLeasesDir = join(dataDir, '.mutation-leases');
+writeFileSync(
+  maintenanceLockPath,
+  JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+  { flag: 'wx' }
+);
+
+try {
+const drainTimeoutMs = Math.max(
+  1_000,
+  Number(process.env.BACKUP_DRAIN_TIMEOUT_MS || 30_000)
+);
+const drainDeadline = Date.now() + drainTimeoutMs;
+while (
+  existsSync(mutationLeasesDir) &&
+  readdirSync(mutationLeasesDir).some((entry) => entry.endsWith('.lease'))
+) {
+  if (Date.now() >= drainDeadline) {
+    throw new Error(`Timed out waiting ${drainTimeoutMs}ms for active mutations to finish`);
+  }
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
 }
 
 mkdirSync(backupRoot, { recursive: true });
@@ -67,3 +100,8 @@ writeFileSync(
 );
 
 console.log(`Backup created: ${backupRoot}`);
+} finally {
+  try {
+    unlinkSync(maintenanceLockPath);
+  } catch {}
+}

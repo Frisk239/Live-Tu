@@ -1,7 +1,7 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { Router } from 'express';
-import { requireAuth, requireRole } from './auth';
+import { requireAuth, requirePermission } from './auth';
 
 type Metric = { count: number; totalDurationMs: number; errors: number };
 const metrics = new Map<string, Metric>();
@@ -69,7 +69,9 @@ function requireMetricsAccess(req: Request, res: Response, next: NextFunction) {
   const configuredToken = process.env.METRICS_TOKEN || '';
   const providedToken = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (configuredToken && providedToken && safeEqual(providedToken, configuredToken)) return next();
-  return requireAuth(req, res, () => requireRole('admin')(req, res, next));
+  return requireAuth(req, res, () =>
+    requirePermission('admin.metrics.read')(req, res, next)
+  );
 }
 
 export const metricsRouter = Router();

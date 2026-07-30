@@ -9,8 +9,18 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { SessionManagerModal } from './components/SessionManagerModal';
 
 import { PackageCheck, Edit3 } from 'lucide-react';
-import { apiService, PipelineRunSnapshot } from './services/api';
+import { apiService, AuthUser, Permission, PipelineRunSnapshot } from './services/api';
 import { NotificationViewport, notify } from './services/notifications';
+
+const VIEW_READ_PERMISSIONS: Record<MainViewType, Permission> = {
+  pipeline: 'module.pipeline.read',
+  materials: 'module.materials.read',
+  tasks: 'module.tasks.read',
+  presets: 'module.presets.read',
+  knowledge: 'module.knowledge.read',
+  bgm: 'module.bgm.read',
+  models: 'module.models.read',
+};
 
 const MaterialsPageView = React.lazy(() =>
   import('./views/MaterialsPageView').then((module) => ({ default: module.MaterialsPageView }))
@@ -46,14 +56,84 @@ const Step5Card = React.lazy(() =>
   import('./components/Step5Card').then((module) => ({ default: module.Step5Card }))
 );
 
+function createEmptyPipelineData(): PipelineData {
+  return {
+    step1: {
+      status: 'pending',
+      inputs: {
+        mediaUrl: '',
+        platform: 'xiaohongshu',
+        bloggerType: 'daily_seeding',
+        viralReason: '真实场景自然光+产品质感特写',
+        textModel: 'Gemini 3.6 Flash',
+        imageModel: 'GPT Image 1',
+      },
+    },
+    step2: {
+      status: 'pending',
+      inputs: {
+        static_image_prompt: '',
+        imageUrl: '',
+        videoTone: 'xiaohongshu_healing',
+        durationSec: 4,
+        textModel: 'Gemini 3.6 Flash',
+        videoModel: 'Seedance 2.0 Fast',
+      },
+    },
+    step3: {
+      status: 'pending',
+      inputs: {
+        videoPrompt: '',
+        targetPlatform: 'xiaohongshu',
+        scriptPersona: '油皮亲妈',
+        textModel: 'Gemini 3.6 Flash',
+      },
+    },
+    step4: {
+      status: 'pending',
+      inputs: {
+        copywritingTitle: '',
+        tonePreference: '治愈',
+        commercialScenario: '抖音/小红书商业化',
+        textModel: 'Gemini 3.6 Flash',
+      },
+    },
+    step5: {
+      status: 'pending',
+      inputs: {
+        aspectRatio: '9:16',
+        subtitleStyle: '黄字黑边',
+      },
+    },
+  };
+}
+
+function clearUserScopedClientState(options?: { preserveActiveView?: boolean }) {
+  const keys = [
+    'aigc_active_view',
+    'aigc_cached_current_step',
+    'aigc_cached_pipeline_data',
+    'aigc_draft_task_id',
+    'aigc_active_pipeline_run_id',
+  ];
+  try {
+    for (const key of keys) {
+      if (options?.preserveActiveView && key === 'aigc_active_view') continue;
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // Storage may be unavailable in private browsing; in-memory state is still cleared.
+  }
+}
+
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isAuthChecked, setIsAuthChecked] = useState(false);
-  const [authUser, setAuthUser] = useState<{
-    id: string;
-    username: string;
-    role: 'admin' | 'operator';
-  } | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const can = useCallback(
+    (permission: Permission) => Boolean(authUser?.permissions.includes(permission)),
+    [authUser]
+  );
 
   useEffect(() => {
     let active = true;
@@ -83,18 +163,35 @@ export default function App() {
     return 'pipeline';
   });
 
+  const resolveAllowedView = useCallback(
+    (view: MainViewType): MainViewType =>
+      can(VIEW_READ_PERMISSIONS[view]) ? view : 'pipeline',
+    [can]
+  );
+
   const handleSetActiveView = useCallback((view: MainViewType) => {
-    setActiveView(view);
+    const allowedView = resolveAllowedView(view);
+    setActiveView(allowedView);
     try {
-      localStorage.setItem('aigc_active_view', view);
+      localStorage.setItem('aigc_active_view', allowedView);
     } catch {}
-    if (view === 'tasks') {
+    if (allowedView === 'tasks') {
       apiService.tasks.fetchTasks().then((list) => {
         if (list?.length) setTasks(list);
       }).catch(() => {});
       apiService.runs.list().then(setPipelineRuns).catch(() => {});
     }
-  }, []);
+  }, [resolveAllowedView]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    const allowedView = resolveAllowedView(activeView);
+    if (allowedView === activeView) return;
+    setActiveView(allowedView);
+    try {
+      localStorage.setItem('aigc_active_view', allowedView);
+    } catch {}
+  }, [activeView, authUser, resolveAllowedView]);
 
   // Sidebar Layout State
   const [sidebarWidth, setSidebarWidth] = useState<number>(240);
@@ -149,6 +246,20 @@ export default function App() {
     if (!isLoggedIn) return;
     let cancelled = false;
 
+    // Never render another account's in-memory or browser-cached business state while
+    // the new account is bootstrapping. Server data is the only source of truth.
+    setProducts([]);
+    setActiveProductId('');
+    setMaterials([]);
+    setTasks([]);
+    setPipelineRuns([]);
+    setPresets([]);
+    setPipelineData(createEmptyPipelineData());
+    setCurrentStep(1);
+    setDraftTaskIdSynced('');
+    setDraftSavedLabel(null);
+    clearUserScopedClientState({ preserveActiveView: true });
+
     const bootstrap = async () => {
       try {
         const [productList, materialList, taskList, presetList, models] = await Promise.all([
@@ -176,13 +287,11 @@ export default function App() {
 
         if (cancelled) return;
 
-        if (productList.length > 0) {
-          setProducts(productList);
-          setActiveProductId((prev) => prev || productList[0].id);
-        }
-        if (materialList.length > 0) setMaterials(materialList);
+        setProducts(productList);
+        setActiveProductId(productList[0]?.id || '');
+        setMaterials(materialList);
+        setTasks(taskList);
         if (taskList.length > 0) {
-          setTasks(taskList);
           // Restore working draft if present
           const savedDraftId = localStorage.getItem('aigc_draft_task_id');
           if (savedDraftId) {
@@ -200,7 +309,7 @@ export default function App() {
             }
           }
         }
-        if (presetList.length > 0) setPresets(presetList);
+        setPresets(presetList);
         if (models && models.textModels) {
           setModelConfig({
             textModels: models.textModels || [],
@@ -244,7 +353,7 @@ export default function App() {
   };
 
   const [modelConfig, setModelConfig] = useState<ModelConfigState>(DEFAULT_MODEL_CONFIG);
-  const userRole: 'admin' | 'user' = authUser?.role === 'admin' ? 'admin' : 'user';
+  const safeActiveView = resolveAllowedView(activeView);
 
   // Materials & Tasks State
   const [materials, setMaterials] = useState<MaterialItem[]>([]);
@@ -297,6 +406,7 @@ export default function App() {
   }, []);
 
   const [draftSavedLabel, setDraftSavedLabel] = useState<string | null>(null);
+  const [draftRetryNonce, setDraftRetryNonce] = useState(0);
   const [stepSources, setStepSources] = useState<Partial<Record<StepId, string>>>({});
   const [engineReadiness, setEngineReadiness] = useState<{
     ffmpegInstalled: boolean | null;
@@ -430,7 +540,24 @@ export default function App() {
     setActiveView('pipeline');
   };
 
-  const handleLoadWorkspace = useCallback((session: WorkspaceSession) => {
+  const saveCurrentDraftBeforeTransition = async () => {
+    const currentSerialized = JSON.stringify({ currentStep, pipelineData });
+    if (currentSerialized === lastSavedSnapshotRef.current) return true;
+    const saved = await persistTaskSnapshot(pipelineData, {
+      status: 'draft',
+      currentStep,
+      asDraft: true,
+    });
+    if (!saved) {
+      notify('当前修改尚未保存，已取消切换', 'error');
+      return false;
+    }
+    lastSavedSnapshotRef.current = currentSerialized;
+    return true;
+  };
+
+  const handleLoadWorkspace = async (session: WorkspaceSession) => {
+    if (!(await saveCurrentDraftBeforeTransition())) return;
     if (session.pipelineData) {
       setPipelineData(session.pipelineData);
       setCurrentStep(session.currentStep || 1);
@@ -438,7 +565,7 @@ export default function App() {
       lastSavedSnapshotRef.current = JSON.stringify({ currentStep: session.currentStep, pipelineData: session.pipelineData });
       setActiveView('pipeline');
     }
-  }, [setDraftTaskIdSynced]);
+  };
 
   const handleSaveAsPreset = async () => {
     const title = window.prompt('预设名称', pipelineData.step3.output?.title || '自定义爆款模版');
@@ -487,63 +614,17 @@ export default function App() {
         }
       }
     } catch {}
-    return {
-      step1: {
-        status: 'pending',
-        inputs: {
-          mediaUrl: '',
-          platform: 'xiaohongshu',
-          bloggerType: 'daily_seeding',
-          viralReason: '真实场景自然光+产品质感特写',
-          textModel: 'Gemini 3.6 Flash',
-          imageModel: 'GPT Image 1',
-        },
-      },
-      step2: {
-        status: 'pending',
-        inputs: {
-          static_image_prompt: '',
-          imageUrl: '',
-          videoTone: 'xiaohongshu_healing',
-          durationSec: 4,
-          textModel: 'Gemini 3.6 Flash',
-          videoModel: 'Seedance 2.0 Fast',
-        },
-      },
-      step3: {
-        status: 'pending',
-        inputs: {
-          videoPrompt: '',
-          targetPlatform: 'xiaohongshu',
-          scriptPersona: '油皮亲妈',
-          textModel: 'Gemini 3.6 Flash',
-        },
-      },
-      step4: {
-        status: 'pending',
-        inputs: {
-          copywritingTitle: '',
-          tonePreference: '治愈',
-          commercialScenario: '抖音/小红书商业化',
-          textModel: 'Gemini 3.6 Flash',
-        },
-      },
-      step5: {
-        status: 'pending',
-        inputs: {
-          aspectRatio: '9:16',
-          subtitleStyle: '黄字黑边',
-        },
-      },
-    };
+    return createEmptyPipelineData();
   });
 
   // Sync state to local cache for instant refresh
+  const latestSnapshotFingerprintRef = useRef('');
   useEffect(() => {
     try {
       localStorage.setItem('aigc_cached_current_step', String(currentStep));
       localStorage.setItem('aigc_cached_pipeline_data', JSON.stringify(pipelineData));
     } catch {}
+    latestSnapshotFingerprintRef.current = JSON.stringify({ currentStep, pipelineData });
   }, [currentStep, pipelineData]);
 
   /** Downstream steps still hold old artifacts after upstream re-run */
@@ -590,22 +671,29 @@ export default function App() {
       const latestFingerprint = JSON.stringify({ pipelineData, currentStep });
       if (latestFingerprint === lastSavedSnapshotRef.current) return;
 
-      lastSavedSnapshotRef.current = latestFingerprint;
       const finished =
         pipelineData.step5.status === 'completed' && Boolean(pipelineData.step5.output);
-      void persistTaskSnapshot(pipelineData, {
-        asDraft: true,
-        status: finished ? 'completed' : 'generating',
-        currentStep,
-        title: finished
-          ? pipelineData.step3.output?.title || '已完成反推工程'
-          : '工作台草稿（自动保存）',
-      });
+      void (async () => {
+        const saved = await persistTaskSnapshot(pipelineData, {
+          asDraft: true,
+          status: finished ? 'completed' : 'generating',
+          currentStep,
+          title: finished
+            ? pipelineData.step3.output?.title || '已完成反推工程'
+            : '工作台草稿（自动保存）',
+        });
+        if (saved && latestSnapshotFingerprintRef.current === latestFingerprint) {
+          lastSavedSnapshotRef.current = latestFingerprint;
+        } else if (!saved) {
+          notify('草稿自动保存失败，网络恢复后将自动重试', 'error');
+          setDraftRetryNonce((previous) => previous + 1);
+        }
+      })();
     }, 3500);
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pipelineData, currentStep, isAutoPipelineRunning]);
+  }, [pipelineData, currentStep, isAutoPipelineRunning, draftRetryNonce]);
 
   // Handle Login Success
   const handleLoginSuccess = async (username: string, password: string) => {
@@ -620,9 +708,42 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    await apiService.auth.logout();
-    setAuthUser(null);
-    setIsLoggedIn(false);
+    if (activeRunIdRef.current) {
+      try {
+        await apiService.runs.cancel(activeRunIdRef.current);
+      } catch (error) {
+        console.warn('[App] active run cancellation during logout failed:', error);
+      }
+    }
+    try {
+      await apiService.auth.logout();
+    } finally {
+      activeAbortControllerRef.current?.abort();
+      activeAbortControllerRef.current = null;
+      activeRunIdRef.current = null;
+      clearUserScopedClientState();
+      setProducts([]);
+      setActiveProductId('');
+      setMaterials([]);
+      setTasks([]);
+      setPipelineRuns([]);
+      setPresets([]);
+      setModelConfig(DEFAULT_MODEL_CONFIG);
+      setPipelineData(createEmptyPipelineData());
+      setCurrentStep(1);
+      setDraftTaskIdSynced('');
+      setDraftSavedLabel(null);
+      lastSavedSnapshotRef.current = '';
+      setStepSources({});
+      setStaleUpstream({ step2: false, step3: false, step4: false, step5: false });
+      setActiveView('pipeline');
+      setIsAutoPipelineRunning(false);
+      setAutoProgress(null);
+      setIsOnboardingOpen(false);
+      setIsSessionManagerOpen(false);
+      setAuthUser(null);
+      setIsLoggedIn(false);
+    }
   };
 
   // Sync handlers for user-controlled re-inheritance
@@ -873,9 +994,20 @@ export default function App() {
     });
   }, [currentStep]);
 
-  const handleClearWorkbench = useCallback(() => {
+  const handleClearWorkbench = async () => {
     if (!confirm('确定要一键清空当前工作台吗？清空后 5 个步骤的所有输入与产物均将被重置。')) {
       return;
+    }
+    if (!(await saveCurrentDraftBeforeTransition())) return;
+    if (activeRunIdRef.current) {
+      try {
+        await apiService.runs.cancel(activeRunIdRef.current);
+        activeRunIdRef.current = null;
+        localStorage.removeItem('aigc_active_pipeline_run_id');
+      } catch (error: any) {
+        notify(error?.message || '后台任务取消失败，清空操作已取消', 'error');
+        return;
+      }
     }
     if (activeAbortControllerRef.current) {
       activeAbortControllerRef.current.abort();
@@ -945,7 +1077,7 @@ export default function App() {
       },
     });
     setCurrentStep(1);
-  }, []);
+  };
 
   // Full end-to-end automated reverse inference runner
   const runFullPipelineAutoLegacy = async () => {
@@ -1304,7 +1436,19 @@ export default function App() {
   };
 
   // Reset entire pipeline
-  const handleResetAll = () => {
+  const handleResetAll = async () => {
+    if (!window.confirm('确认清空当前工作台吗？未保存修改会先保存，后台生成任务会被取消。')) return;
+    if (!(await saveCurrentDraftBeforeTransition())) return;
+    if (activeRunIdRef.current) {
+      try {
+        await apiService.runs.cancel(activeRunIdRef.current);
+        activeRunIdRef.current = null;
+        localStorage.removeItem('aigc_active_pipeline_run_id');
+      } catch (error: any) {
+        notify(error?.message || '后台任务取消失败，清空操作已取消', 'error');
+        return;
+      }
+    }
     setStepSources({});
     setDraftSavedLabel(null);
     setDraftTaskIdSynced('');
@@ -1936,12 +2080,12 @@ export default function App() {
         setSidebarWidth={handleSetSidebarWidth}
         isExpanded={isSidebarExpanded}
         onToggleExpand={handleToggleSidebar}
-        activeView={activeView}
+        activeView={safeActiveView}
         onChangeView={(view) => handleSetActiveView(view)}
         onOpenOnboarding={() => setIsOnboardingOpen(true)}
         onResetAll={handleResetAll}
         onLogout={handleLogout}
-        isAdmin={userRole === 'admin'}
+        can={can}
         activeProduct={activeProduct}
         products={products}
         onSelectActiveProduct={(id) => setActiveProductId(id)}
@@ -1970,7 +2114,7 @@ export default function App() {
             }
           >
           {/* 1. MATERIALS PAGE VIEW */}
-          {activeView === 'materials' && (
+          {safeActiveView === 'materials' && can('module.materials.read') && (
             <MaterialsPageView
               materials={materials}
               onAddMaterials={(newItems) =>
@@ -2003,7 +2147,7 @@ export default function App() {
           )}
 
           {/* 2. TASKS PAGE VIEW */}
-          {activeView === 'tasks' && (
+          {safeActiveView === 'tasks' && can('module.tasks.read') && (
             <TasksPageView
               tasks={tasks}
               pipelineRuns={pipelineRuns}
@@ -2021,7 +2165,8 @@ export default function App() {
                 setCurrentStep(Math.min(5, Math.max(1, run.currentStep)) as StepId);
                 handleSetActiveView('pipeline');
               }}
-              onResumeRun={(run) => {
+              onResumeRun={async (run) => {
+                if (!(await saveCurrentDraftBeforeTransition())) return;
                 setPipelineData((previous) => {
                   const next = { ...previous } as PipelineData;
                   for (const step of run.steps) {
@@ -2050,7 +2195,8 @@ export default function App() {
                 }
                 handleSetActiveView('pipeline');
               }}
-              onSelectTask={(task) => {
+              onSelectTask={async (task) => {
+                if (!(await saveCurrentDraftBeforeTransition())) return;
                 const data = task.pipelineData;
                 if (data?.step1) {
                   setPipelineData(data);
@@ -2069,7 +2215,7 @@ export default function App() {
           )}
 
           {/* 3. PRESETS PAGE VIEW */}
-          {activeView === 'presets' && (
+          {safeActiveView === 'presets' && can('module.presets.read') && (
             <PresetsPageView
               presets={presets}
               onSelectPreset={handleSelectPreset}
@@ -2078,17 +2224,17 @@ export default function App() {
           )}
 
           {/* 4. MODELS PAGE VIEW */}
-          {activeView === 'models' && (
+          {safeActiveView === 'models' && can('module.models.read') && (
             <ModelsPageView
               config={modelConfig}
               onSaveConfig={(newConfig) => setModelConfig(newConfig)}
-              userRole={userRole}
+              canWrite={can('module.models.write')}
               onBackToPipeline={() => handleSetActiveView('pipeline')}
             />
           )}
 
           {/* 5. KNOWLEDGE PAGE VIEW */}
-          {activeView === 'knowledge' && (
+          {safeActiveView === 'knowledge' && can('module.knowledge.read') && (
             <KnowledgePageView
               products={products}
               activeProductId={activeProductId}
@@ -2099,13 +2245,13 @@ export default function App() {
           )}
 
           {/* 5b. BGM LIBRARY */}
-          {activeView === 'bgm' && (
+          {safeActiveView === 'bgm' && can('module.bgm.read') && (
             <BgmPageView onBackToPipeline={() => handleSetActiveView('pipeline')} />
           )}
           </React.Suspense>
 
           {/* 6. MAIN PIPELINE VIEW */}
-          {activeView === 'pipeline' && (
+          {safeActiveView === 'pipeline' && can('module.pipeline.read') && (
             <div className="space-y-6">
               {/* Active Selling Points Banner */}
               {activeProduct && products.length > 0 ? (

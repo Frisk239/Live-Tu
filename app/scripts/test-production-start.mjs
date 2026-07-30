@@ -314,8 +314,16 @@ try {
     }),
   });
   const operatorCookie = operatorLogin.headers.get('set-cookie')?.split(';', 1)[0];
+  const operatorLoginBody = await operatorLogin.json();
   if (!operatorLogin.ok || !operatorCookie) {
     throw new Error(`Operator login failed (${operatorLogin.status})`);
+  }
+  if (
+    operatorLoginBody.user?.permissions?.includes('module.models.read') ||
+    operatorLoginBody.user?.permissions?.includes('module.knowledge.read') ||
+    operatorLoginBody.user?.permissions?.includes('module.bgm.read')
+  ) {
+    throw new Error('Operator received an administration module permission');
   }
 
   const forbiddenModels = await fetch(`${baseUrl}/api/models/config`, {
@@ -324,9 +332,9 @@ try {
   const operatorProducts = await fetch(`${baseUrl}/api/products`, {
     headers: { Cookie: operatorCookie },
   });
-  if (forbiddenModels.status !== 403 || !operatorProducts.ok) {
+  if (forbiddenModels.status !== 403 || operatorProducts.status !== 403) {
     throw new Error(
-      `Role enforcement failed (models=${forbiddenModels.status}, products=${operatorProducts.status})`
+      `Permission enforcement failed (models=${forbiddenModels.status}, products=${operatorProducts.status})`
     );
   }
   const forbiddenMetrics = await fetch(`${baseUrl}/api/metrics`, {
@@ -427,7 +435,7 @@ try {
   }
   const unavailableOptimization = await fetch(`${baseUrl}/api/selling-points/optimize`, {
     method: 'POST',
-    headers: { Cookie: operatorCookie, 'Content-Type': 'application/json' },
+    headers: { Cookie: cookie, 'Content-Type': 'application/json' },
     body: JSON.stringify({ rawText: 'No verified efficacy evidence supplied.' }),
   });
   const unavailableOptimizationBody = await unavailableOptimization.json();

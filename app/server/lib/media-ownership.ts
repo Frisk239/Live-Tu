@@ -55,6 +55,17 @@ export function canReadOwnedMedia(path: string, ownerId: string, isAdmin: boolea
   ).get(ownerId, normalized));
 }
 
+export function canUseMediaReference(
+  value: string,
+  ownerId: string,
+  isAdmin: boolean
+): boolean {
+  if (!value) return true;
+  if (value.startsWith('https://') || value.startsWith('http://')) return true;
+  const normalized = normalizedUploadPath(value);
+  return Boolean(normalized && canReadOwnedMedia(normalized, ownerId, isAdmin));
+}
+
 export function requireOwnedUpload(req: Request, res: Response, next: NextFunction) {
   const mediaPath = `/uploads${req.path}`;
   if (

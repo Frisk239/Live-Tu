@@ -88,7 +88,10 @@ test('upgrades a populated legacy database without losing business data', async 
     const versions = migrated
       .prepare('SELECT version FROM schema_migrations ORDER BY version')
       .all() as Array<{ version: number }>;
-    assert.deepEqual(versions.map((row) => row.version), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    assert.deepEqual(
+      versions.map((row) => row.version),
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+    );
 
     const tableColumns = (table: string) =>
       new Set(
@@ -105,6 +108,57 @@ test('upgrades a populated legacy database without losing business data', async 
     assert.ok(tableColumns('tasks').has('owner_id'));
     assert.ok(tableColumns('presets').has('category'));
     assert.ok(tableColumns('presets').has('formula'));
+    assert.ok(
+      migrated
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'permissions'")
+        .get()
+    );
+    assert.ok(
+      migrated
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'role_permissions'"
+        )
+        .get()
+    );
+    assert.ok(tableColumns('permissions').has('key'));
+    assert.ok(tableColumns('permissions').has('name'));
+    assert.ok(
+      migrated
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'seedance_task_ownership'"
+        )
+        .get()
+    );
+    assert.equal(
+      (migrated.prepare('SELECT COUNT(*) AS count FROM permissions').get() as {
+        count: number;
+      }).count,
+      17
+    );
+    assert.deepEqual(
+      (
+        migrated
+          .prepare(
+            "SELECT permission_key FROM role_permissions WHERE role = 'operator' ORDER BY permission_key"
+          )
+          .all() as Array<{ permission_key: string }>
+      ).map((row) => row.permission_key),
+      [
+        'module.materials.read',
+        'module.materials.write',
+        'module.pipeline.read',
+        'module.pipeline.write',
+        'module.presets.read',
+        'module.tasks.read',
+        'module.tasks.write',
+      ]
+    );
+    assert.equal(
+      (migrated.prepare(
+        "SELECT COUNT(*) AS count FROM role_permissions WHERE role = 'admin'"
+      ).get() as { count: number }).count,
+      17
+    );
 
     assert.equal(
       (migrated.prepare("SELECT name FROM products WHERE id = 'legacy-product'").get() as {

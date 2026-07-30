@@ -26,10 +26,12 @@ import {
   hasSeedanceConfig,
   buildSeedanceGenerationBody,
 } from './seedance';
-import { runFfmpegRender } from './render';
+import { cacheRemoteMedia, runFfmpegRender } from './render';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { canUseMediaReference } from '../lib/media-ownership';
+import { registerSeedanceTaskOwner } from '../lib/seedance-ownership';
 
 export const pipelineRouter = Router();
 
@@ -250,6 +252,10 @@ pipelineRouter.post('/generate-image', async (req, res) => {
   }
 
   try {
+    const ownerId = req.authUser?.id || req.body?._ownerId || null;
+    if (!ownerId) {
+      return res.status(400).json({ success: false, error: '无法确定生成素材的所有者' });
+    }
     const gatewayRes = await callImageGenerationGateway({
       prompt,
       modelId: imageModel,
@@ -288,18 +294,14 @@ pipelineRouter.post('/generate-image', async (req, res) => {
       imageUrl = `/uploads/materials/${filename}`;
     } else if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
       try {
-        const remote = await fetch(imageUrl);
-        if (remote.ok) {
-          const buf = Buffer.from(await remote.arrayBuffer());
-          const ct = remote.headers.get('content-type') || '';
-          const ext = ct.includes('jpeg') || ct.includes('jpg') ? 'jpg' : ct.includes('webp') ? 'webp' : 'png';
-          const filename = `gen_img_${Date.now()}.${ext}`;
-          const targetPath = path.join(materialsDir, filename);
-          fs.writeFileSync(targetPath, buf);
-          imageUrl = `/uploads/materials/${filename}`;
-        }
-      } catch {
-        // keep remote URL
+        const cachedPath = await cacheRemoteMedia(imageUrl, 'image', ownerId);
+        imageUrl = `/uploads/renders/${path.basename(cachedPath)}`;
+      } catch (error: any) {
+        return res.status(error?.status || 502).json({
+          success: false,
+          error: `生成图片安全下载失败: ${error?.message || error}`,
+          source,
+        });
       }
     }
 
@@ -308,10 +310,6 @@ pipelineRouter.post('/generate-image', async (req, res) => {
     const filePath = imageUrl.startsWith('/uploads/')
       ? imageUrl.replace(/^\//, '')
       : imageUrl;
-    const ownerId = req.authUser?.id || req.body?._ownerId || null;
-    if (!ownerId) {
-      return res.status(400).json({ success: false, error: '无法确定生成素材的所有者' });
-    }
     try {
       const stmt = db.prepare(`
         INSERT INTO materials (
@@ -765,6 +763,11 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
             const seedanceRes = await createSeedanceVideo(prepared.body);
             const task = normalizeSeedanceTask(seedanceRes);
             shotSeedanceTaskId = task.id;
+            if (task.id) {
+              const ownerId = req.authUser?.id || inputs._ownerId;
+              if (!ownerId) throw new Error('Seedance task owner is required');
+              registerSeedanceTaskOwner(String(task.id), ownerId, 'pipeline-multi-shot');
+            }
             shotStatus = (task.status === 'success' || task.status === 'completed') ? 'completed' : 'generating';
             shotVideoUrl = task.url || undefined;
           } else {
@@ -945,6 +948,11 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
       } else {
         const seedanceRes = await createSeedanceVideo(prepared.body);
         const task = normalizeSeedanceTask(seedanceRes);
+        if (task.id) {
+          const ownerId = req.authUser?.id || inputs._ownerId;
+          if (!ownerId) throw new Error('Seedance task owner is required');
+          registerSeedanceTaskOwner(String(task.id), ownerId, 'pipeline-step2');
+        }
         data.seedanceTaskId = task.id;
         data.seedanceStatus = task.status;
         data.previewVideoUrl = task.url || undefined;
@@ -1067,6 +1075,7 @@ pipelineRouter.get('/shot-tasks/:sessionId', async (req, res) => {
           outputFilename: `concat_${sessionId}.mp4`,
           durationSec: completedUrls.length * 4,
           ownerId: req.authUser?.id || rows[0]?.owner_id,
+          isAdmin: req.authUser?.role === 'admin',
         });
         if (renderRes.success && renderRes.data?.videoUrl) {
           concatenatedVideoUrl = renderRes.data.videoUrl;
@@ -1141,6 +1150,7 @@ pipelineRouter.post('/concat-shots', async (req, res) => {
       outputFilename: `concat_${sessionId || Date.now()}.mp4`,
       durationSec: targetUrls.length * 4,
       ownerId: req.authUser?.id || req.body?._ownerId,
+      isAdmin: req.authUser?.role === 'admin',
     });
 
     if (!renderRes.success || !renderRes.data) {
@@ -1519,6 +1529,24 @@ pipelineRouter.post('/step5', async (req, res) => {
 
   const resolvedVideo = videoSourceUrl || concatenatedVideoUrl || previewVideoUrl || inputs.videoUrl || '';
   const resolvedAudio = audioSourceUrl || inputs.bgmUrl || '';
+  const effectiveOwnerId = req.authUser?.id || inputs._ownerId;
+  const isAdmin = req.authUser?.role === 'admin';
+  const requestedMedia = [
+    ...(Array.isArray(rawVideoClips) ? rawVideoClips : []),
+    resolvedVideo,
+    resolvedAudio,
+  ].filter(Boolean);
+  if (
+    !effectiveOwnerId ||
+    requestedMedia.some((value) =>
+      !canUseMediaReference(String(value), effectiveOwnerId, isAdmin)
+    )
+  ) {
+    return res.status(403).json({
+      success: false,
+      error: 'One or more media files are not accessible to this user',
+    });
+  }
 
   const brandStamp = `${product.name}`;
   const timeline: Array<{
@@ -1667,6 +1695,7 @@ pipelineRouter.post('/step5', async (req, res) => {
     outputFilename: filename,
     durationSec,
     ownerId: req.authUser?.id || inputs._ownerId,
+    isAdmin: req.authUser?.role === 'admin',
   });
 
   if (!renderResult.success || !renderResult.data) {

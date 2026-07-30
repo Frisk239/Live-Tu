@@ -19,10 +19,56 @@ function isPrivateIpv4(address: string): boolean {
   );
 }
 
+function mappedIpv4FromIpv6(address: string): string | null {
+  let normalized = address.toLowerCase().split('%', 1)[0];
+  const dottedSuffix = normalized.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+  if (dottedSuffix) {
+    const octets = dottedSuffix[2].split('.').map(Number);
+    if (
+      octets.length !== 4 ||
+      octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+    ) return null;
+    normalized =
+      `${dottedSuffix[1]}${((octets[0] << 8) | octets[1]).toString(16)}:` +
+      `${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+
+  const halves = normalized.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':').filter(Boolean) : [];
+  const right = halves.length === 2 && halves[1]
+    ? halves[1].split(':').filter(Boolean)
+    : [];
+  const omitted = halves.length === 2 ? 8 - left.length - right.length : 0;
+  if (omitted < 0) return null;
+  const segments = [
+    ...left,
+    ...Array.from({ length: omitted }, () => '0'),
+    ...right,
+  ];
+  if (
+    segments.length !== 8 ||
+    segments.some((segment) => !/^[0-9a-f]{1,4}$/.test(segment))
+  ) return null;
+  const values = segments.map((segment) => Number.parseInt(segment, 16));
+  if (
+    values.slice(0, 5).some((segment) => segment !== 0) ||
+    values[5] !== 0xffff
+  ) return null;
+  return [
+    values[6] >> 8,
+    values[6] & 0xff,
+    values[7] >> 8,
+    values[7] & 0xff,
+  ].join('.');
+}
+
 function isPrivateIp(address: string): boolean {
   if (net.isIPv4(address)) return isPrivateIpv4(address);
   if (!net.isIPv6(address)) return true;
   const normalized = address.toLowerCase();
+  const mappedIpv4 = mappedIpv4FromIpv6(normalized);
+  if (mappedIpv4) return isPrivateIpv4(mappedIpv4);
   return (
     normalized === '::' ||
     normalized === '::1' ||
@@ -32,9 +78,7 @@ function isPrivateIp(address: string): boolean {
     normalized.startsWith('fe9') ||
     normalized.startsWith('fea') ||
     normalized.startsWith('feb') ||
-    normalized.startsWith('::ffff:127.') ||
-    normalized.startsWith('::ffff:10.') ||
-    normalized.startsWith('::ffff:192.168.')
+    normalized.startsWith('ff')
   );
 }
 

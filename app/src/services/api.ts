@@ -34,6 +34,43 @@ export interface BgmTrack {
   created_at?: string;
 }
 
+export type Permission =
+  | 'module.pipeline.read'
+  | 'module.pipeline.write'
+  | 'module.materials.read'
+  | 'module.materials.write'
+  | 'module.tasks.read'
+  | 'module.tasks.write'
+  | 'module.presets.read'
+  | 'module.presets.write'
+  | 'module.knowledge.read'
+  | 'module.knowledge.write'
+  | 'module.bgm.read'
+  | 'module.bgm.write'
+  | 'module.models.read'
+  | 'module.models.write'
+  | 'admin.users.manage'
+  | 'admin.metrics.read'
+  | 'admin.audit.read';
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  role: 'admin' | 'operator';
+  permissions: string[];
+}
+
+function parseAuthUser(value: any): AuthUser {
+  return {
+    id: String(value?.id || ''),
+    username: String(value?.username || ''),
+    role: value?.role === 'admin' ? 'admin' : 'operator',
+    permissions: Array.isArray(value?.permissions)
+      ? value.permissions.filter((permission: unknown): permission is string => typeof permission === 'string')
+      : [],
+  };
+}
+
 export interface PipelineRunSnapshot {
   id: string;
   ownerId: string;
@@ -66,14 +103,14 @@ export const apiService = {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.success) throw new Error(json.error || '登录失败');
-      return json.user as { id: string; username: string; role: 'admin' | 'operator' };
+      return parseAuthUser(json.user);
     },
 
     async me() {
       const res = await fetch(`${API_BASE_URL}/auth/me`);
       if (!res.ok) return null;
       const json = await res.json();
-      return json.user as { id: string; username: string; role: 'admin' | 'operator' };
+      return parseAuthUser(json.user);
     },
 
     async logout() {

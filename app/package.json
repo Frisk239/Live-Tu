@@ -13,8 +13,9 @@
     "test:production": "npm run build && node scripts/test-production-start.mjs",
     "test:orchestrator": "tsx --test server/test/orchestrator.test.ts",
     "test:migrations": "tsx --test server/test/migrations.test.ts",
+    "test:permissions": "tsx --test server/test/permissions-api.test.ts",
     "test:multi-shot": "tsx --test server/test/multi-shot.test.ts",
-    "test:security": "tsx --test server/test/safe-url.test.ts server/test/render-storage.test.ts server/test/signed-media.test.ts",
+    "test:security": "tsx --test server/test/safe-url.test.ts server/test/safe-url-mapped-ipv6.test.ts server/test/render-storage.test.ts server/test/render-ownership.test.ts server/test/seedance-ownership.test.ts server/test/storage-readiness.test.ts server/test/minio-runtime-contract.test.ts server/test/signed-media.test.ts",
     "backup": "node scripts/backup.mjs",
     "restore": "node scripts/restore.mjs",
     "prune": "node scripts/prune.mjs",
@@ -23,7 +24,7 @@
     "test:e2e:seedance": "node scripts/run-paid-e2e.mjs e2e/seedance-video.spec.ts",
     "test:e2e:durable": "node scripts/run-paid-e2e.mjs e2e/durable-run.spec.ts",
     "test:e2e:paid": "node scripts/run-paid-e2e.mjs e2e/seedance-video.spec.ts e2e/durable-run.spec.ts",
-    "test:e2e:all": "playwright test e2e/smoke.spec.ts e2e/step5-readiness.spec.ts e2e/accessibility.spec.ts"
+    "test:e2e:all": "playwright test e2e/smoke.spec.ts e2e/step5-readiness.spec.ts e2e/accessibility.spec.ts e2e/permissions.spec.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

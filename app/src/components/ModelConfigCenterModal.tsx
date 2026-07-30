@@ -31,7 +31,7 @@ interface ModelConfigCenterModalProps {
   onClose: () => void;
   config: ModelConfigState;
   onSaveConfig: (newConfig: ModelConfigState) => void;
-  userRole: 'admin' | 'user';
+  canWrite: boolean;
   onToggleRole?: () => void;
 }
 
@@ -40,7 +40,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
   onClose,
   config,
   onSaveConfig,
-  userRole,
+  canWrite,
 }) => {
   const [localConfig, setLocalConfig] = useState<ModelConfigState>(config);
   const [activeTab, setActiveTab] = useState<'text' | 'image' | 'video'>('text');
@@ -102,7 +102,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
   };
 
   const handleToggleEnableImage = (id: ImageModelName) => {
-    if (userRole !== 'admin') return;
+    if (!canWrite) return;
     const nextConfig = {
       ...localConfig,
       imageModels: localConfig.imageModels.map((m) =>
@@ -113,7 +113,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
   };
 
   const handleToggleEnableVideo = (id: VideoModelName) => {
-    if (userRole !== 'admin') return;
+    if (!canWrite) return;
     const nextConfig = {
       ...localConfig,
       videoModels: localConfig.videoModels.map((m) =>
@@ -124,7 +124,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
   };
 
   const handleSetDefaultImage = (id: ImageModelName) => {
-    if (userRole !== 'admin') return;
+    if (!canWrite) return;
     const nextConfig = {
       ...localConfig,
       defaultImageModel: id,
@@ -139,7 +139,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
   };
 
   const handleSetDefaultVideo = (id: VideoModelName) => {
-    if (userRole !== 'admin') return;
+    if (!canWrite) return;
     const nextConfig = {
       ...localConfig,
       defaultVideoModel: id,
@@ -154,7 +154,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
   };
 
   const handleDeleteModel = (id: string, type: 'image' | 'video') => {
-    if (userRole !== 'admin') return;
+    if (!canWrite) return;
     if (!window.confirm(`确定要删除模型 [${id}] 吗？`)) return;
 
     let nextConfig: ModelConfigState;
@@ -279,13 +279,13 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
                 </h2>
                 <span
                   className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border flex items-center gap-1 ${
-                    userRole === 'admin'
+                    canWrite
                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                       : 'bg-slate-100 text-slate-600 border-slate-200'
                   }`}
                 >
                   <ShieldCheck className="w-3.5 h-3.5" />
-                  {userRole === 'admin' ? '超级管理员模式' : '普通用户模式 (只读选择)'}
+                  {canWrite ? '模型管理权限' : '模型只读权限'}
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
@@ -305,7 +305,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
         </div>
 
         {/* User Role Banner */}
-        {userRole === 'user' && (
+        {!canWrite && (
           <div className="bg-amber-50 border-b border-amber-200/60 px-6 py-2.5 flex items-center justify-between text-xs text-amber-800">
             <div className="flex items-center gap-2">
               <Lock className="w-4 h-4 shrink-0 text-amber-600" />
@@ -355,10 +355,10 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
             <label className="flex items-center gap-2 text-xs font-medium text-slate-600 cursor-pointer">
               <input
                 type="checkbox"
-                disabled={userRole !== 'admin'}
+                disabled={!canWrite}
                 checked={localConfig.autoRecommendationEnabled}
                 onChange={(e) =>
-                  userRole === 'admin' &&
+                  canWrite &&
                   setLocalConfig((prev) => ({
                     ...prev,
                     autoRecommendationEnabled: e.target.checked,
@@ -370,7 +370,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
               <span>启用 AI 智能自动场景匹配与模型推荐</span>
             </label>
 
-            {userRole === 'admin' && (
+            {canWrite && (
               <button
                 onClick={() => handleOpenAddForm(activeTab)}
                 className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-all flex items-center gap-1.5 shadow-2xs shrink-0 cursor-pointer"
@@ -434,7 +434,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
 
                         {/* Admin quick actions */}
                         <div className="flex items-center gap-1 shrink-0">
-                          {userRole === 'admin' && (
+                          {canWrite && (
                             <>
                               <button
                                 onClick={() => handleOpenEditForm(model, activeTab)}
@@ -454,7 +454,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
                           )}
 
                           <button
-                            disabled={userRole !== 'admin'}
+                            disabled={!canWrite}
                             onClick={() =>
                               activeTab === 'image'
                                 ? handleToggleEnableImage(model.id as any)
@@ -464,7 +464,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
                               model.enabled
                                 ? 'bg-emerald-600 text-white'
                                 : 'bg-slate-200 text-slate-500'
-                            } ${userRole !== 'admin' ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}
+                            } ${!canWrite ? 'cursor-not-allowed opacity-80' : 'cursor-pointer'}`}
                           >
                             {model.enabled ? '已启用' : '已停用'}
                           </button>
@@ -546,7 +546,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
                         )}
                       </div>
 
-                      {userRole === 'admin' && model.enabled && !model.isDefault && (
+                      {canWrite && model.enabled && !model.isDefault && (
                         <button
                           onClick={() =>
                             activeTab === 'image'
@@ -581,7 +581,7 @@ export const ModelConfigCenterModal: React.FC<ModelConfigCenterModalProps> = ({
             >
               关闭
             </button>
-            {userRole === 'admin' && (
+            {canWrite && (
               <button
                 onClick={handleSave}
                 className="px-5 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"

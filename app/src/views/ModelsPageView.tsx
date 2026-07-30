@@ -28,7 +28,7 @@ import { notify } from '../services/notifications';
 interface ModelsPageViewProps {
   config: ModelConfigState;
   onSaveConfig: (newConfig: ModelConfigState) => void;
-  userRole: 'admin' | 'user';
+  canWrite: boolean;
   onToggleRole?: () => void;
   onBackToPipeline: () => void;
 }
@@ -36,7 +36,7 @@ interface ModelsPageViewProps {
 export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
   config,
   onSaveConfig,
-  userRole,
+  canWrite,
   onBackToPipeline,
 }) => {
   const [localConfig, setLocalConfig] = useState<ModelConfigState>(config);
@@ -108,7 +108,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
   };
 
   const handleToggleEnable = (id: string, category: 'text' | 'image' | 'video') => {
-    if (userRole !== 'admin') return;
+    if (!canWrite) return;
     const key = category === 'text' ? 'textModels' : category === 'image' ? 'imageModels' : 'videoModels';
     const nextConfig = {
       ...localConfig,
@@ -118,7 +118,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
   };
 
   const handleSetDefault = async (id: string, category: 'text' | 'image' | 'video') => {
-    if (userRole !== 'admin') return;
+    if (!canWrite) return;
     let nextConfig: ModelConfigState;
     if (category === 'text') {
       nextConfig = {
@@ -147,7 +147,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
   };
 
   const handleDeleteModel = (id: string, type: 'text' | 'image' | 'video') => {
-    if (userRole !== 'admin') return;
+    if (!canWrite) return;
     if (!window.confirm(`确定要删除模型 [${id}] 吗？`)) return;
 
     let nextConfig: ModelConfigState;
@@ -272,17 +272,17 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
               <h1 className="text-lg font-bold text-slate-900">大模型与提示词规则配置中心</h1>
               <span
                 className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border flex items-center gap-1 ${
-                  userRole === 'admin'
+                  canWrite
                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                     : 'bg-blue-50 text-blue-700 border-blue-200/60'
                 }`}
               >
                 <ShieldCheck className="w-3.5 h-3.5" />
-                {userRole === 'admin' ? '超级管理员视图 (完整权限)' : '普通用户视图 (只读展示)'}
+                {canWrite ? '模型管理权限' : '模型只读权限'}
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              系统根据当前用户角色（{userRole === 'admin' ? '管理员' : '普通用户'}）自动匹配并接入模型配置。
+              当前账号的模型权限由服务端权限目录决定；可写权限允许管理接入配置，否则仅可查看。
             </p>
           </div>
         </div>
@@ -324,7 +324,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
         </div>
 
         <div className="flex items-center gap-3">
-          {userRole === 'admin' && (
+          {canWrite && (
             <button
               onClick={() => handleOpenAddForm(activeTab)}
               className="px-4 py-2 rounded-lg text-xs font-semibold bg-white border border-slate-200/80 hover:bg-slate-50 text-slate-700 transition-all shadow-2xs flex items-center gap-1.5 cursor-pointer"
@@ -337,7 +337,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
             </button>
           )}
 
-          {userRole === 'admin' && (
+          {canWrite && (
             <button
               onClick={handleSave}
               className="px-5 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white shadow-2xs transition-all flex items-center gap-1.5 cursor-pointer"
@@ -426,7 +426,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
                       </div>
 
                       <div className="flex items-center gap-1 shrink-0">
-                        {userRole === 'admin' && (
+                        {canWrite && (
                           <>
                             <button
                               onClick={() => handleOpenEditForm(model, activeTab)}
@@ -446,7 +446,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
                         )}
 
                         <button
-                          disabled={userRole !== 'admin'}
+                          disabled={!canWrite}
                           onClick={() => handleToggleEnable(model.id, activeTab)}
                           className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
                             model.enabled
@@ -530,7 +530,7 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
                       )}
                     </div>
 
-                    {userRole === 'admin' && model.enabled && !model.isDefault && (
+                    {canWrite && model.enabled && !model.isDefault && (
                       <button
                         onClick={() => handleSetDefault(model.id, activeTab)}
                         className="text-xs text-blue-600 hover:text-blue-700 font-semibold flex items-center gap-1 cursor-pointer"

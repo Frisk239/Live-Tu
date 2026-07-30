@@ -2,6 +2,11 @@ import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
 import { defaultPresets } from './preset-seeds.js';
+import {
+  OPERATOR_PERMISSION_KEYS,
+  PERMISSION_KEYS,
+  PERMISSION_NAMES,
+} from './permission-catalog.js';
 
 export { defaultPresets };
 
@@ -424,6 +429,105 @@ export function initDatabase() {
         if (!hasColumn('shot_generation_tasks', 'concatenated_video_url')) {
           db.exec('ALTER TABLE shot_generation_tasks ADD COLUMN concatenated_video_url TEXT');
         }
+      },
+    },
+    {
+      version: 11,
+      name: 'add_database_driven_permissions',
+      up: () => {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS permissions (
+            key TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE IF NOT EXISTS role_permissions (
+            role TEXT NOT NULL CHECK (role IN ('admin', 'operator')),
+            permission_key TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (role, permission_key),
+            FOREIGN KEY (permission_key) REFERENCES permissions(key)
+              ON DELETE CASCADE
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_role_permissions_permission
+            ON role_permissions(permission_key, role);
+        `);
+        const insertPermission = db.prepare(
+          `INSERT OR IGNORE INTO permissions (key, name, description)
+           VALUES (?, ?, ?)`
+        );
+        const insertRolePermission = db.prepare(
+          `INSERT OR IGNORE INTO role_permissions (role, permission_key)
+           VALUES (?, ?)`
+        );
+        for (const permission of PERMISSION_KEYS) {
+          insertPermission.run(permission, PERMISSION_NAMES[permission], permission);
+          insertRolePermission.run('admin', permission);
+        }
+        for (const permission of OPERATOR_PERMISSION_KEYS) {
+          insertRolePermission.run('operator', permission);
+        }
+      },
+    },
+    {
+      version: 12,
+      name: 'normalize_permission_metadata',
+      up: () => {
+        // Upgrade development databases created by the initial permission
+        // migration, which used permission_key as the catalog primary key.
+        if (hasColumn('permissions', 'permission_key') && !hasColumn('permissions', 'key')) {
+          db.exec('ALTER TABLE permissions ADD COLUMN key TEXT');
+          db.exec('UPDATE permissions SET key = permission_key WHERE key IS NULL');
+          db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_permissions_key ON permissions(key)');
+        }
+        if (!hasColumn('permissions', 'name')) {
+          db.exec("ALTER TABLE permissions ADD COLUMN name TEXT NOT NULL DEFAULT ''");
+        }
+        const updateName = db.prepare(
+          "UPDATE permissions SET name = ? WHERE key = ? AND (name = ? OR name = '')"
+        );
+        for (const permission of PERMISSION_KEYS) {
+          updateName.run(PERMISSION_NAMES[permission], permission, '');
+        }
+        const insertPermission = db.prepare(
+          `INSERT OR IGNORE INTO permissions (key, name, description)
+           VALUES (?, ?, ?)`
+        );
+        const insertRolePermission = db.prepare(
+          `INSERT OR IGNORE INTO role_permissions (role, permission_key)
+           VALUES (?, ?)`
+        );
+        for (const permission of PERMISSION_KEYS) {
+          insertPermission.run(permission, PERMISSION_NAMES[permission], permission);
+          insertRolePermission.run('admin', permission);
+        }
+        db.prepare(
+          `DELETE FROM role_permissions
+           WHERE role = 'operator' AND permission_key NOT IN (${OPERATOR_PERMISSION_KEYS.map(() => '?').join(', ')})`
+        ).run(...OPERATOR_PERMISSION_KEYS);
+        for (const permission of OPERATOR_PERMISSION_KEYS) {
+          insertRolePermission.run('operator', permission);
+        }
+      },
+    },
+    {
+      version: 13,
+      name: 'add_seedance_task_ownership',
+      up: () => {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS seedance_task_ownership (
+            provider_task_id TEXT PRIMARY KEY,
+            owner_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS idx_seedance_task_ownership_owner
+            ON seedance_task_ownership(owner_id, created_at);
+        `);
       },
     },
   ]);

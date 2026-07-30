@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
-import { requireRole } from '../lib/auth';
+import { requirePermission } from '../lib/auth';
 import { callLlmGateway } from '../lib/llm-gateway';
 
 export const productsRouter = Router();
 
 // GET /api/products — 获取所有产品列表
-productsRouter.get('/', (req, res) => {
+productsRouter.get('/', requirePermission('module.knowledge.read'), (req, res) => {
   try {
     const stmt = db.prepare('SELECT * FROM products ORDER BY updated_at DESC');
     const rows = stmt.all() as any[];
@@ -40,7 +40,7 @@ productsRouter.get('/', (req, res) => {
 });
 
 // GET /api/products/:id — 获取单个产品
-productsRouter.get('/:id', (req, res) => {
+productsRouter.get('/:id', requirePermission('module.knowledge.read'), (req, res) => {
   try {
     const stmt = db.prepare('SELECT * FROM products WHERE id = ?');
     const r = stmt.get(req.params.id) as any;
@@ -76,7 +76,7 @@ productsRouter.get('/:id', (req, res) => {
 });
 
 // POST /api/products — 新增产品
-productsRouter.post('/', requireRole('admin'), (req, res) => {
+productsRouter.post('/', requirePermission('module.knowledge.write'), (req, res) => {
   try {
     const {
       name,
@@ -136,7 +136,7 @@ productsRouter.post('/', requireRole('admin'), (req, res) => {
 });
 
 // PUT /api/products/:id — 更新产品
-productsRouter.put('/:id', requireRole('admin'), (req, res) => {
+productsRouter.put('/:id', requirePermission('module.knowledge.write'), (req, res) => {
   try {
     const { id } = req.params;
 
@@ -215,7 +215,7 @@ productsRouter.put('/:id', requireRole('admin'), (req, res) => {
 });
 
 // DELETE /api/products/:id — 删除产品
-productsRouter.delete('/:id', requireRole('admin'), (req, res) => {
+productsRouter.delete('/:id', requirePermission('module.knowledge.write'), (req, res) => {
   try {
     const stmt = db.prepare('DELETE FROM products WHERE id = ?');
     stmt.run(req.params.id);
@@ -286,4 +286,4 @@ export async function handleSellingPointsOptimize(req: any, res: any) {
   });
 }
 
-productsRouter.post('/optimize', handleSellingPointsOptimize);
+productsRouter.post('/optimize', requirePermission('module.knowledge.write'), handleSellingPointsOptimize);

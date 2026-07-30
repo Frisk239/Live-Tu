@@ -4,7 +4,6 @@ import './load-env';
 
 import express from 'express';
 import path from 'node:path';
-import fs from 'node:fs';
 
 import { db, initDatabase } from './server/lib/db';
 import { seedanceRouter } from './server/routes/seedance';
@@ -25,7 +24,7 @@ import {
   optionalAuth,
   requireAuth,
   requireAuthOrInternal,
-  requireRole,
+  requirePermission,
   sameOriginOnly,
 } from './server/lib/auth';
 import { migrateStoredModelSecrets } from './server/lib/secrets';
@@ -36,6 +35,11 @@ import {
   signedMediaRouter,
 } from './server/lib/signed-media';
 import { requireOwnedUpload } from './server/lib/media-ownership';
+import {
+  probeStorageReadiness,
+  type StorageDirectoryReadiness,
+} from './server/lib/storage-readiness';
+import { backupMaintenanceGuard } from './server/lib/backup-maintenance';
 
 // Initialize SQLite Database & Directories
 initDatabase();
@@ -66,6 +70,7 @@ app.use((_req, res, next) => {
   );
   next();
 });
+app.use(backupMaintenanceGuard());
 app.use(express.json({ limit: '10mb' }));
 app.use(sameOriginOnly);
 app.use(observeRequests);
@@ -88,7 +93,14 @@ import dotenv from 'dotenv';
 type ReadinessReport = {
   ready: boolean;
   database: { ready: boolean; error?: string };
-  storage: { ready: boolean; freeBytes: number | null; minimumFreeBytes: number; error?: string };
+  storage: {
+    ready: boolean;
+    freeBytes: number | null;
+    minimumFreeBytes: number;
+    data: StorageDirectoryReadiness;
+    uploads: StorageDirectoryReadiness;
+    error?: string;
+  };
   yunwu: { configured: boolean; baseUrl: string };
   seedance: {
     configured: boolean;
@@ -135,27 +147,11 @@ async function getReadiness(probeExternal: boolean): Promise<ReadinessReport> {
   }
 
   const dataDir = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'));
+  const uploadsDir = path.resolve(
+    process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads')
+  );
   const minimumFreeBytes = Number(process.env.MIN_FREE_STORAGE_BYTES || 1024 * 1024 * 1024);
-  let storageReady = false;
-  let storageFreeBytes: number | null = null;
-  let storageError: string | undefined;
-  const probePath = path.join(dataDir, `.readiness-${process.pid}-${Date.now()}`);
-  try {
-    fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(probePath, 'ok', { flag: 'wx' });
-    fs.unlinkSync(probePath);
-    const stats = fs.statfsSync(dataDir);
-    storageFreeBytes = Number(stats.bavail) * Number(stats.bsize);
-    storageReady = storageFreeBytes >= minimumFreeBytes;
-    if (!storageReady) {
-      storageError = `free storage ${storageFreeBytes} is below minimum ${minimumFreeBytes}`;
-    }
-  } catch (error: any) {
-    storageError = String(error?.message || error);
-    try {
-      if (fs.existsSync(probePath)) fs.unlinkSync(probePath);
-    } catch {}
-  }
+  const storage = probeStorageReadiness(dataDir, uploadsDir, minimumFreeBytes);
 
   const yunwuKey = process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
   const yunwuReady = Boolean(yunwuKey && yunwuKey !== 'MY_GEMINI_API_KEY' && !yunwuKey.startsWith('your_'));
@@ -226,7 +222,7 @@ async function getReadiness(probeExternal: boolean): Promise<ReadinessReport> {
   const notes = [
     shuttingDown ? '服务正在优雅停机' : null,
     !databaseReady ? `SQLite 不可用：${databaseError || 'probe failed'}` : null,
-    !storageReady ? `数据目录不可用：${storageError || 'probe failed'}` : null,
+    !storage.ready ? `数据或上传目录不可用：${storage.error || 'probe failed'}` : null,
     minioProbe.configured && !minioProbe.ready
       ? `MinIO 不可用：${minioProbe.error || 'probe failed'}`
       : null,
@@ -250,7 +246,7 @@ async function getReadiness(probeExternal: boolean): Promise<ReadinessReport> {
     ready:
       !shuttingDown &&
       databaseReady &&
-      storageReady &&
+      storage.ready &&
       yunwuReady &&
       seedanceReady &&
       ffmpegOk &&
@@ -259,12 +255,7 @@ async function getReadiness(probeExternal: boolean): Promise<ReadinessReport> {
       minioPublicUrlProductionReady &&
       !allowMockFallback,
     database: { ready: databaseReady, error: databaseError },
-    storage: {
-      ready: storageReady,
-      freeBytes: storageFreeBytes,
-      minimumFreeBytes,
-      error: storageError,
-    },
+    storage,
     yunwu: { configured: yunwuReady, baseUrl: process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1' },
     seedance: {
       configured: seedanceConfigured,
@@ -360,7 +351,7 @@ app.use(
   limitExpensiveOperations,
   pipelineRouter
 );
-app.use(['/api/models', '/api/v1/models'], requireAuth, requireRole('admin'), modelsRouter);
+app.use(['/api/models', '/api/v1/models'], requireAuth, modelsRouter);
 app.use(
   ['/api/materials', '/api/v1/materials'],
   requireAuth,
@@ -384,6 +375,7 @@ app.use(['/api/products', '/api/v1/products'], requireAuth, productsRouter);
 app.use(
   ['/api/selling-points/optimize', '/api/v1/selling-points/optimize'],
   requireAuth,
+  requirePermission('module.knowledge.write'),
   handleSellingPointsOptimize
 );
 app.use(

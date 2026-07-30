@@ -83,40 +83,17 @@ export async function probeMinio(): Promise<{
   }
 }
 
-async function ensureBucketReady(client: Minio.Client): Promise<void> {
-  const { bucketName, endPoint, port } = minioConfig();
-  const bucketKey = `${endPoint}:${port}:${bucketName}:${process.env.MINIO_ENSURE_PUBLIC_READ !== 'false'}`;
+export async function ensureBucketReady(
+  client: Minio.Client,
+  override?: { bucketName: string; endpointKey: string }
+): Promise<void> {
+  const { bucketName: configuredBucket, endPoint, port } = minioConfig();
+  const bucketName = override?.bucketName || configuredBucket;
+  const bucketKey = `${override?.endpointKey || `${endPoint}:${port}`}:${bucketName}`;
   if (initializedBucketKey === bucketKey) return;
 
   const exists = await client.bucketExists(bucketName);
   if (!exists) await client.makeBucket(bucketName, 'us-east-1');
-
-  const ensurePublicRead = process.env.MINIO_ENSURE_PUBLIC_READ === 'true';
-  let policy: { Version?: string; Statement?: any[] } = {};
-  try {
-    policy = JSON.parse(await client.getBucketPolicy(bucketName));
-  } catch {
-    policy = {};
-  }
-  const statements = Array.isArray(policy.Statement)
-    ? policy.Statement.filter((statement) => statement?.Sid !== 'LiveTuPublicMaterials')
-    : [];
-  if (ensurePublicRead) {
-    statements.push({
-      Sid: 'LiveTuPublicMaterials',
-      Effect: 'Allow',
-      Principal: { AWS: ['*'] },
-      Action: ['s3:GetObject'],
-      Resource: [`arn:aws:s3:::${bucketName}/materials/*`],
-    });
-  }
-  await client.setBucketPolicy(
-    bucketName,
-    JSON.stringify({
-      Version: policy.Version || '2012-10-17',
-      Statement: statements,
-    })
-  );
   initializedBucketKey = bucketKey;
 }
 

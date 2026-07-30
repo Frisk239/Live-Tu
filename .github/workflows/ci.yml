@@ -25,6 +25,7 @@ jobs:
       - run: npm run test:security
       - run: npm run test:orchestrator
       - run: npm run test:migrations
+      - run: npm run test:permissions
       - run: npm run test:multi-shot
       - run: npm run test:production
       - name: Build production container

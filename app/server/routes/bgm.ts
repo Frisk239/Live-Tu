@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db } from '../lib/db';
-import { requireRole } from '../lib/auth';
+import { requirePermission } from '../lib/auth';
 import fs from 'node:fs';
 import path from 'node:path';
 import multer from 'multer';
@@ -74,7 +74,7 @@ function audioSignatureMatches(filePath: string, mimeType: string): boolean {
 }
 
 // POST /api/bgm/upload-file — bounded streaming upload for production audio.
-bgmRouter.post('/upload-file', requireRole('admin'), (req, res) => {
+bgmRouter.post('/upload-file', requirePermission('module.bgm.write'), (req, res) => {
   streamingAudioUpload.single('file')(req, res, (uploadError: any) => {
     if (uploadError) {
       const status = uploadError.code === 'LIMIT_FILE_SIZE' ? 413 : 415;
@@ -150,7 +150,7 @@ bgmRouter.post('/upload-file', requireRole('admin'), (req, res) => {
 });
 
 // GET /api/bgm — 获取全量 BGM 列表
-bgmRouter.get('/', (req, res) => {
+bgmRouter.get('/', requirePermission('module.bgm.read'), (req, res) => {
   try {
     const stmt = db.prepare('SELECT * FROM bgm_library ORDER BY created_at DESC');
     const rows = stmt.all() as any[];
@@ -183,7 +183,7 @@ bgmRouter.get('/', (req, res) => {
 });
 
 // POST /api/bgm/upload — 上传新 BGM 音频
-bgmRouter.post('/upload', requireRole('admin'), async (req, res) => {
+bgmRouter.post('/upload', requirePermission('module.bgm.write'), async (req, res) => {
   try {
     const { name, artist, bpm, mood, styleTags, fileDataUrl, url } = req.body;
     if (req.body.licenseConfirmed !== true) {
@@ -260,7 +260,7 @@ bgmRouter.post('/upload', requireRole('admin'), async (req, res) => {
 });
 
 // DELETE /api/bgm/:id — 删除 BGM
-bgmRouter.delete('/:id', requireRole('admin'), (req, res) => {
+bgmRouter.delete('/:id', requirePermission('module.bgm.write'), (req, res) => {
   try {
     const { id } = req.params;
     const stmt = db.prepare('SELECT * FROM bgm_library WHERE id = ?');

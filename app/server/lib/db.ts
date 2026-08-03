@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import fs from 'node:fs';
+import { randomUUID, randomBytes, scryptSync } from 'node:crypto';
 import { defaultPresets } from './preset-seeds.js';
 import {
   OPERATOR_PERMISSION_KEYS,
@@ -606,11 +607,23 @@ export function initDatabase() {
     console.warn('[db] Pragma/Index setup notice:', e);
   }
 
+  // 系统级资源所有者占位用户：媒体所有权 FK 需要 owner 存在于 users 表。
+  // 内部编排轮询（无会话用户）缓存 Seedance 产物时回退到 'system'；无法登录（随机密码 + disabled）。
+  try {
+    const salt = randomBytes(16);
+    const hash = scryptSync(randomUUID(), salt, 64);
+    db.prepare(
+      `INSERT OR IGNORE INTO users (id, username, password_hash, role, enabled)
+       VALUES ('system', 'system', ?, 'operator', 0)`
+    ).run(`${salt.toString('hex')}:${hash.toString('hex')}`);
+  } catch (e) {
+    console.warn('[db] system user seed notice:', e);
+  }
+
   // Seed default product if empty
   const countStmt = db.prepare('SELECT COUNT(*) as count FROM products');
   const result = countStmt.get() as { count: number };
-  if (result.count === 0) {
-    const insertStmt = db.prepare(`
+  if (result.count === 0) {    const insertStmt = db.prepare(`
       INSERT INTO products (
         id, name, category, positioning, price, sales_record,
         model343_clays, model343_extracts, model343_surfactants,

@@ -754,11 +754,13 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
       let shotErrorMsg: string | undefined = undefined;
 
       try {
+        // owner 优先级：会话用户 > 编排器透传的 run 所有者（内部轮询无 authUser，必须用 _ownerId）
+        const shotOwnerId = req.authUser?.id || inputs._ownerId || null;
         db.prepare(`
           INSERT INTO shot_generation_tasks (
             id, session_id, owner_id, shot_index, status, video_prompt, first_frame_url
           ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
-        `).run(taskId, sessionId, req.authUser?.id || null, shotIndex, videoPrompt, kfUrl);
+        `).run(taskId, sessionId, shotOwnerId, shotIndex, videoPrompt, kfUrl);
       } catch (err: any) {
         console.error(`[Step2 MultiShot] Could not persist shot ${shotIndex}:`, err.message);
         return res.status(500).json({

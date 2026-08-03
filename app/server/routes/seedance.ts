@@ -12,10 +12,17 @@ export const seedanceRouter = Router();
 
 /** Always read live process.env — never freeze values at import time (before dotenv). */
 function seedanceEnv() {
+  const provider = process.env.SEEDANCE_PROVIDER === 'ark' ? 'ark' : 'relay';
   return {
-    baseUrl: (process.env.SEEDANCE_BASE_URL || '').replace(/\/$/, ''),
+    provider,
+    baseUrl: (
+      provider === 'ark'
+        ? process.env.ARK_BASE_URL || 'https://ark.cn-beijing.volces.com/api/v3'
+        : process.env.SEEDANCE_BASE_URL || ''
+    ).replace(/\/$/, ''),
     account: (process.env.SEEDANCE_ACCOUNT || '').trim(),
     password: (process.env.SEEDANCE_PASSWORD || '').trim(),
+    apiKey: (process.env.ARK_API_KEY || '').trim(),
     model: process.env.SEEDANCE_MODEL || 'doubao-seedance-2-0-fast',
     defaultResolution: process.env.SEEDANCE_DEFAULT_RESOLUTION || '720p',
     defaultAspect: process.env.SEEDANCE_DEFAULT_ASPECT || '9:16',
@@ -23,7 +30,11 @@ function seedanceEnv() {
 }
 
 export function hasSeedanceConfig() {
-  const { baseUrl, account, password } = seedanceEnv();
+  const env = seedanceEnv();
+  if (env.provider === 'ark') {
+    return Boolean(env.apiKey && env.apiKey !== 'your_ark_api_key');
+  }
+  const { baseUrl, account, password } = env;
   if (!baseUrl || !account || !password) return false;
   if (
     baseUrl.includes('your-seedance') ||
@@ -39,11 +50,20 @@ export function hasSeedanceConfig() {
 let seedanceTokenCache: { accessToken: string; expiresAtMs: number } | null = null;
 
 export async function getSeedanceToken(forceRefresh = false): Promise<string> {
+  const env = seedanceEnv();
   if (!hasSeedanceConfig()) {
-    throw new Error('Seedance 中转未配置：请设置 SEEDANCE_BASE_URL / SEEDANCE_ACCOUNT / SEEDANCE_PASSWORD');
+    throw new Error(
+      env.provider === 'ark'
+        ? '火山方舟未配置：请设置 ARK_API_KEY（SEEDANCE_PROVIDER=ark）'
+        : 'Seedance 中转未配置：请设置 SEEDANCE_BASE_URL / SEEDANCE_ACCOUNT / SEEDANCE_PASSWORD'
+    );
+  }
+  // 火山方舟直连：API Key 即 bearer token，无需换取
+  if (env.provider === 'ark') {
+    return env.apiKey;
   }
 
-  const { baseUrl, account, password } = seedanceEnv();
+  const { baseUrl, account, password } = env;
   const now = Date.now();
   if (!forceRefresh && seedanceTokenCache && seedanceTokenCache.expiresAtMs - 60_000 > now) {
     return seedanceTokenCache.accessToken;
@@ -280,22 +300,52 @@ export function buildSeedanceGenerationBody(input: SeedanceCreateInput, requestB
   return { body, materials, warnings, modelId };
 }
 
-export async function createSeedanceVideo(input: SeedanceCreateInput | Record<string, any>): Promise<any> {
-  if (input && typeof input === 'object' && 'params' in input && 'model' in input && 'prompt' in input) {
-    return seedanceFetch('/api/v1/videos/generations', {
-      method: 'POST',
-      body: JSON.stringify(input),
+/** 把统一中间结构 body 转成火山方舟 contents/generations/tasks 请求体 */
+function toArkTaskBody(body: Record<string, any>): Record<string, any> {
+  const content: any[] = [{ type: 'text', text: String(body.prompt || '') }];
+  for (const m of body.materials || []) {
+    content.push({
+      type: 'image_url',
+      role: m.role === 'reference_image' ? 'reference_image' : 'first_frame',
+      image_url: { url: m.url },
     });
   }
+  const params = body.params || {};
+  return {
+    model: process.env.ARK_MODEL || 'doubao-seedance-2-0-260128',
+    content,
+    duration: Number(params.duration) || 5,
+    resolution: params.resolution || '720p',
+    ratio: params.aspectRatio || '9:16',
+    watermark: false,
+    generate_audio: params.generateAudio ?? true,
+  };
+}
 
-  const { body, warnings } = buildSeedanceGenerationBody(input as SeedanceCreateInput);
-  if (warnings.length > 0 && !(body as any).materials) {
+export async function createSeedanceVideo(input: SeedanceCreateInput | Record<string, any>): Promise<any> {
+  const isPrebuilt = input && typeof input === 'object' && 'params' in input && 'model' in input && 'prompt' in input;
+  let body: Record<string, any>;
+  let warnings: string[] = [];
+  if (isPrebuilt) {
+    body = input as Record<string, any>;
+  } else {
+    const built = buildSeedanceGenerationBody(input as SeedanceCreateInput);
+    body = built.body as Record<string, any>;
+    warnings = built.warnings;
+  }
+  if (warnings.length > 0 && !body.materials) {
     const err = new Error(warnings.join('; '));
     (err as any).status = 400;
     (err as any).warnings = warnings;
     throw err;
   }
 
+  if (seedanceEnv().provider === 'ark') {
+    return seedanceFetch('/contents/generations/tasks', {
+      method: 'POST',
+      body: JSON.stringify(toArkTaskBody(body)),
+    });
+  }
   return seedanceFetch('/api/v1/videos/generations', {
     method: 'POST',
     body: JSON.stringify(body),
@@ -303,20 +353,30 @@ export async function createSeedanceVideo(input: SeedanceCreateInput | Record<st
 }
 
 export async function getSeedanceVideo(id: string): Promise<any> {
+  if (seedanceEnv().provider === 'ark') {
+    return seedanceFetch(`/contents/generations/tasks/${encodeURIComponent(id)}`);
+  }
   return seedanceFetch(`/api/v1/videos/generations/${encodeURIComponent(id)}`);
 }
 
 export function normalizeSeedanceTask(payload: any) {
   const data = payload?.data || payload || {};
+  // 火山方舟响应：{ id, status: 'succeeded', content: { video_url } }
+  const arkStatus = String(data.status || '').toLowerCase();
+  const arkUrl = data?.content?.video_url || data?.video_url || null;
+  const status =
+    arkStatus === 'succeeded' ? 'success'
+      : arkStatus === 'failed' || arkStatus === 'error' ? 'failed'
+        : data.status || (data.url ? 'success' : 'processing');
   return {
     id: data.id || null,
-    status: data.status || (data.url ? 'success' : 'processing'),
-    url: data.url || null,
+    status,
+    url: arkUrl || data.url || null,
     createdAt: data.createdAt || null,
     provider: data.provider || null,
     model: data.model || null,
     inferenceId: data.inferenceId || null,
-    error: data.error || null,
+    error: data.error || (data?.content?.error ? JSON.stringify(data.content.error).slice(0, 200) : null),
     raw: payload,
   };
 }

@@ -399,7 +399,16 @@ export async function cacheRemoteVideoToUploads(
   try {
     const absolutePath = await cacheRemoteMedia(remoteUrl, 'video', ownerId || 'system');
     const filename = path.basename(absolutePath);
-    return { localUrl: `/uploads/renders/${filename}`, absolutePath };
+    const localUrl = `/uploads/renders/${filename}`;
+    // 缓存产物必须注册所有权，否则 step5 渲染的媒体所有权检查会拒绝
+    if (ownerId) {
+      try {
+        registerOwnedMedia(localUrl, ownerId, 'seedance-cache');
+      } catch (error: any) {
+        console.warn('[seedance] registerOwnedMedia for cache:', error?.message || error);
+      }
+    }
+    return { localUrl, absolutePath };
   } catch (err: any) {
     console.warn('[seedance] cacheRemoteVideoToUploads:', err.message);
     return null;

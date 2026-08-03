@@ -1533,12 +1533,28 @@ ${JSON.stringify(bgmCandidates, null, 2)}
     const recName = data.bgm_recommendation.track_name;
     const inLib = bgmRows.find((b) => b.track_name === recName);
     if (inLib) {
-      data.bgm_recommendation.audioSampleUrl =
-        data.bgm_recommendation.audioSampleUrl ||
+      // 库内真实音频优先——LLM 可能编造 audioSampleUrl（如 example.com），必须用库内文件覆盖
+      const libAudio =
         inLib.audio_url ||
         (inLib.audio_path ? `/${String(inLib.audio_path).replace(/\\/g, '/')}` : undefined);
+      if (libAudio) {
+        data.bgm_recommendation.audioSampleUrl = libAudio;
+      } else {
+        delete data.bgm_recommendation.audioSampleUrl;
+      }
       data.bgm_recommendation.artist = data.bgm_recommendation.artist || inLib.artist;
       data.bgm_recommendation.bpm = String(data.bgm_recommendation.bpm || inLib.bpm || 90);
+      data.bgm_recommendation.license_note = inLib.license_type || data.bgm_recommendation.license_note;
+    }
+    // 兜底：LLM 编造/空 URL（example.com 等示例地址）→ 用库内真实曲目音频覆盖
+    const currentUrl = data.bgm_recommendation?.audioSampleUrl;
+    if (!currentUrl || currentUrl.includes('example.com') || currentUrl.startsWith('http://example')) {
+      const fallback = bgmRows[0];
+      if (fallback) {
+        data.bgm_recommendation.audioSampleUrl =
+          fallback.audio_url ||
+          (fallback.audio_path ? `/${String(fallback.audio_path).replace(/\\/g, '/')}` : undefined);
+      }
     }
   }
 

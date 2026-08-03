@@ -55,7 +55,7 @@ async function testSeedanceDetailed() {
         console.error('  --> 原因分析: 远端服务器（ai.xmhaini.com）在处理 token 签发逻辑时抛出了 500 内部服务错误。');
         console.error('  --> 常见可能性:');
         console.error('      1. 远端 Seedance 数据库/中转服务暂时挂掉或未启动');
-        console.error('      2. 账号 hejinzhe@xmhaini.com 在远端系统未开通 AI_MODEL_INVOKE / FILE_UPLOAD 权限，或账号已被停用/到期');
+        console.error('      2. 账号在远端系统未开通 AI_MODEL_INVOKE / FILE_UPLOAD 权限，或账号已被停用/到期');
         console.error('      3. 密码在远端校验时数据库检索异常');
       }
     }

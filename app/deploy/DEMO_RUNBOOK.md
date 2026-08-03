@@ -24,8 +24,11 @@ This profile is for a temporary customer evaluation environment. It uses isolate
 
    ```bash
    curl --fail "$PUBLIC_BASE_URL/api/live"
+   curl --fail "$PUBLIC_BASE_URL/api/ready"   # 200 = 全部就绪；503 时登录后重查可看到缺哪项
    docker compose --env-file deploy/.env.demo -f deploy/compose.demo.yml logs --tail=100 app
    ```
+
+   `/api/ready` 在填完真实 YUNWU/Seedance 凭据且 `PUBLIC_BASE_URL` 为公网地址（域名须 HTTPS，公网 IP 允许 HTTP）后才返回 200。未登录时细节隐藏，用管理员账号登录后带 cookie 重查即可看到缺失项。
 
 6. Stop and remove only the Demo containers when the evaluation ends. Keep the named volumes if you want to retain feedback assets and tasks:
 

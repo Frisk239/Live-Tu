@@ -1374,9 +1374,11 @@ export default function App() {
                 ? 'completed'
                 : step.status === 'failed'
                   ? 'failed'
-                  : ['running', 'waiting_external'].includes(step.status)
-                    ? 'running'
-                    : 'pending',
+                  : step.status === 'needs_review'
+                    ? 'needs_review'
+                    : ['running', 'waiting_external'].includes(step.status)
+                      ? 'running'
+                      : 'pending',
             output: step.output ?? current.output,
           };
         }
@@ -1717,10 +1719,11 @@ export default function App() {
     }));
 
     try {
+      // 中转繁忙时 step2（3 镜头逐镜提交）可能耗时数分钟，给足超时但避免永久挂起
       const res = await fetch('/api/pipeline/step2', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(300_000)]),
         body: JSON.stringify({
           ...pipelineData.step2.inputs,
           ...productPayload(),
@@ -1730,6 +1733,32 @@ export default function App() {
 
       if (result.success && result.data) {
         const output = result.data;
+        // Step2 必须真正提交了视频生成才算完成；否则标记失败并给出可操作提示
+        const hasVideoPath = Boolean(
+          output.previewVideoUrl ||
+            output.concatenatedVideoUrl ||
+            output.seedanceTaskId ||
+            output.multiShotResult?.sessionId
+        );
+        const notSubmitted = [
+          'awaiting_image_input',
+          'awaiting_public_image',
+          'submit_failed',
+          'unconfigured',
+        ].includes(String(output.seedanceStatus || ''));
+        if (!hasVideoPath && notSubmitted) {
+          notify(
+            output.seedanceError ||
+              output.seedanceHint ||
+              'Step 2 未能提交视频生成：缺少 Seedance 可下载的产品首帧图',
+            'error'
+          );
+          setPipelineData((prev) => ({
+            ...prev,
+            step2: { ...prev.step2, output, status: 'failed' as const },
+          }));
+          return;
+        }
         if (result.source) setStepSources((s) => ({ ...s, 2: String(result.source) }));
         setPipelineData((prev) => {
           const next = {
@@ -1767,7 +1796,11 @@ export default function App() {
         }));
         return;
       }
-      console.error('Step2 run failed:', e);
+      if (e.name === 'TimeoutError') {
+        notify('Step 2 等待视频生成超时（5 分钟）：星河中转繁忙，请稍后重试', 'error');
+      } else {
+        console.error('Step2 run failed:', e);
+      }
       setPipelineData((prev) => ({
         ...prev,
         step2: { ...prev.step2, status: 'failed' },
@@ -2018,6 +2051,15 @@ export default function App() {
       })),
     []
   );
+  /** 工作台内上传/删除产品图后刷新产品列表（爆款直出的首帧依赖产品图） */
+  const handleProductAssetsChanged = useCallback(async () => {
+    try {
+      const list = await apiService.products.fetchProducts();
+      setProducts(list);
+    } catch {
+      /* 保留现有列表 */
+    }
+  }, []);
 
   const handleStep2UpdateInputs = useCallback(
     (inp: any) =>
@@ -2414,6 +2456,7 @@ export default function App() {
                     onUpdateInputs={handleStep1UpdateInputs}
                     onUpdateOutput={handleStep1UpdateOutput}
                     onGeneratedImage={handleStep1GeneratedImage}
+                    onProductAssetsChanged={handleProductAssetsChanged}
                     onRun={runStep1}
                     onAbort={() => handleAbortCurrentStep(1)}
                     onReset={handleStep1Reset}

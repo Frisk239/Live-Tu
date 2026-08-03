@@ -74,7 +74,7 @@ function parseAuthUser(value: any): AuthUser {
 export interface PipelineRunSnapshot {
   id: string;
   ownerId: string;
-  status: 'queued' | 'running' | 'waiting_external' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'running' | 'waiting_external' | 'completed' | 'failed' | 'cancelled' | 'needs_review';
   currentStep: number;
   errorCode?: string;
   errorMessage?: string;
@@ -82,7 +82,7 @@ export interface PipelineRunSnapshot {
   updatedAt: string;
   steps: Array<{
     step: number;
-    status: 'pending' | 'running' | 'waiting_external' | 'completed' | 'failed' | 'cancelled' | 'stale';
+    status: 'pending' | 'running' | 'waiting_external' | 'completed' | 'failed' | 'cancelled' | 'stale' | 'needs_review';
     attempt: number;
     output?: any;
     errorCode?: string;

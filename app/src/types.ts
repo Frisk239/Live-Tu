@@ -1,6 +1,6 @@
 export type StepId = 1 | 2 | 3 | 4 | 5;
 
-export type StepStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'needs_review';
 
 export interface Step1Inputs {
   mediaUrl: string;

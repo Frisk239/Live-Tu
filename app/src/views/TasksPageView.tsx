@@ -188,8 +188,11 @@ export const TasksPageView: React.FC<TasksPageViewProps> = ({
             {pipelineRuns.slice(0, 20).map((run) => {
               const active = ['queued', 'running', 'waiting_external'].includes(run.status);
               const failed = run.status === 'failed';
+              const needsReview = run.status === 'needs_review';
               const completedSteps = run.steps.filter((step) => step.status === 'completed').length;
               const busy = runActionId === run.id;
+              const step5 = run.steps.find((step) => step.step === 5);
+              const publishReport = (step5?.output as any)?.publishReport;
               return (
                 <div
                   key={run.id}
@@ -202,12 +205,18 @@ export const TasksPageView: React.FC<TasksPageViewProps> = ({
                           ? 'bg-emerald-400'
                           : failed
                             ? 'bg-rose-400'
-                            : run.status === 'cancelled'
-                              ? 'bg-slate-500'
-                              : 'bg-amber-400 animate-pulse'
+                            : needsReview
+                              ? 'bg-violet-400'
+                              : run.status === 'cancelled'
+                                ? 'bg-slate-500'
+                                : 'bg-amber-400 animate-pulse'
                       }`} />
                       <span className="text-xs font-bold">
-                        {run.status === 'waiting_external' ? '等待视频生成' : run.status}
+                        {run.status === 'waiting_external'
+                          ? '等待视频生成'
+                          : needsReview
+                            ? '待审核'
+                            : run.status}
                       </span>
                       <span className="text-[11px] text-slate-400">
                         Step {run.currentStep}/5 · 已完成 {completedSteps}/5
@@ -221,6 +230,50 @@ export const TasksPageView: React.FC<TasksPageViewProps> = ({
                         {run.errorMessage}
                       </p>
                     )}
+                    {publishReport && (
+                      <div className="mt-2 rounded-xl border border-slate-700 bg-slate-800/60 p-2.5 space-y-1.5">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <span className="text-[10px] font-bold text-slate-300">
+                            Publish Gate ·{' '}
+                            {publishReport.status === 'passed'
+                              ? '已通过'
+                              : publishReport.status === 'needs_review'
+                                ? '待审核'
+                                : '未通过'}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-400">
+                            产品 {Math.round((publishReport.scores?.productIdentity || 0) * 100)} · 结构{' '}
+                            {Math.round((publishReport.scores?.structureCoverage || 0) * 100)} · 技术{' '}
+                            {Math.round((publishReport.scores?.technical || 0) * 100)} · 合规{' '}
+                            {Math.round((publishReport.scores?.compliance || 0) * 100)}
+                          </span>
+                        </div>
+                        {publishReport.blockers?.length > 0 && (
+                          <div className="text-[10px] text-rose-300 flex flex-wrap gap-1">
+                            {publishReport.blockers.map((b: string) => (
+                              <span key={b} className="px-1.5 py-0.5 rounded bg-rose-500/15">✗ {b}</span>
+                            ))}
+                          </div>
+                        )}
+                        {publishReport.warnings?.length > 0 && (
+                          <div className="text-[10px] text-amber-300 flex flex-wrap gap-1">
+                            {publishReport.warnings.map((w: string) => (
+                              <span key={w} className="px-1.5 py-0.5 rounded bg-amber-500/10">○ {w}</span>
+                            ))}
+                          </div>
+                        )}
+                        {(publishReport as any).finalVideoUrl && (
+                          <a
+                            href={(publishReport as any).finalVideoUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[10px] text-emerald-400 hover:underline font-mono truncate block"
+                          >
+                            ▶ {(publishReport as any).finalVideoUrl}
+                          </a>
+                        )}
+                      </div>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <button
@@ -231,7 +284,7 @@ export const TasksPageView: React.FC<TasksPageViewProps> = ({
                       <Play className="w-3.5 h-3.5" />
                       打开
                     </button>
-                    {failed && (
+                    {(failed || needsReview) && (
                       <button
                         type="button"
                         disabled={busy}

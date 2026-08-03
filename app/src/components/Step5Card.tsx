@@ -663,6 +663,52 @@ export const Step5Card: React.FC<Step5CardProps> = React.memo(({
                     ))}
                   </div>
                 </div>
+
+                {/* Publish Gate Report */}
+                {(output as any).publishReport && (
+                  <div className="p-3.5 rounded-xl bg-slate-900 border border-violet-800/60">
+                    <span className="text-xs font-bold text-violet-300 block mb-2">
+                      Publish Gate 发布门禁报告
+                    </span>
+                    <div className="grid grid-cols-4 gap-2 mb-2">
+                      {[
+                        ['产品身份', (output as any).publishReport.scores?.productIdentity],
+                        ['结构覆盖', (output as any).publishReport.scores?.structureCoverage],
+                        ['技术质量', (output as any).publishReport.scores?.technical],
+                        ['合规', (output as any).publishReport.scores?.compliance],
+                      ].map(([label, score]) => (
+                        <div key={String(label)} className="rounded-lg bg-slate-800/70 p-2 text-center">
+                          <div className="text-[10px] text-slate-400">{label}</div>
+                          <div className="text-sm font-black text-emerald-400">
+                            {Math.round(Number(score || 0) * 100)}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="text-[11px] text-slate-300 mb-1">
+                      状态：
+                      {(output as any).publishReport.status === 'passed'
+                        ? '✅ 已通过'
+                        : (output as any).publishReport.status === 'needs_review'
+                          ? '🟡 待审核（成片已生成，未达发布标准）'
+                          : '❌ 未通过'}
+                    </div>
+                    {(output as any).publishReport.blockers?.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mb-1">
+                        {(output as any).publishReport.blockers.map((b: string) => (
+                          <span key={b} className="text-[10px] text-rose-300 px-1.5 py-0.5 rounded bg-rose-500/15">✗ {b}</span>
+                        ))}
+                      </div>
+                    )}
+                    {(output as any).publishReport.warnings?.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {(output as any).publishReport.warnings.map((w: string) => (
+                          <span key={w} className="text-[10px] text-amber-300 px-1.5 py-0.5 rounded bg-amber-500/10">○ {w}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : activeTab === 'timeline' ? (
               /* Timeline Table View */

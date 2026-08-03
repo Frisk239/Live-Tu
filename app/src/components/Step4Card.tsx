@@ -61,6 +61,7 @@ export const Step4Card: React.FC<Step4CardProps> = React.memo(({
   const [copiedJson, setCopiedJson] = useState(false);
   const [activeTab, setActiveTab] = useState<'visual' | 'json'>('visual');
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
   const isRunning = status === 'running';
   const isCompleted = status === 'completed' && Boolean(output);
@@ -393,21 +394,56 @@ export const Step4Card: React.FC<Step4CardProps> = React.memo(({
                     </div>
                   </div>
 
-                  {/* Audio Waveform Simulation */}
-                  <div className="h-10 bg-slate-950 rounded-lg p-2 flex items-center gap-1 overflow-hidden">
-                    {Array.from({ length: 40 }).map((_, i) => {
-                      const heights = [30, 50, 80, 40, 90, 60, 100, 45, 75, 35];
-                      const h = heights[i % heights.length];
-                      return (
-                        <div
-                          key={i}
-                          className={`flex-1 rounded-full transition-all duration-300 ${
-                            isPlaying ? 'bg-indigo-400 animate-pulse' : 'bg-slate-700'
-                          }`}
-                          style={{ height: `${h}%` }}
+                  {/* Audio Waveform + 真实试听 */}
+                  <div className="space-y-2">
+                    <div className="h-10 bg-slate-950 rounded-lg p-2 flex items-center gap-1 overflow-hidden">
+                      {Array.from({ length: 40 }).map((_, i) => {
+                        const heights = [30, 50, 80, 40, 90, 60, 100, 45, 75, 35];
+                        const h = heights[i % heights.length];
+                        return (
+                          <div
+                            key={i}
+                            className={`flex-1 rounded-full transition-all duration-300 ${
+                              isPlaying ? 'bg-indigo-400 animate-pulse' : 'bg-slate-700'
+                            }`}
+                            style={{ height: `${h}%` }}
+                          />
+                        );
+                      })}
+                    </div>
+                    {/* 真实音频：直接播放曲库文件（/uploads/bgm/... 本地曲库） */}
+                    {output.bgm_recommendation.audioSampleUrl ? (
+                      <>
+                        <audio
+                          ref={audioRef}
+                          src={output.bgm_recommendation.audioSampleUrl}
+                          preload="none"
+                          onPlay={() => setIsPlaying(true)}
+                          onPause={() => setIsPlaying(false)}
+                          onEnded={() => setIsPlaying(false)}
                         />
-                      );
-                    })}
+                        <div className="flex items-center gap-2 text-[10px] text-slate-400">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const audio = audioRef.current;
+                              if (!audio) return;
+                              if (isPlaying) {
+                                audio.pause();
+                              } else {
+                                void audio.play().catch(() => notify('音频加载失败：曲库文件不可用', 'error'));
+                              }
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 font-bold border border-indigo-500/30"
+                          >
+                            {isPlaying ? '暂停试听' : '▶ 试听'}
+                          </button>
+                          <span className="font-mono truncate">{output.bgm_recommendation.audioSampleUrl}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-[10px] text-slate-500">该曲目未绑定音频文件，无法试听</p>
+                    )}
                   </div>
 
                   {/* Style tags & Mood match */}

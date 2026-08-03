@@ -11,7 +11,8 @@ type RunStatus =
   | 'waiting_external'
   | 'completed'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  | 'needs_review';
 type StepStatus =
   | 'pending'
   | 'running'
@@ -19,7 +20,8 @@ type StepStatus =
   | 'completed'
   | 'failed'
   | 'cancelled'
-  | 'stale';
+  | 'stale'
+  | 'needs_review';
 
 export type StartPipelineInput = {
   ownerId: string;
@@ -118,6 +120,10 @@ class HttpStepExecutor implements StepExecutor {
 
   private async request(path: string, init?: RequestInit): Promise<any> {
     const maxAttempts = !init?.method || init.method === 'GET' ? 5 : 1;
+    // Step2 多镜头提交包含逐镜 LLM + Seedance 提交，中转繁忙时可超过 3 分钟
+    const timeoutMs =
+      Number(process.env.PIPELINE_STEP_REQUEST_TIMEOUT_MS || 0) ||
+      (init?.method === 'POST' && path.endsWith('/step2') ? 300_000 : 190_000);
     let lastError: unknown;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
@@ -128,7 +134,7 @@ class HttpStepExecutor implements StepExecutor {
             ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
             ...(init?.headers || {}),
           },
-          signal: AbortSignal.timeout(190_000),
+          signal: AbortSignal.timeout(timeoutMs),
         });
         const json = await response.json().catch(() => ({}));
         if (!response.ok || json.success === false) {
@@ -509,6 +515,25 @@ export class PipelineOrchestrator {
         ).run(stepNumber, classified.code, classified.message.slice(0, 1000), runId);
         return;
       }
+    }
+
+    // Publish gate 软失败（成片已生成但未达发布标准）→ needs_review，不静默 completed
+    const step5Output = this.previousOutput(runId, 5);
+    if (step5Output?.publishReport?.status === 'needs_review') {
+      db.prepare(
+        `UPDATE pipeline_steps
+            SET status = 'needs_review', error_code = 'PUBLISH_NEEDS_REVIEW',
+                error_message = '成片已生成但未通过发布门禁，需人工审核',
+                updated_at = CURRENT_TIMESTAMP
+          WHERE run_id = ? AND step_number = 5`
+      ).run(runId);
+      db.prepare(
+        `UPDATE pipeline_runs
+            SET status = 'needs_review', current_step = 5, completed_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?`
+      ).run(runId);
+      return;
     }
 
     db.prepare(

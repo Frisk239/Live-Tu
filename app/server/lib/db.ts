@@ -374,6 +374,12 @@ export function initDatabase() {
             error_message TEXT,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            concat_status TEXT DEFAULT 'pending',
+            concatenated_video_url TEXT,
+            video_prompt TEXT,
+            first_frame_url TEXT,
+            qa_status TEXT DEFAULT 'pending',
+            qa_attempt INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (owner_id) REFERENCES users(id),
             UNIQUE (session_id, shot_index)
           );
@@ -549,6 +555,24 @@ export function initDatabase() {
           CREATE INDEX IF NOT EXISTS idx_product_assets_product
             ON product_assets(product_id, sort_order, created_at);
         `);
+      },
+    },
+    {
+      version: 15,
+      name: 'shot_qa_columns',
+      up: () => {
+        if (!hasColumn('shot_generation_tasks', 'video_prompt')) {
+          db.exec('ALTER TABLE shot_generation_tasks ADD COLUMN video_prompt TEXT');
+        }
+        if (!hasColumn('shot_generation_tasks', 'first_frame_url')) {
+          db.exec('ALTER TABLE shot_generation_tasks ADD COLUMN first_frame_url TEXT');
+        }
+        if (!hasColumn('shot_generation_tasks', 'qa_status')) {
+          db.exec("ALTER TABLE shot_generation_tasks ADD COLUMN qa_status TEXT DEFAULT 'pending'");
+        }
+        if (!hasColumn('shot_generation_tasks', 'qa_attempt')) {
+          db.exec('ALTER TABLE shot_generation_tasks ADD COLUMN qa_attempt INTEGER NOT NULL DEFAULT 0');
+        }
       },
     },
   ]);

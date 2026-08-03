@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Step1Inputs, Step1Output, StepStatus, MaterialItem, ProductItem } from '../types';
+import { Step1Inputs, Step1Output, StepStatus, MaterialItem, ProductItem, ProductAsset } from '../types';
 import { copyToClipboard, downloadJsonFile } from '../utils/format';
 import { notify } from '../services/notifications';
 import {
@@ -70,6 +70,8 @@ interface Step1CardProps {
   onOpenMaterials?: () => void;
   /** 文生图成功后同步到 Step2 首帧 */
   onGeneratedImage?: (payload: { imageUrl: string; promptUsed: string }) => void;
+  /** 产品图上传/删除后通知父级刷新（爆款直出依赖产品图作首帧） */
+  onProductAssetsChanged?: () => void;
 }
 
 export const Step1Card: React.FC<Step1CardProps> = React.memo(({
@@ -87,6 +89,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
   onNext,
   onOpenMaterials,
   onGeneratedImage,
+  onProductAssetsChanged,
 }) => {
   // Mode Switch State: 'single' | 'batch'
   const [executionMode, setExecutionMode] = useState<'single' | 'batch'>('single');
@@ -114,6 +117,39 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
       lower.includes('/video') ||
       lower.includes('video/')
     );
+  };
+
+  // ---- 产品图（爆款直出首帧） ----
+  const [productAssets, setProductAssets] = useState<ProductAsset[]>(() => activeProduct?.assets || []);
+  useEffect(() => {
+    setProductAssets(activeProduct?.assets || []);
+  }, [activeProduct?.assets, activeProduct?.id]);
+
+  const handleProductAssetUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !activeProduct) return;
+    try {
+      const role = productAssets.length === 0 ? 'hero' : 'angle';
+      const result = await apiService.products.addAsset(activeProduct.id, { file, role });
+      notify('✅ 产品图已上传，爆款直出将使用它作为成片首帧', 'success');
+      if (result.assets) setProductAssets(result.assets);
+      onProductAssetsChanged?.();
+    } catch (err: any) {
+      notify(err?.message || '上传产品图失败', 'error');
+    }
+  };
+
+  const handleDeleteProductAsset = async (assetId: string) => {
+    if (!activeProduct) return;
+    try {
+      await apiService.products.deleteAsset(activeProduct.id, assetId);
+      const assets = await apiService.products.listAssets(activeProduct.id);
+      setProductAssets(assets);
+      onProductAssetsChanged?.();
+    } catch (err: any) {
+      notify(err?.message || '删除产品图失败', 'error');
+    }
   };
 
   const safeInputs = inputs || {
@@ -922,6 +958,65 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                       );
                     })}
                   </div>
+                </div>
+
+                {/* 产品图：爆款直出首帧（双输入契约） */}
+                <div className="pt-1">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5" />
+                      产品图（爆款直出首帧）
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      {activeProduct ? `${activeProduct.name} · ${productAssets.length} 张` : '未选择产品'}
+                    </span>
+                  </div>
+                  {productAssets.length > 0 ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {productAssets.map((asset) => (
+                        <div key={asset.id} className="relative group">
+                          <img
+                            src={asset.url}
+                            alt={asset.role || '产品图'}
+                            className="w-16 h-16 rounded-lg object-cover border border-slate-200 dark:border-slate-700"
+                          />
+                          {asset.role === 'hero' && (
+                            <span className="absolute -top-1.5 -left-1.5 text-[9px] bg-emerald-600 text-white px-1 py-0.5 rounded shadow-sm">
+                              主图
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteProductAsset(asset.id)}
+                            className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-rose-500 text-white text-[9px] leading-none hidden group-hover:flex items-center justify-center shadow-sm"
+                            title="删除产品图"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                      <label
+                        className="w-16 h-16 rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-600 hover:border-emerald-500 flex flex-col items-center justify-center cursor-pointer text-slate-400 hover:text-emerald-600 transition-colors"
+                        title="再传一张产品图"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span className="text-[9px]">加图</span>
+                        <input type="file" accept="image/*" className="hidden" onChange={handleProductAssetUpload} />
+                      </label>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 p-2.5 rounded-lg border border-amber-200 bg-amber-50/70 dark:bg-amber-950/20">
+                      <span className="text-[11px] text-amber-700 dark:text-amber-300 flex-1">
+                        当前产品还没有产品图
+                        {activeProduct?.coverImage ? '（未上传时将用产品封面图兜底）' : '——爆款直出需要产品图作为成片首帧，请上传'}
+                      </span>
+                      <label className="shrink-0 flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold cursor-pointer">
+                        <Upload className="w-3 h-3" />
+                        上传产品图
+                        <input type="file" accept="image/*" className="hidden" onChange={handleProductAssetUpload} />
+                      </label>
+                    </div>
+                  )}
                 </div>
               </div>
 

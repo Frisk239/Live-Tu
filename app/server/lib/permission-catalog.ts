@@ -48,4 +48,9 @@ export const OPERATOR_PERMISSION_KEYS: PermissionKey[] = [
   'module.tasks.read',
   'module.tasks.write',
   'module.presets.read',
+  // 运营是工作台/爆款直出的主要使用者：需读取产品知识库 + 上传产品图
+  'module.knowledge.read',
+  'module.knowledge.write',
+  // BGM 曲库只读（试听/查看授权信息）
+  'module.bgm.read',
 ];

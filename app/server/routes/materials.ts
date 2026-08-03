@@ -41,7 +41,7 @@ const streamingUpload = multer({
       );
     },
   }),
-  limits: { files: 1, fileSize: 100 * 1024 * 1024 },
+  limits: { files: 1, fileSize: 200 * 1024 * 1024 },
   fileFilter: (_req, file, callback) => {
     if (!allowedUploadMimeTypes.has(file.mimetype)) {
       return callback(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'file'));

@@ -57,7 +57,7 @@ app.use('/metrics', metricsRouter);
 app.get(
   '/permission-probe',
   requireAuth,
-  requirePermission('module.knowledge.read'),
+  requirePermission('admin.metrics.read'),
   (_req, res) => res.json({ success: true })
 );
 
@@ -88,8 +88,11 @@ async function login(username: string) {
   return { body, cookie };
 }
 
-test('database permissions grant operator only ordinary workflow modules', () => {
+test('database permissions grant operator ordinary workflow modules', () => {
   assert.deepEqual(getUserPermissions('operator-id'), [
+    'module.bgm.read',
+    'module.knowledge.read',
+    'module.knowledge.write',
     'module.materials.read',
     'module.materials.write',
     'module.pipeline.read',
@@ -114,15 +117,16 @@ test('login and me expose database-derived permissions', async () => {
 test('operator receives 403 for protected administration modules', async () => {
   const { cookie } = await login('haini');
   const responses = await Promise.all([
+    // knowledge/bgm 已对 operator 开放（工作台爆款直出需要产品图/BGM 试听）
     fetch(`${baseUrl}/bgm`, { headers: { Cookie: cookie } }),
-    fetch(`${baseUrl}/models/config`, { headers: { Cookie: cookie } }),
     fetch(`${baseUrl}/knowledge`, { headers: { Cookie: cookie } }),
+    fetch(`${baseUrl}/models/config`, { headers: { Cookie: cookie } }),
     fetch(`${baseUrl}/auth/users`, { headers: { Cookie: cookie } }),
     fetch(`${baseUrl}/auth/audit-logs`, { headers: { Cookie: cookie } }),
     fetch(`${baseUrl}/metrics`, { headers: { Cookie: cookie } }),
     fetch(`${baseUrl}/permission-probe`, { headers: { Cookie: cookie } }),
   ]);
-  assert.deepEqual(responses.map((response) => response.status), [403, 403, 403, 403, 403, 403, 403]);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200, 403, 403, 403, 403, 403]);
 });
 
 test('admin database permissions allow all protected administration modules', async () => {

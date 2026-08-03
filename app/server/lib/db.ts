@@ -575,6 +575,19 @@ export function initDatabase() {
         }
       },
     },
+    {
+      version: 16,
+      name: 'grant_operator_knowledge_and_bgm',
+      up: () => {
+        const insertRolePermission = db.prepare(
+          `INSERT OR IGNORE INTO role_permissions (role, permission_key)
+           VALUES (?, ?)`
+        );
+        for (const permission of ['module.knowledge.read', 'module.knowledge.write', 'module.bgm.read']) {
+          insertRolePermission.run('operator', permission);
+        }
+      },
+    },
   ]);
 
   // WAL mode & busy timeout

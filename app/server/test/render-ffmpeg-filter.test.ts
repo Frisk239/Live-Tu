@@ -16,7 +16,8 @@ describe('Ticket 12 — FFmpeg 多轨字幕与品牌水印 Filter Chain 测试',
       brandStamp: 'BUV 沙利文国货榜首',
     });
 
-    assert.ok(cmd.includes('ffmpeg -y -i "/uploads/materials/sample_v.mp4" -i "/uploads/bgm/sample_a.mp3"'));
+    // ffmpeg 二进制路径因机器而异（PATH / WinGet / 自定义），断言从 -y 开始
+    assert.ok(cmd.includes('-y -i "/uploads/materials/sample_v.mp4" -i "/uploads/bgm/sample_a.mp3"'));
     assert.ok(cmd.includes('scale=1080:1920'));
     assert.ok(cmd.includes('crop=1080:1920'));
     assert.ok(cmd.includes('drawtext=text=\'SGS实测强效控油\''));

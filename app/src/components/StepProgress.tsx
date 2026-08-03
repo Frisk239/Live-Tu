@@ -43,6 +43,9 @@ interface StepProgressProps {
   stepSources?: Partial<Record<StepId, string>>;
   /** Open task center (draft list) */
   onOpenTasks?: () => void;
+  /** Dual-input readiness for viral direct-out one-click */
+  dualInputReady?: boolean;
+  dualInputHint?: string;
 }
 
 export const STEP_CONFIG: Array<{
@@ -70,6 +73,8 @@ export const StepProgress: React.FC<StepProgressProps> = React.memo(({
   draftSavedLabel = null,
   stepSources = {},
   onOpenTasks,
+  dualInputReady = true,
+  dualInputHint,
 }) => {
   const getStepStatus = (id: StepId) => {
     const key = `step${id}` as keyof PipelineData;
@@ -160,7 +165,18 @@ export const StepProgress: React.FC<StepProgressProps> = React.memo(({
             onRunFullPipelineAuto && (
               <button
                 onClick={onRunFullPipelineAuto}
-                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-500 shadow-2xs transition-all cursor-pointer"
+                disabled={!dualInputReady}
+                data-testid="one-click-direct-out"
+                title={
+                  dualInputReady
+                    ? '一键全自动贯通反推'
+                    : dualInputHint || '需要爆款素材 + 产品图'
+                }
+                className={`inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold text-white shadow-2xs transition-all ${
+                  dualInputReady
+                    ? 'bg-blue-600 hover:bg-blue-500 cursor-pointer'
+                    : 'bg-slate-400 cursor-not-allowed opacity-80'
+                }`}
               >
                 <Zap className="w-4 h-4 fill-white text-white" />
                 <span>一键全自动贯通反推 (Step 1→5)</span>
@@ -169,6 +185,15 @@ export const StepProgress: React.FC<StepProgressProps> = React.memo(({
           )}
         </div>
       </div>
+
+      {!dualInputReady && dualInputHint && (
+        <div
+          className="mb-3 px-3 py-2 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-900 font-medium"
+          data-testid="dual-input-hint"
+        >
+          {dualInputHint}
+        </div>
+      )}
 
       {/* Auto pipeline progress strip */}
       {isAutoPipelineRunning && (

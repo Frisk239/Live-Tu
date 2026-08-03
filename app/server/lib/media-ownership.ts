@@ -36,6 +36,18 @@ export function canReadOwnedMedia(path: string, ownerId: string, isAdmin: boolea
   ).get(ownerId, normalized, normalized);
   if (material) return true;
 
+  // Product visual assets (shared knowledge-base identity pack for the product)
+  try {
+    const productAsset = db.prepare(
+      `SELECT 1 FROM product_assets
+        WHERE url = ? OR '/' || REPLACE(COALESCE(file_path, ''), '\\', '/') = ?
+        LIMIT 1`
+    ).get(normalized, normalized);
+    if (productAsset) return true;
+  } catch {
+    /* table may not exist in legacy test DBs mid-migration */
+  }
+
   const keyframe = db.prepare(
     `SELECT 1
        FROM video_preprocess_cache

@@ -1,43 +1,189 @@
 import { Router } from 'express';
+import path from 'node:path';
+import fs from 'node:fs';
+import multer from 'multer';
 import { db } from '../lib/db';
 import { requirePermission } from '../lib/auth';
 import { callLlmGateway } from '../lib/llm-gateway';
+import {
+  deleteProductAsset,
+  insertProductAsset,
+  listProductAssets,
+} from '../lib/product-assets';
+import { registerOwnedMedia } from '../lib/media-ownership';
 
 export const productsRouter = Router();
+
+const uploadsRoot = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'));
+const productAssetsDir = path.join(uploadsRoot, 'product-assets');
+if (!fs.existsSync(productAssetsDir)) {
+  fs.mkdirSync(productAssetsDir, { recursive: true });
+}
+
+const imageMime = new Map([
+  ['image/jpeg', 'jpg'],
+  ['image/png', 'png'],
+  ['image/webp', 'webp'],
+]);
+
+const productAssetUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, productAssetsDir),
+    filename: (_req, file, cb) => {
+      const ext = imageMime.get(file.mimetype) || 'jpg';
+      cb(null, `pa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`);
+    },
+  }),
+  limits: { files: 1, fileSize: 15 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!imageMime.has(file.mimetype)) {
+      return cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'file'));
+    }
+    cb(null, true);
+  },
+});
+
+function mapProductRow(r: any, assets?: ReturnType<typeof listProductAssets>) {
+  return {
+    id: r.id,
+    name: r.name,
+    category: r.category,
+    positioning: r.positioning,
+    price: r.price,
+    salesRecord: r.sales_record,
+    coverImage: r.cover_image,
+    model343: {
+      clays: r.model343_clays,
+      extracts: r.model343_extracts,
+      surfactants: r.model343_surfactants,
+    },
+    sgsData: {
+      oil8h: r.sgs_oil_8h,
+      oil14d: r.sgs_oil_14d,
+      blackhead14d: r.sgs_blackhead_14d,
+    },
+    prohibitedWords: JSON.parse(r.prohibited_words || '[]'),
+    customSellingPoints: r.custom_selling_points,
+    targetAudience: r.target_audience,
+    updatedAt: r.updated_at,
+    assets: assets ?? listProductAssets(r.id),
+  };
+}
 
 // GET /api/products — 获取所有产品列表
 productsRouter.get('/', requirePermission('module.knowledge.read'), (req, res) => {
   try {
     const stmt = db.prepare('SELECT * FROM products ORDER BY updated_at DESC');
     const rows = stmt.all() as any[];
-    const products = rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      category: r.category,
-      positioning: r.positioning,
-      price: r.price,
-      salesRecord: r.sales_record,
-      coverImage: r.cover_image,
-      model343: {
-        clays: r.model343_clays,
-        extracts: r.model343_extracts,
-        surfactants: r.model343_surfactants,
-      },
-      sgsData: {
-        oil8h: r.sgs_oil_8h,
-        oil14d: r.sgs_oil_14d,
-        blackhead14d: r.sgs_blackhead_14d,
-      },
-      prohibitedWords: JSON.parse(r.prohibited_words || '[]'),
-      customSellingPoints: r.custom_selling_points,
-      targetAudience: r.target_audience,
-      updatedAt: r.updated_at,
-    }));
+    const products = rows.map((r) => mapProductRow(r));
     return res.json({ success: true, data: products });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// GET /api/products/:id/assets — list product visual assets
+productsRouter.get('/:id/assets', requirePermission('module.knowledge.read'), (req, res) => {
+  try {
+    const product = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
+    if (!product) return res.status(404).json({ success: false, error: 'Product not found' });
+    const assets = listProductAssets(req.params.id);
+    return res.json({ success: true, data: assets });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/products/:id/assets — attach product image (JSON url or multipart file)
+productsRouter.post(
+  '/:id/assets',
+  requirePermission('module.knowledge.write'),
+  (req, res, next) => {
+    const contentType = String(req.headers['content-type'] || '');
+    if (contentType.includes('multipart/form-data')) {
+      return productAssetUpload.single('file')(req, res, next);
+    }
+    return next();
+  },
+  (req, res) => {
+    try {
+      const productId = req.params.id;
+      const product = db.prepare('SELECT id FROM products WHERE id = ?').get(productId);
+      if (!product) return res.status(404).json({ success: false, error: 'Product not found' });
+
+      const role = String(req.body?.role || 'hero');
+      const sortOrder = Number(req.body?.sortOrder ?? 0);
+      let url = String(req.body?.url || '').trim();
+      let filePath: string | undefined;
+
+      const file = (req as any).file as { filename?: string } | undefined;
+      if (file?.filename) {
+        filePath = path.join('uploads', 'product-assets', file.filename).replace(/\\/g, '/');
+        url = `/uploads/product-assets/${file.filename}`;
+      }
+
+      if (!url) {
+        return res.status(400).json({
+          success: false,
+          error: '产品图 url 或 file 必填',
+        });
+      }
+
+      const id =
+        req.body?.id ||
+        `pa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      insertProductAsset({
+        id,
+        productId,
+        role,
+        url,
+        filePath: filePath || url.replace(/^\//, ''),
+        sortOrder,
+        ownerId: req.authUser?.id || null,
+      });
+
+      if (req.authUser?.id && url.startsWith('/uploads/')) {
+        registerOwnedMedia(url, req.authUser.id, 'product_asset');
+      }
+
+      // Optionally set cover if empty
+      const row = db.prepare('SELECT cover_image FROM products WHERE id = ?').get(productId) as
+        | { cover_image?: string }
+        | undefined;
+      if (row && !row.cover_image) {
+        db.prepare('UPDATE products SET cover_image = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(
+          url,
+          productId
+        );
+      }
+
+      const assets = listProductAssets(productId);
+      const created = assets.find((a) => a.id === id) || { id, url, role, sortOrder };
+      return res.status(201).json({ success: true, data: created, assets });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
+
+// DELETE /api/products/:id/assets/:assetId
+productsRouter.delete(
+  '/:id/assets/:assetId',
+  requirePermission('module.knowledge.write'),
+  (req, res) => {
+    try {
+      const ok = deleteProductAsset(req.params.assetId, req.params.id);
+      if (!ok) return res.status(404).json({ success: false, error: 'Asset not found' });
+      return res.json({
+        success: true,
+        data: listProductAssets(req.params.id),
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
 
 // GET /api/products/:id — 获取单个产品
 productsRouter.get('/:id', requirePermission('module.knowledge.read'), (req, res) => {
@@ -46,29 +192,7 @@ productsRouter.get('/:id', requirePermission('module.knowledge.read'), (req, res
     const r = stmt.get(req.params.id) as any;
     if (!r) return res.status(404).json({ success: false, error: 'Product not found' });
 
-    const product = {
-      id: r.id,
-      name: r.name,
-      category: r.category,
-      positioning: r.positioning,
-      price: r.price,
-      salesRecord: r.sales_record,
-      coverImage: r.cover_image,
-      model343: {
-        clays: r.model343_clays,
-        extracts: r.model343_extracts,
-        surfactants: r.model343_surfactants,
-      },
-      sgsData: {
-        oil8h: r.sgs_oil_8h,
-        oil14d: r.sgs_oil_14d,
-        blackhead14d: r.sgs_blackhead_14d,
-      },
-      prohibitedWords: JSON.parse(r.prohibited_words || '[]'),
-      customSellingPoints: r.custom_selling_points,
-      targetAudience: r.target_audience,
-      updatedAt: r.updated_at,
-    };
+    const product = mapProductRow(r);
     return res.json({ success: true, data: product });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });

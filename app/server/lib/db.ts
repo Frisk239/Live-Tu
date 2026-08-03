@@ -530,6 +530,27 @@ export function initDatabase() {
         `);
       },
     },
+    {
+      version: 14,
+      name: 'add_product_visual_assets',
+      up: () => {
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS product_assets (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'hero',
+            url TEXT NOT NULL,
+            file_path TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            owner_id TEXT,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+          );
+          CREATE INDEX IF NOT EXISTS idx_product_assets_product
+            ON product_assets(product_id, sort_order, created_at);
+        `);
+      },
+    },
   ]);
 
   // WAL mode & busy timeout

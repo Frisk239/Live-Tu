@@ -1314,8 +1314,45 @@ export default function App() {
     }
   };
 
+  const isVideoMediaUrl = (url?: string) => {
+    if (!url) return false;
+    const lower = url.toLowerCase().split('?')[0];
+    return (
+      lower.endsWith('.mp4') ||
+      lower.endsWith('.webm') ||
+      lower.endsWith('.mov') ||
+      lower.endsWith('.avi') ||
+      lower.endsWith('.mkv') ||
+      lower.includes('/video')
+    );
+  };
+
+  const getProductAssetIds = () =>
+    (activeProduct?.assets || [])
+      .map((a) => a.id)
+      .filter(Boolean) as string[];
+
+  const canStartViralDirectOut = () => {
+    const mediaUrl = pipelineData.step1.inputs.mediaUrl;
+    const hasViral = Boolean(mediaUrl);
+    const hasProductAssets = getProductAssetIds().length > 0 || Boolean(activeProduct?.coverImage);
+    return { hasViral, hasProductAssets, isVideo: isVideoMediaUrl(mediaUrl) };
+  };
+
   const runFullPipelineAuto = async () => {
     if (isAutoPipelineRunning) return;
+
+    // Dual-input guard for viral direct-out (one-click always uses viral mode when video present)
+    const { hasViral, hasProductAssets, isVideo } = canStartViralDirectOut();
+    if (!hasViral) {
+      notify('请先导入爆款视频或参考图，再一键直出', 'error');
+      return;
+    }
+    if (isVideo && !hasProductAssets) {
+      notify('爆款直出需要至少 1 张产品图：请在品牌知识库为当前产品上传产品图', 'error');
+      return;
+    }
+
     const signal = getNewAbortSignal();
     const idempotencyKey = crypto.randomUUID();
     setIsAutoPipelineRunning(true);
@@ -1358,11 +1395,22 @@ export default function App() {
     };
 
     try {
+      const productAssetIds = getProductAssetIds();
+      const directOutMode = isVideoMediaUrl(pipelineData.step1.inputs.mediaUrl)
+        ? 'viral'
+        : 'legacy';
+      const pipelineForRun = {
+        ...pipelineData,
+        directOutMode,
+        productAssetIds,
+      } as PipelineData & { directOutMode?: string; productAssetIds?: string[] };
+
       let run = await apiService.runs.start(
-        pipelineData,
+        pipelineForRun,
         activeProduct?.id,
         activeProduct,
-        idempotencyKey
+        idempotencyKey,
+        { productAssetIds, directOutMode }
       );
       activeRunIdRef.current = run.id;
       localStorage.setItem('aigc_active_pipeline_run_id', run.id);
@@ -1606,6 +1654,14 @@ export default function App() {
         const output = result.data;
         if (result.source) setStepSources((s) => ({ ...s, 1: String(result.source) }));
         setPipelineData((prev) => {
+          // Prefer product-conditioned first frame over viral media URL
+          const productFrame =
+            output.productHeroFrameUrl ||
+            output.migrationPlan?.productHeroUrl ||
+            activeProduct?.assets?.[0]?.url ||
+            activeProduct?.coverImage ||
+            '';
+          const nextImageUrl = productFrame || prev.step1.inputs.mediaUrl;
           const next = {
             ...prev,
             step1: { ...prev.step1, output, status: 'completed' as const },
@@ -1616,7 +1672,7 @@ export default function App() {
                 static_image_prompt: prev.step2.output
                   ? prev.step2.inputs.static_image_prompt
                   : output.static_image_prompt,
-                imageUrl: prev.step2.output ? prev.step2.inputs.imageUrl : prev.step1.inputs.mediaUrl,
+                imageUrl: prev.step2.output ? prev.step2.inputs.imageUrl : nextImageUrl,
               },
             },
           };
@@ -1624,7 +1680,7 @@ export default function App() {
             markDownstreamStale(1, prev);
           } else {
             next.step2.inputs.static_image_prompt = output.static_image_prompt;
-            next.step2.inputs.imageUrl = prev.step1.inputs.mediaUrl;
+            next.step2.inputs.imageUrl = nextImageUrl;
           }
           return next;
         });
@@ -2321,6 +2377,20 @@ export default function App() {
                 draftSavedLabel={draftSavedLabel}
                 stepSources={stepSources}
                 onOpenTasks={handleOpenTasks}
+                dualInputReady={(() => {
+                  const { hasViral, hasProductAssets, isVideo } = canStartViralDirectOut();
+                  if (!hasViral) return false;
+                  if (isVideo && !hasProductAssets) return false;
+                  return true;
+                })()}
+                dualInputHint={(() => {
+                  const { hasViral, hasProductAssets, isVideo } = canStartViralDirectOut();
+                  if (!hasViral) return '请先导入爆款视频或参考图';
+                  if (isVideo && !hasProductAssets) {
+                    return '爆款直出需要产品图：请到「品牌知识库」为当前产品上传至少 1 张产品图';
+                  }
+                  return undefined;
+                })()}
               />
 
               {/* Active Step Cards Container */}

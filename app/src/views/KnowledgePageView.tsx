@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ProductItem, SellingPointsAiModel } from '../types';
 import { PRODUCT_TEMPLATES } from '../data/presets';
 import { notify } from '../services/notifications';
+import { apiService } from '../services/api';
 import {
   ShieldCheck,
   Award,
@@ -16,6 +17,7 @@ import {
   Cpu,
   Zap,
   ArrowLeft,
+  ImagePlus,
 } from 'lucide-react';
 
 interface KnowledgePageViewProps {
@@ -37,9 +39,56 @@ export const KnowledgePageView: React.FC<KnowledgePageViewProps> = ({
   const [selectedAiModel, setSelectedAiModel] = useState<SellingPointsAiModel>('gemini-3.6-flash');
   const [isOptimizing, setIsOptimizing] = useState<boolean>(false);
   const [showTemplateMenu, setShowTemplateMenu] = useState<boolean>(false);
+  const [isUploadingAsset, setIsUploadingAsset] = useState(false);
 
   const currentProduct = products.find((p) => p.id === selectedProductId) || products[0];
   const isActive = Boolean(currentProduct && currentProduct.id === activeProductId);
+
+  const refreshProductAssets = async (productId: string) => {
+    try {
+      const assets = await apiService.products.listAssets(productId);
+      onUpdateProducts(
+        products.map((p) => (p.id === productId ? { ...p, assets } : p))
+      );
+    } catch (err: any) {
+      console.warn('refresh assets', err?.message);
+    }
+  };
+
+  const handleUploadProductAsset = async (file: File | null) => {
+    if (!file || !currentProduct) return;
+    setIsUploadingAsset(true);
+    try {
+      const result = await apiService.products.addAsset(currentProduct.id, {
+        file,
+        role: (currentProduct.assets?.length || 0) === 0 ? 'hero' : 'angle',
+      });
+      const assets = result.assets || (await apiService.products.listAssets(currentProduct.id));
+      onUpdateProducts(
+        products.map((p) =>
+          p.id === currentProduct.id
+            ? { ...p, assets, coverImage: p.coverImage || assets[0]?.url }
+            : p
+        )
+      );
+      notify('产品图已上传，可用于爆款直出', 'success');
+    } catch (err: any) {
+      notify(err?.message || '上传产品图失败', 'error');
+    } finally {
+      setIsUploadingAsset(false);
+    }
+  };
+
+  const handleDeleteProductAsset = async (assetId: string) => {
+    if (!currentProduct) return;
+    try {
+      await apiService.products.deleteAsset(currentProduct.id, assetId);
+      await refreshProductAssets(currentProduct.id);
+      notify('已删除产品图', 'success');
+    } catch (err: any) {
+      notify(err?.message || '删除失败', 'error');
+    }
+  };
 
   const handleFieldChange = (fieldPath: string, value: any) => {
     const updatedProducts = products.map((p) => {
@@ -372,6 +421,67 @@ export const KnowledgePageView: React.FC<KnowledgePageViewProps> = ({
           </div>
 
           <div className="space-y-5">
+            {/* Product visual identity pack — required for viral direct-out */}
+            <div
+              className="p-4 rounded-xl border border-violet-200/80 bg-violet-50/40 space-y-3"
+              data-testid="product-assets-panel"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                    <ImagePlus className="w-4 h-4 text-violet-600" />
+                    产品视觉资产（爆款直出必填）
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    至少上传 1 张产品主图，系统将用其锁定成片产品身份，而非原爆款竞品画面
+                  </p>
+                </div>
+                <label className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold cursor-pointer shadow-2xs flex items-center gap-1">
+                  <Plus className="w-3.5 h-3.5" />
+                  {isUploadingAsset ? '上传中…' : '上传产品图'}
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    className="hidden"
+                    data-testid="product-asset-file-input"
+                    disabled={isUploadingAsset}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] || null;
+                      void handleUploadProductAsset(f);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+              <div className="flex flex-wrap gap-2" data-testid="product-assets-list">
+                {(currentProduct.assets || []).length === 0 ? (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    尚未上传产品图 — 一键爆款直出将被拦截
+                  </p>
+                ) : (
+                  (currentProduct.assets || []).map((asset) => (
+                    <div
+                      key={asset.id}
+                      className="relative w-20 h-20 rounded-lg overflow-hidden border border-slate-200 bg-white group"
+                    >
+                      <img src={asset.url} alt={asset.role || 'product'} className="w-full h-full object-cover" />
+                      <span className="absolute bottom-0 left-0 right-0 text-[9px] text-center bg-black/50 text-white py-0.5">
+                        {asset.role || 'hero'}
+                      </span>
+                      <button
+                        type="button"
+                        title="删除"
+                        onClick={() => void handleDeleteProductAsset(asset.id)}
+                        className="absolute top-0.5 right-0.5 p-0.5 rounded bg-black/50 text-white opacity-0 group-hover:opacity-100 cursor-pointer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="text-xs font-semibold text-slate-700 block mb-1">产品名称</label>

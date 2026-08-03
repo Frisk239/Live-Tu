@@ -35,16 +35,33 @@ runsRouter.post('/', (req, res) => {
     const idempotencyKey = String(
       req.headers['idempotency-key'] || req.body?.idempotencyKey || randomUUID()
     );
+    const pipelineData = req.body?.pipelineData || {};
+    // Normalize productId: accept top-level, productInfo.id (legacy clients), or pipelineData.
+    const productId =
+      req.body?.productId ||
+      req.body?.productInfo?.id ||
+      pipelineData.productId ||
+      pipelineData.step1?.inputs?.productId ||
+      null;
     const run = currentOrchestrator().start({
       ownerId: req.authUser!.id,
       idempotencyKey,
-      productId: req.body?.productId,
+      productId,
       productInfo: req.body?.productInfo,
-      pipelineData: req.body?.pipelineData,
+      productAssetIds:
+        req.body?.productAssetIds ||
+        pipelineData.productAssetIds ||
+        pipelineData.step1?.inputs?.productAssetIds,
+      directOutMode: req.body?.directOutMode || pipelineData.directOutMode,
+      pipelineData,
     });
     return res.status(202).json({ success: true, data: run });
   } catch (error: any) {
-    return res.status(error.status || 400).json({ success: false, error: error.message });
+    const message = String(error?.message || '');
+    const friendly = /FOREIGN KEY constraint failed/i.test(message)
+      ? '产品不存在或已被删除，请先在产品知识库创建产品'
+      : message;
+    return res.status(error.status || 400).json({ success: false, error: friendly });
   }
 });
 

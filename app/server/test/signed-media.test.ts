@@ -40,8 +40,17 @@ test('serves only a correctly signed upload path', async () => {
   assert.equal((await fetch(tampered)).status, 403);
 });
 
-test('converts private upload URLs into provider-safe signed URLs', () => {
-  const resolved = resolvePublicMediaUrl('/uploads/materials/fixture.txt', baseUrl);
+test('refuses private base and converts public upload URLs into provider-safe signed URLs', () => {
+  // Private base (e.g. localhost dev) must be refused — Seedance cannot download it
+  const refused = resolvePublicMediaUrl('/uploads/materials/fixture.txt', baseUrl);
+  assert.equal(refused.url, null);
+  assert.match(refused.warning || '', /内网|公网|PUBLIC_BASE_URL/);
+
+  // Public base produces a provider-safe signed URL
+  const resolved = resolvePublicMediaUrl(
+    '/uploads/materials/fixture.txt',
+    'https://buv.example.com:3004'
+  );
   assert.ok(resolved.url);
   const url = new URL(resolved.url!);
   assert.equal(url.pathname, '/provider-media');

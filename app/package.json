@@ -25,7 +25,9 @@
     "test:e2e:seedance": "node scripts/run-paid-e2e.mjs e2e/seedance-video.spec.ts",
     "test:e2e:durable": "node scripts/run-paid-e2e.mjs e2e/durable-run.spec.ts",
     "test:e2e:paid": "node scripts/run-paid-e2e.mjs e2e/seedance-video.spec.ts e2e/durable-run.spec.ts",
-    "test:e2e:all": "playwright test e2e/smoke.spec.ts e2e/step5-readiness.spec.ts e2e/accessibility.spec.ts e2e/permissions.spec.ts"
+    "test:e2e:all": "playwright test e2e/smoke.spec.ts e2e/step5-readiness.spec.ts e2e/accessibility.spec.ts e2e/permissions.spec.ts",
+    "test:dual-gate": "tsx --test server/test/dual-input-publish-gate.test.ts",
+    "test:e2e:dual": "playwright test e2e/product-viral-dual-input.spec.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

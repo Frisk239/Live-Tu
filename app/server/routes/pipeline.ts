@@ -27,6 +27,9 @@ import {
   buildSeedanceGenerationBody,
 } from './seedance';
 import { cacheRemoteMedia, runFfmpegRender } from './render';
+import { buildShotMigrationPlan, type ProductAssetRef } from '../lib/migration-plan';
+import { resolveRunProductAssets } from '../lib/product-assets';
+import { evaluatePublishGate } from '../lib/publish-gate';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -436,6 +439,16 @@ ${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
     "hasBgm": true,
     "estimatedBpm": "115",
     "musicStyle": "轻快卡点 Ambient"
+  },
+  "narrativeBeats": [
+    { "beat": "hook", "startSec": 0, "endSec": 3, "intent": "黄金3秒抓注意力" },
+    { "beat": "demo", "startSec": 3, "endSec": 12, "intent": "产品质感演示" },
+    { "beat": "cta", "startSec": 12, "endSec": 20, "intent": "转化引导" }
+  ],
+  "migrationHints": {
+    "mustKeep": ["前3秒Hook节奏", "分镜叙事弧"],
+    "mustReplace": ["竞品包装", "竞品品牌名", "非我方产品主体"],
+    "productInsertRules": "所有成片首帧必须使用我方产品包装与质感"
   }
 }`;
 
@@ -445,7 +458,8 @@ ${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
 - 博主类型：${bloggerType}
 - 爆款原因：${viralReason || '多镜头节奏紧凑，画面质感通透，卡点精准种草'}
 - 关键帧图片总数：${keyframeUrls.length} 张
-请根据所提供的视频顺序关键帧序列，进行深度镜头拆解并输出纯 JSON。`;
+请根据所提供的视频顺序关键帧序列，进行深度镜头拆解并输出纯 JSON。
+注意：shotList[].keyframeUrl 仅作结构参考，最终成片首帧将使用我方产品图，不得把竞品包装当最终主体。`;
 
     const hRes = await executeWithSelfCorrection<VideoDeconstructionOutput>(
       'Step1-VideoDeconstruction',
@@ -465,9 +479,29 @@ ${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
           keyframeUrl: shot.keyframeUrl || keyframeUrls[idx % keyframeUrls.length] || '',
         }));
       }
+      // Attach migration plan when product assets are available
+      const productAssets: ProductAssetRef[] = resolveRunProductAssets({
+        productId,
+        productAssetIds: inputs.productAssetIds || req.body.productAssetIds,
+      });
+      let migrationPlan: ReturnType<typeof buildShotMigrationPlan> | undefined;
+      if (productAssets.length > 0) {
+        try {
+          migrationPlan = buildShotMigrationPlan(hRes.data, productAssets, {
+            productName: product.name,
+          });
+        } catch (err: any) {
+          console.warn('[Step1] migration plan build skipped:', err.message);
+        }
+      }
       return res.json({
         success: true,
-        data: hRes.data,
+        data: {
+          ...hRes.data,
+          migrationPlan,
+          productHeroFrameUrl: migrationPlan?.productHeroUrl,
+          firstFrameSource: migrationPlan ? 'product_conditioned' : undefined,
+        },
         source: hRes.source,
         modelUsed: hRes.modelUsed,
       });
@@ -552,6 +586,16 @@ ${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
         hasBgm: true,
         estimatedBpm: '118',
         musicStyle: '轻快卡点 Ambient / Lofi Rhythm',
+      },
+      narrativeBeats: [
+        { beat: 'hook', startSec: 0, endSec: 3, intent: '黄金3秒抓注意力' },
+        { beat: 'demo', startSec: 3, endSec: 7, intent: '产品质感演示' },
+        { beat: 'cta', startSec: 7, endSec: 10, intent: '转化引导' },
+      ],
+      migrationHints: {
+        mustKeep: ['前3秒Hook节奏', '分镜叙事弧'],
+        mustReplace: ['竞品包装', '竞品品牌名', '非我方产品主体'],
+        productInsertRules: '所有成片首帧必须使用我方产品包装与质感',
       },
     };
 
@@ -652,18 +696,84 @@ pipelineRouter.post('/step2', async (req, res) => {
     productInfo,
     shotList: inputShotList,
     pipelineData,
+    productAssets: inputProductAssets,
+    productAssetIds: inputProductAssetIds,
+    migrationPlan: inputMigrationPlan,
+    productFirstFrameUrl: inputProductFirstFrame,
+    firstFrameSource: inputFirstFrameSource,
+    viralMediaUrl,
   } = inputs;
 
-  const targetShotList = inputShotList || pipelineData?.step1?.output?.shotList || req.body.pipelineData?.step1?.output?.shotList;
+  const productAssets: ProductAssetRef[] =
+    (Array.isArray(inputProductAssets) && inputProductAssets.length > 0
+      ? inputProductAssets
+      : resolveRunProductAssets({
+          productId,
+          productAssetIds:
+            inputProductAssetIds ||
+            pipelineData?.productAssetIds ||
+            inputs.productAssetIds,
+        })) as ProductAssetRef[];
+
+  let migrationPlan = inputMigrationPlan || pipelineData?.step1?.output?.migrationPlan;
+  if (!migrationPlan && productAssets.length > 0) {
+    try {
+      const structure = pipelineData?.step1?.output || {
+        shotList: inputShotList,
+        static_image_prompt,
+      };
+      migrationPlan = buildShotMigrationPlan(structure, productAssets, {
+        productName: getProductContext(productId, productInfo).name,
+      });
+    } catch (err: any) {
+      console.warn('[Step2] migration plan:', err.message);
+    }
+  }
+
+  const planShots = migrationPlan?.shots;
+  const targetShotList =
+    (Array.isArray(planShots) && planShots.length > 0 ? planShots : null) ||
+    inputShotList ||
+    pipelineData?.step1?.output?.shotList ||
+    req.body.pipelineData?.step1?.output?.shotList;
   if (Array.isArray(targetShotList) && targetShotList.length > 12) {
     return res.status(400).json({
       success: false,
       error: '单次多镜头生成最多支持 12 个镜头',
     });
   }
-  const targetImageUrl = imageUrl || mediaUrl || '';
-  if (!canAccessLocalPipelineMedia(req, targetImageUrl, inputs._ownerId)) {
-    return res.status(404).json({ success: false, error: '首帧素材不存在或无权访问' });
+
+  // Product-conditioned first frame — never fall back to viral media as final frame
+  const productHeroUrl =
+    inputProductFirstFrame ||
+    migrationPlan?.productHeroUrl ||
+    productAssets[0]?.url ||
+    '';
+  const viralUrl = viralMediaUrl || pipelineData?.step1?.inputs?.mediaUrl || '';
+  const rawTarget = imageUrl || mediaUrl || '';
+  // If client still passed viral URL as imageUrl, replace with product hero when available
+  const looksLikeViral =
+    viralUrl &&
+    rawTarget &&
+    (rawTarget === viralUrl ||
+      (String(rawTarget).includes('/keyframes/') && productHeroUrl));
+  const targetImageUrl = productHeroUrl || (!looksLikeViral ? rawTarget : '') || productHeroUrl;
+  const firstFrameSource =
+    inputFirstFrameSource ||
+    (productHeroUrl || (targetImageUrl && productAssets.some((a) => a.url === targetImageUrl))
+      ? 'product_conditioned'
+      : targetImageUrl
+        ? 'legacy_image'
+        : undefined);
+
+  if (targetImageUrl && !canAccessLocalPipelineMedia(req, targetImageUrl, inputs._ownerId)) {
+    // product assets under /uploads/product-assets should be readable for owner
+    const isProductAssetPath =
+      targetImageUrl.startsWith('/uploads/product-assets/') ||
+      targetImageUrl.startsWith('uploads/product-assets/');
+    if (!isProductAssetPath) {
+      return res.status(404).json({ success: false, error: '首帧素材不存在或无权访问' });
+    }
   }
   const product = getProductContext(productId, productInfo);
   const motionLlmId = textModel || 'Gemini 3.6 Flash';
@@ -684,6 +794,8 @@ pipelineRouter.post('/step2', async (req, res) => {
       cameraMovement: string;
       description: string;
       keyframeUrl: string;
+      referenceKeyframeUrl?: string;
+      firstFrameSource: string;
       video_prompt: string;
       seedanceTaskId?: string;
       status: 'pending' | 'generating' | 'completed' | 'failed';
@@ -694,7 +806,15 @@ pipelineRouter.post('/step2', async (req, res) => {
     for (let idx = 0; idx < targetShotList.length; idx++) {
       const shot = targetShotList[idx];
       const shotIndex = shot.shotIndex || (idx + 1);
-      const kfUrl = shot.keyframeUrl || targetImageUrl || '';
+      // Product-conditioned final first frame (never viral keyframe as Seedance input)
+      const productFrameUrl =
+        shot.productFirstFrameUrl ||
+        productHeroUrl ||
+        productAssets[idx % Math.max(1, productAssets.length)]?.url ||
+        targetImageUrl ||
+        '';
+      const structureRefUrl = shot.referenceKeyframeUrl || shot.keyframeUrl || '';
+      const kfUrl = productFrameUrl;
 
       const shotSystemPrompt = `你是一个专业 AIGC 短视频镜头运镜专家。根据特定的单个镜头信息生成结构化视频运镜指令 Prompt。
 ${HARNESS_CONSTRAINTS.JSON_ONLY}
@@ -707,18 +827,21 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
 
       const shotUserPrompt = `【镜头 ${shotIndex} 运镜生成】
 - 目标产品：${product.name}
-- 镜头类型：${shot.shotType || '特写'}
+- 镜头类型：${shot.shotType || shot.structureBrief || '特写'}
 - 运镜方式：${shot.cameraMovement || '推进'}
-- 镜头描述：${shot.description || '产品特写'}
+- 镜头描述：${shot.description || shot.structureBrief || '产品特写'}
 - 调性：${videoTone}
+- 要求：画面主体必须是我方产品包装，禁止竞品包装
 请输出纯 JSON。`;
 
-      let videoPrompt = `A smooth cinematic video shot for ${product.name}, ${shot.shotType || 'close-up'}, ${shot.cameraMovement || 'zoom in'}, 60fps, high detail`;
+      let videoPrompt =
+        shot.motionPrompt ||
+        `A smooth cinematic video shot for ${product.name}, ${shot.shotType || 'close-up'}, ${shot.cameraMovement || 'zoom in'}, 60fps, high detail, our product packaging only`;
       try {
         const shotRes = await callLlmGateway({
           system: shotSystemPrompt,
           user: shotUserPrompt,
-          imageUrl: kfUrl || undefined,
+          imageUrl: productFrameUrl || undefined,
           modelId: motionLlmId,
         });
         if (shotRes.success && shotRes.data && shotRes.data.video_prompt) {
@@ -816,8 +939,10 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
         shotIndex,
         shotType: shot.shotType || '特写',
         cameraMovement: shot.cameraMovement || '平滑推进',
-        description: shot.description || '',
+        description: shot.description || shot.structureBrief || '',
         keyframeUrl: kfUrl,
+        referenceKeyframeUrl: structureRefUrl || undefined,
+        firstFrameSource: 'product_conditioned',
         video_prompt: videoPrompt,
         seedanceTaskId: shotSeedanceTaskId,
         status: shotStatus,
@@ -832,6 +957,8 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
       estimatedCompletionTimeSec: targetShotList.length * 15,
       shots: shotTasks,
       concatStatus: 'pending' as const,
+      firstFrameSource: 'product_conditioned' as const,
+      productHeroUrl: productHeroUrl || undefined,
     };
 
     return res.json({
@@ -839,13 +966,16 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
       data: {
         motion_type: 'zoom_in',
         motion_intensity: 'medium',
-        motion_description: `分段多镜头生成：包含 ${targetShotList.length} 个独立拆解镜头，任务已存入 shot_generation_tasks 并分别提交生成`,
+        motion_description: `分段多镜头生成：包含 ${targetShotList.length} 个产品条件首帧镜头，禁止使用原爆款帧作为最终首帧`,
         duration_sec: String(targetShotList.length * 4),
         video_prompt: shotTasks[0]?.video_prompt || `Multi-shot video prompt for ${product.name}`,
         audio_layer: '多镜头卡点音轨与沉浸过渡音效',
-        negative_prompt: '避免镜头卡顿、跳帧或剧烈形变',
+        negative_prompt: '避免镜头卡顿、跳帧或剧烈形变、竞品包装',
         isMultiShot: true,
         multiShotResult,
+        migrationPlan,
+        firstFrameSource: 'product_conditioned',
+        productFirstFrameUrl: productHeroUrl || shotTasks[0]?.keyframeUrl,
         seedanceConfigured,
       },
       source: seedanceConfigured ? 'multi_shot_seedance' : (allowMockFallback() ? 'multi_shot_mock' : 'multi_shot_pending'),
@@ -917,6 +1047,9 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
 
   const seedanceConfigured = hasSeedanceConfig();
   data.seedanceConfigured = seedanceConfigured;
+  data.firstFrameSource = firstFrameSource || (productHeroUrl ? 'product_conditioned' : 'legacy_image');
+  data.productFirstFrameUrl = productHeroUrl || targetImageUrl;
+  if (migrationPlan) data.migrationPlan = migrationPlan;
 
   if (seedanceConfigured && targetImageUrl) {
     try {
@@ -975,7 +1108,8 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
   } else {
     data.seedanceStatus = seedanceConfigured ? 'awaiting_image_input' : 'unconfigured';
     if (!targetImageUrl) {
-      data.seedanceHint = '请先提供 Step1 素材/文生图首帧（imageUrl），再提交图生视频';
+      data.seedanceHint =
+        '缺少首帧图：请先在产品知识库上传产品图（爆款直出必填），或提供公网图片链接后重跑 Step2';
     } else if (!seedanceConfigured) {
       data.seedanceHint = '请在 .env 配置 SEEDANCE_BASE_URL / SEEDANCE_ACCOUNT / SEEDANCE_PASSWORD';
     }
@@ -1711,9 +1845,62 @@ pipelineRouter.post('/step5', async (req, res) => {
   }
 
   const out = renderResult.data;
+  const responseSource = isMockFallback ? 'mock' : (renderResult.source || 'ffmpeg');
+  const firstFrameSource =
+    inputs.firstFrameSource ||
+    step2Output?.firstFrameSource ||
+    pipelineData?.step2?.output?.firstFrameSource ||
+    undefined;
+
+  const publishReport = evaluatePublishGate({
+    videoUrl: out.videoUrl,
+    source: responseSource,
+    durationSec: out.duration_sec,
+    resolution: out.resolution,
+    aspectRatio,
+    hasSubtitles: renderSubtitles.length > 0,
+    hasAudio: Boolean(resolvedAudio),
+    isMockFallback,
+    allowMockFallback: allowMockFallback(),
+    complianceWarnings: step3Output?.warnings,
+    narrativeBeatsPresent: Boolean(
+      pipelineData?.step1?.output?.narrativeBeats?.length ||
+        (Array.isArray(shotList) && shotList.length >= 3)
+    ),
+    firstFrameSource,
+    clipCount: rawVideoClips.length || (videoForRender ? 1 : 0),
+  });
+
+  // When mock is disabled, do not report as successful publishable completion
+  if (!publishReport.passed && !allowMockFallback()) {
+    return res.status(422).json({
+      success: false,
+      error: `成片未通过发布门禁: ${publishReport.blockers.join(', ') || publishReport.status}`,
+      source: responseSource,
+      data: {
+        timeline,
+        output: {
+          filename: out.filename,
+          resolution: out.resolution,
+          format: out.format,
+          duration_sec: out.duration_sec,
+          videoUrl: out.videoUrl,
+          downloadUrl: out.downloadUrl,
+        },
+        publishReport,
+        qa_checklist: [
+          `✗ Publish Gate: ${publishReport.status}`,
+          ...publishReport.blockers.map((b) => `✗ ${b}`),
+          ...publishReport.warnings.map((w) => `○ ${w}`),
+        ],
+        renderEngine: out.renderEngine,
+      },
+    });
+  }
+
   return res.json({
     success: true,
-    source: isMockFallback ? 'mock' : (renderResult.source || 'ffmpeg'),
+    source: responseSource,
     data: {
       timeline,
       output: {
@@ -1724,12 +1911,15 @@ pipelineRouter.post('/step5', async (req, res) => {
         videoUrl: out.videoUrl,
         downloadUrl: out.downloadUrl,
       },
+      publishReport,
       qa_checklist: [
+        publishReport.passed ? '✓ Publish Gate 通过' : `○ Publish Gate: ${publishReport.status}`,
         `✓ 画面比例匹配 (${out.resolution} ${aspectRatio})`,
         `✓ 字幕样式 [${subtitleStyle}]`,
         rawVideoClips.length > 1 ? `✓ 多片段视频源 (${rawVideoClips.length} clips)` : `✓ 视频源: ${videoForRender}`,
         resolvedAudio ? `✓ BGM: ${resolvedAudio}` : '○ 未附带 BGM（仅视频轨）',
         `✓ 渲染引擎: ${out.renderEngine}`,
+        ...publishReport.warnings.map((w) => `○ ${w}`),
       ],
       renderEngine: out.renderEngine,
     },

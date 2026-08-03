@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { db } from './db';
 import { internalWorkerHeaders } from './auth';
+import { buildShotMigrationPlan } from './migration-plan';
+import { resolveRunProductAssets } from './product-assets';
+import { evaluatePublishGate, gateAllowsCompleted } from './publish-gate';
 
 type RunStatus =
   | 'queued'
@@ -23,8 +26,60 @@ export type StartPipelineInput = {
   idempotencyKey: string;
   productId?: string;
   productInfo?: unknown;
+  productAssetIds?: string[];
+  /** When 'viral', require ≥1 product visual asset (dual-input contract) */
+  directOutMode?: 'viral' | 'legacy' | string;
   pipelineData: Record<string, any>;
 };
+
+function isViralDirectOutMode(input: StartPipelineInput): boolean {
+  const mode =
+    input.directOutMode ||
+    input.pipelineData?.directOutMode ||
+    input.pipelineData?.mode;
+  return mode === 'viral' || mode === 'viral_direct_out';
+}
+
+/**
+ * Enforce dual-input for viral direct-out: viral media + ≥1 product asset.
+ * Exported for unit tests.
+ */
+export function assertViralDualInput(input: StartPipelineInput): void {
+  if (!isViralDirectOutMode(input)) return;
+
+  const mediaUrl =
+    input.pipelineData?.step1?.inputs?.mediaUrl ||
+    input.pipelineData?.step1?.inputs?.imageUrl ||
+    '';
+  if (!mediaUrl) {
+    const err = new Error('爆款直出模式需要上传爆款素材（step1.inputs.mediaUrl）') as Error & {
+      status?: number;
+      code?: string;
+    };
+    err.status = 400;
+    err.code = 'MISSING_VIRAL_MEDIA';
+    throw err;
+  }
+
+  const assetIds =
+    input.productAssetIds ||
+    input.pipelineData?.productAssetIds ||
+    input.pipelineData?.step1?.inputs?.productAssetIds ||
+    [];
+  const assets = resolveRunProductAssets({
+    productId: input.productId || input.pipelineData?.productId,
+    productAssetIds: Array.isArray(assetIds) ? assetIds : [],
+  });
+
+  if (!assets.length) {
+    const err = new Error(
+      '爆款直出模式需要至少 1 张产品图（product assets）。请先在产品知识库上传产品图。'
+    ) as Error & { status?: number; code?: string };
+    err.status = 400;
+    err.code = 'MISSING_PRODUCT_ASSETS';
+    throw err;
+  }
+}
 
 export type PipelineRunSnapshot = {
   id: string;
@@ -184,6 +239,9 @@ export class PipelineOrchestrator {
       throw new Error('ownerId、idempotencyKey 和 pipelineData.step1.inputs 必填');
     }
 
+    // Dual-input contract for viral direct-out
+    assertViralDualInput(input);
+
     const existing = db.prepare(
       'SELECT id FROM pipeline_runs WHERE owner_id = ? AND idempotency_key = ?'
     ).get(input.ownerId, input.idempotencyKey) as { id: string } | undefined;
@@ -191,6 +249,12 @@ export class PipelineOrchestrator {
       this.schedule(existing.id);
       return this.get(existing.id, input.ownerId, true);
     }
+
+    const productAssetIds =
+      input.productAssetIds ||
+      input.pipelineData?.productAssetIds ||
+      input.pipelineData?.step1?.inputs?.productAssetIds ||
+      [];
 
     const id = randomUUID();
     db.exec('BEGIN IMMEDIATE');
@@ -207,6 +271,9 @@ export class PipelineOrchestrator {
           pipelineData: input.pipelineData,
           productId: input.productId,
           productInfo: input.productInfo,
+          productAssetIds,
+          directOutMode: input.directOutMode || input.pipelineData?.directOutMode,
+          _ownerId: input.ownerId,
         }),
         input.idempotencyKey
       );
@@ -461,10 +528,22 @@ export class PipelineOrchestrator {
 
   private buildStepBody(runId: string, stepNumber: number, input: any): any {
     const pipelineData = input.pipelineData || {};
+    const productAssetIds =
+      input.productAssetIds ||
+      pipelineData.productAssetIds ||
+      pipelineData.step1?.inputs?.productAssetIds ||
+      [];
+    const productAssets = resolveRunProductAssets({
+      productId: input.productId,
+      productAssetIds: Array.isArray(productAssetIds) ? productAssetIds : [],
+    });
+    const productHeroUrl = productAssets[0]?.url || '';
     const product = {
       productId: input.productId,
       productInfo: input.productInfo,
-      _ownerId: input._ownerId,
+      productAssetIds: productAssets.map((a) => a.id),
+      productAssets,
+      _ownerId: input._ownerId || input.ownerId,
     };
     const out1 = this.previousOutput(runId, 1);
     const out2 = this.previousOutput(runId, 2);
@@ -472,19 +551,54 @@ export class PipelineOrchestrator {
     const out4 = this.previousOutput(runId, 4);
     const inheritedPipelineData = {
       ...pipelineData,
+      productAssetIds: product.productAssetIds,
+      directOutMode: input.directOutMode || pipelineData.directOutMode,
       step1: { ...(pipelineData.step1 || {}), output: out1 },
       step2: { ...(pipelineData.step2 || {}), output: out2 },
       step3: { ...(pipelineData.step3 || {}), output: out3 },
       step4: { ...(pipelineData.step4 || {}), output: out4 },
     };
 
-    if (stepNumber === 1) return { ...(pipelineData.step1?.inputs || {}), ...product };
+    if (stepNumber === 1) {
+      return {
+        ...(pipelineData.step1?.inputs || {}),
+        productAssets,
+        ...product,
+      };
+    }
     if (stepNumber === 2) {
+      // Product-conditioned first frame — NEVER use viral mediaUrl as final i2v frame
+      let migrationPlan = out1.migrationPlan;
+      if (!migrationPlan && productAssets.length > 0) {
+        try {
+          migrationPlan = buildShotMigrationPlan(out1, productAssets, {
+            productName:
+              (input.productInfo as any)?.name ||
+              productHeroUrl,
+          });
+        } catch {
+          migrationPlan = undefined;
+        }
+      }
+      const productFirstFrame =
+        migrationPlan?.productHeroUrl ||
+        out1.productHeroFrameUrl ||
+        productHeroUrl ||
+        pipelineData.step2?.inputs?.imageUrl ||
+        '';
+
       return {
         ...(pipelineData.step2?.inputs || {}),
         static_image_prompt: out1.static_image_prompt,
-        imageUrl: pipelineData.step1?.inputs?.mediaUrl,
-        shotList: out1.shotList,
+        // Final first frame is product-derived, not viral media
+        imageUrl: productFirstFrame,
+        mediaUrl: productFirstFrame,
+        viralMediaUrl: pipelineData.step1?.inputs?.mediaUrl,
+        firstFrameSource: productFirstFrame ? 'product_conditioned' : undefined,
+        productFirstFrameUrl: productFirstFrame,
+        productAssets,
+        migrationPlan,
+        shotList: migrationPlan?.shots || out1.shotList,
         pipelineData: inheritedPipelineData,
         ...product,
       };
@@ -512,11 +626,15 @@ export class PipelineOrchestrator {
       title: out3.title,
       hook: out3.hook,
       cta: out3.cta,
-      videoSourceUrl: out2.previewVideoUrl || out2.concatenatedVideoUrl,
+      videoSourceUrl:
+        out2.previewVideoUrl ||
+        out2.concatenatedVideoUrl ||
+        out2.multiShotResult?.concatenatedVideoUrl,
       audioSourceUrl: out4.bgm_recommendation?.audioSampleUrl,
       shotList: out1.shotList,
       step2Output: out2,
       step3Output: out3,
+      firstFrameSource: out2.firstFrameSource || 'product_conditioned',
       pipelineData: inheritedPipelineData,
       ...product,
     };
@@ -553,7 +671,10 @@ export class PipelineOrchestrator {
           result.modelUsed || null,
           Date.now() - startedAt
         );
-        if (stepNumber === 2) return this.waitForStep2External(runId, result);
+        if (stepNumber === 2) {
+          this.assertStep2SubmittedVideo(result);
+          return this.waitForStep2External(runId, result);
+        }
         return result;
       } catch (error: any) {
         lastError = error;
@@ -570,6 +691,41 @@ export class PipelineOrchestrator {
     throw lastError;
   }
 
+  /**
+   * Step2 must actually submit video generation — otherwise steps 1-4 "succeed"
+   * and step5 dies with a confusing missing-video-source error. Fail fast here
+   * with an actionable message instead.
+   */
+  private assertStep2SubmittedVideo(result: StepExecutorResult): void {
+    const data: any = result.data || {};
+    const hasVideoPath = Boolean(
+      data.previewVideoUrl ||
+        data.concatenatedVideoUrl ||
+        data.multiShotResult?.concatenatedVideoUrl ||
+        data.seedanceTaskId ||
+        data.multiShotResult?.sessionId
+    );
+    if (hasVideoPath) return;
+    const noSubmitStates = [
+      'awaiting_image_input',
+      'awaiting_public_image',
+      'submit_failed',
+      'unconfigured',
+    ];
+    if (
+      noSubmitStates.includes(String(data.seedanceStatus || '')) &&
+      process.env.ALLOW_MOCK_FALLBACK !== 'true'
+    ) {
+      const err = new Error(
+        data.seedanceError ||
+          data.seedanceHint ||
+          'Step 2 未能提交视频生成：缺少 Seedance 可下载的产品首帧图'
+      ) as Error & { status?: number };
+      err.status = 422;
+      throw err;
+    }
+  }
+
   private async waitForStep2External(
     runId: string,
     result: StepExecutorResult
@@ -577,6 +733,24 @@ export class PipelineOrchestrator {
     const sessionId = result.data?.multiShotResult?.sessionId;
     const seedanceTaskId = result.data?.seedanceTaskId;
     if (!sessionId && (!seedanceTaskId || result.data?.previewVideoUrl)) return result;
+
+    // Multi-shot session where no shot was actually submitted to Seedance:
+    // polling would spin for the full external timeout. Fail fast instead.
+    if (sessionId) {
+      const shots: any[] = result.data?.multiShotResult?.shots || [];
+      const submitted = shots.filter((shot) => shot.seedanceTaskId);
+      const completedWithUrl = shots.filter(
+        (shot) => shot.video_url && shot.status === 'completed'
+      );
+      if (shots.length > 0 && submitted.length === 0 && completedWithUrl.length === 0) {
+        const firstError = shots.find((shot) => shot.error_message)?.error_message;
+        const err = new Error(
+          firstError || '多镜头视频全部未提交（缺少 Seedance 可下载的产品首帧图）'
+        ) as Error & { status?: number };
+        err.status = 422;
+        throw err;
+      }
+    }
 
     const providerTaskId = sessionId ? `shots:${sessionId}` : `seedance:${seedanceTaskId}`;
     db.prepare(

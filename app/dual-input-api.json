@@ -1,0 +1,50 @@
+{
+  "at": "2026-07-30T05:10:36.901Z",
+  "checks": [
+    {
+      "name": "viral_without_assets_rejected",
+      "ok": true
+    },
+    {
+      "name": "assets_listed",
+      "ok": true,
+      "count": 1,
+      "assets": [
+        {
+          "id": "pa_api_1",
+          "url": "/uploads/product-assets/hero.png",
+          "role": "hero",
+          "sortOrder": 0
+        }
+      ]
+    },
+    {
+      "name": "first_frame_product_not_viral",
+      "ok": true,
+      "productFirstFrameUrl": "/uploads/product-assets/hero.png",
+      "firstFrameSource": "product_conditioned",
+      "referenceKeyframeUrl": "/uploads/materials/keyframes/v.jpg"
+    },
+    {
+      "name": "gate_blocks_mock",
+      "ok": true,
+      "report": {
+        "passed": false,
+        "scores": {
+          "productIdentity": 0.85,
+          "structureCoverage": 0.55,
+          "technical": 0.6,
+          "compliance": 0
+        },
+        "blockers": [
+          "mock_result_not_publishable"
+        ],
+        "warnings": [
+          "resolution_unverified"
+        ],
+        "finalVideoUrl": "/uploads/renders/x.mp4",
+        "status": "failed"
+      }
+    }
+  ]
+}

@@ -106,12 +106,20 @@ export async function seedanceFetch(apiPath: string, init: RequestInit = {}, ret
 
 /**
  * materials[].url 必须公网可访问（Seedance 文档硬约束）。
- * 相对路径 /uploads/... 需配置 PUBLIC_BASE_URL（部署公网域名/IP）。
- */
-/**
- * materials[].url 必须公网可访问（Seedance 文档硬约束）。
  * 相对路径 /uploads/... 优先使用 PUBLIC_BASE_URL 或 HTTP 请求 Host（部署公网域名/IP）。
  */
+function isPrivateHostname(host: string): boolean {
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '0.0.0.0' ||
+    host.endsWith('.local') ||
+    host.startsWith('192.168.') ||
+    host.startsWith('10.') ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+  );
+}
+
 export function resolvePublicMediaUrl(url: string, requestBaseUrl?: string): { url: string | null; warning?: string } {
   if (!url || !url.trim()) return { url: null, warning: '未提供素材 URL' };
   const trimmed = url.trim();
@@ -139,24 +147,22 @@ export function resolvePublicMediaUrl(url: string, requestBaseUrl?: string): { u
 
       if (publicHost && host === publicHost) {
         if (u.pathname.startsWith('/uploads/')) {
+          if (isPrivateHostname(publicHost)) {
+            return {
+              url: null,
+              warning: `PUBLIC_BASE_URL 指向内网/本机地址（${publicBase}），Seedance 无法下载该首帧图。请配置公网可访问的域名或 IP`,
+            };
+          }
           return { url: createSignedMediaUrl(u.pathname, publicBase) };
         }
         return { url: trimmed };
       }
 
-      if (
-        host === 'localhost' ||
-        host === '127.0.0.1' ||
-        host === '0.0.0.0' ||
-        host.endsWith('.local') ||
-        host.startsWith('192.168.') ||
-        host.startsWith('10.') ||
-        /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
-      ) {
+      if (isPrivateHostname(host)) {
         if (minioPublicBase && u.pathname.startsWith(`/${process.env.MINIO_BUCKET || 'buv-materials'}/`)) {
           return { url: `${minioPublicBase}${u.pathname}${u.search}` };
         }
-        if (publicBase) {
+        if (publicBase && !isPrivateHostname(new URL(publicBase).hostname.toLowerCase())) {
           const relativePath = u.pathname + u.search;
           if (u.pathname.startsWith('/uploads/')) {
             return { url: createSignedMediaUrl(u.pathname, publicBase) };
@@ -165,7 +171,7 @@ export function resolvePublicMediaUrl(url: string, requestBaseUrl?: string): { u
         }
         return {
           url: null,
-          warning: `素材 URL 不是公网地址（${host}）。Seedance 无法拉取内网/本机文件，请配置 PUBLIC_BASE_URL 或使用公网图链`,
+          warning: `素材 URL 不是公网地址（${host}）。Seedance 无法拉取内网/本机文件，请配置公网可访问的 PUBLIC_BASE_URL 或使用公网图链`,
         };
       }
       return { url: trimmed };
@@ -183,6 +189,17 @@ export function resolvePublicMediaUrl(url: string, requestBaseUrl?: string): { u
   }
   const pathPart = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
   if (pathPart.startsWith('/uploads/')) {
+    try {
+      const pbHost = new URL(publicBase).hostname.toLowerCase();
+      if (isPrivateHostname(pbHost)) {
+        return {
+          url: null,
+          warning: `PUBLIC_BASE_URL 指向内网/本机地址（${publicBase}），Seedance 无法下载该首帧图。请配置公网可访问的域名或 IP`,
+        };
+      }
+    } catch {
+      return { url: null, warning: `PUBLIC_BASE_URL 非法: ${publicBase}` };
+    }
     return { url: createSignedMediaUrl(pathPart, publicBase) };
   }
   return { url: `${publicBase}${pathPart}` };

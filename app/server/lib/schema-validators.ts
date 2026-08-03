@@ -46,11 +46,30 @@ export const AudioAnalysisSchema = z.object({
   musicStyle: z.string().optional().default("轻快治愈"),
 });
 
+export const NarrativeBeatSchema = z.object({
+  beat: z.enum(['hook', 'problem', 'demo', 'proof', 'cta']).or(z.string()).optional().default('demo'),
+  startSec: z.number().optional().default(0),
+  endSec: z.number().optional().default(3),
+  intent: z.string().optional().default(''),
+});
+
+export const MigrationHintsSchema = z.object({
+  mustKeep: z.array(z.string()).optional().default([]),
+  mustReplace: z.array(z.string()).optional().default([]),
+  productInsertRules: z.string().optional().default('使用我方产品包装替换竞品主体'),
+});
+
 export const VideoDeconstructionOutputSchema = Step1OutputSchema.extend({
   shotList: z.array(ShotItemSchema).min(1, "镜头列表不能为空").max(12, "镜头数量不能超过 12"),
   videoStructure: VideoStructureSchema,
   originalScript: OriginalScriptSchema,
   audioAnalysis: AudioAnalysisSchema,
+  narrativeBeats: z.array(NarrativeBeatSchema).optional().default([]),
+  migrationHints: MigrationHintsSchema.optional().default({
+    mustKeep: [],
+    mustReplace: ['竞品包装', '竞品品牌名'],
+    productInsertRules: '使用我方产品包装替换竞品主体',
+  }),
 });
 
 export type VideoDeconstructionOutput = z.infer<typeof VideoDeconstructionOutputSchema>;

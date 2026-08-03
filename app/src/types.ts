@@ -263,6 +263,21 @@ export interface WorkspaceSession {
 export type TaskItem = WorkspaceSession;
 export type SessionItem = WorkspaceSession;
 
+export type ProductAssetRole =
+  | 'hero'
+  | 'angle'
+  | 'detail'
+  | 'texture'
+  | 'in_use'
+  | 'packaging_text';
+
+export interface ProductAsset {
+  id: string;
+  url: string;
+  role?: ProductAssetRole | string;
+  sortOrder?: number;
+}
+
 export interface ProductItem {
   id: string;
   name: string;
@@ -285,6 +300,8 @@ export interface ProductItem {
   customSellingPoints?: string;
   targetAudience?: string;
   updatedAt?: string;
+  /** Product visual identity pack for viral direct-out */
+  assets?: ProductAsset[];
 }
 
 export type SellingPointsAiModel = 'gemini-3.6-flash' | 'gpt-4o' | 'deepseek-v3';

@@ -1,5 +1,5 @@
 import { ModelMetadata, ModelConfigState } from '../data/models';
-import { PipelineData, TaskItem, MaterialItem, ProductItem, StepId } from '../types';
+import { PipelineData, TaskItem, MaterialItem, ProductItem, ProductAsset, StepId } from '../types';
 
 /**
  * Standard REST API Client for AIGC Video Processing Pipeline
@@ -130,15 +130,37 @@ export const apiService = {
       pipelineData: PipelineData,
       productId: string | undefined,
       productInfo: ProductItem | undefined,
-      idempotencyKey: string
+      idempotencyKey: string,
+      options?: {
+        productAssetIds?: string[];
+        directOutMode?: 'viral' | 'legacy' | string;
+      }
     ): Promise<PipelineRunSnapshot> {
+      const productAssetIds =
+        options?.productAssetIds ||
+        productInfo?.assets?.map((a) => a.id).filter(Boolean) ||
+        [];
+      const directOutMode =
+        options?.directOutMode ||
+        (pipelineData as any)?.directOutMode ||
+        undefined;
       const res = await fetch(`${API_BASE_URL}/runs`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Idempotency-Key': idempotencyKey,
         },
-        body: JSON.stringify({ pipelineData, productId, productInfo }),
+        body: JSON.stringify({
+          pipelineData: {
+            ...pipelineData,
+            directOutMode,
+            productAssetIds,
+          },
+          productId,
+          productInfo,
+          productAssetIds,
+          directOutMode,
+        }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.success) throw new Error(json.error || '创建后台任务失败');
@@ -276,6 +298,54 @@ export const apiService = {
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok || json.success === false) throw new Error(json.error || '删除产品失败');
+      return json;
+    },
+
+    async listAssets(productId: string): Promise<ProductAsset[]> {
+      const res = await fetch(`${API_BASE_URL}/products/${encodeURIComponent(productId)}/assets`);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '读取产品图失败');
+      return json.data || [];
+    },
+
+    async addAsset(
+      productId: string,
+      payload: { url?: string; role?: string; sortOrder?: number; file?: File }
+    ): Promise<{ success: boolean; data: ProductAsset; assets?: ProductAsset[] }> {
+      if (payload.file) {
+        const form = new FormData();
+        form.append('file', payload.file, payload.file.name);
+        if (payload.role) form.append('role', payload.role);
+        if (payload.sortOrder != null) form.append('sortOrder', String(payload.sortOrder));
+        const res = await fetch(`${API_BASE_URL}/products/${encodeURIComponent(productId)}/assets`, {
+          method: 'POST',
+          body: form,
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || json.success === false) throw new Error(json.error || '上传产品图失败');
+        return json;
+      }
+      const res = await fetch(`${API_BASE_URL}/products/${encodeURIComponent(productId)}/assets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: payload.url,
+          role: payload.role || 'hero',
+          sortOrder: payload.sortOrder ?? 0,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '添加产品图失败');
+      return json;
+    },
+
+    async deleteAsset(productId: string, assetId: string): Promise<{ success: boolean }> {
+      const res = await fetch(
+        `${API_BASE_URL}/products/${encodeURIComponent(productId)}/assets/${encodeURIComponent(assetId)}`,
+        { method: 'DELETE' }
+      );
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '删除产品图失败');
       return json;
     },
   },

@@ -148,6 +148,35 @@ function quoteCmdPath(p: string): string {
   return `"${p}"`;
 }
 
+/**
+ * Probe a rendered MP4 for real duration (seconds) and resolution (WxH).
+ * The publish gate must score the actual output, not the expected duration
+ * (subtitle-derived estimates can under-report real clip length).
+ */
+export async function probeRenderOutput(
+  filePath: string
+): Promise<{ durationSec: number; resolution: string } | null> {
+  try {
+    const bin = resolveFfprobeBinary();
+    const cmd =
+      `${quoteCmdPath(bin)} -v error ` +
+      `-select_streams v:0 -show_entries format=duration ` +
+      `-show_entries stream=width,height -of json ${quoteCmdPath(filePath)}`;
+    const { stdout } = await execAsync(cmd, { timeout: 20_000, maxBuffer: 1024 * 1024 });
+    const parsed = JSON.parse(stdout || '{}');
+    const duration = Number(parsed?.format?.duration || 0);
+    const width = Number(parsed?.streams?.[0]?.width || 0);
+    const height = Number(parsed?.streams?.[0]?.height || 0);
+    if (!duration || duration <= 0) return null;
+    return {
+      durationSec: Math.round(duration * 10) / 10,
+      resolution: width > 0 && height > 0 ? `${width}x${height}` : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
 function assertShellSafePath(value: string): string {
   if (/["'`$%!?^&|;<>(){}[\]\r\n\u0000]/.test(value)) {
     throw new Error('媒体路径包含不安全字符');
@@ -701,14 +730,18 @@ export async function runFfmpegRender(params: {
     }
     if (ownerId) registerOwnedMedia(relativeUrl, ownerId, 'render');
 
+    // Probe the actual output so the publish gate scores the real file:
+    // expected duration (subtitle-derived) can under-report multi-shot clips.
+    const probed = await probeRenderOutput(targetPath);
+
     return {
       success: true,
       source: 'ffmpeg',
       data: {
         filename,
-        resolution: resolutionText,
+        resolution: probed?.resolution || resolutionText,
         format: 'mp4_h264',
-        duration_sec: safeDurationSec,
+        duration_sec: probed?.durationSec || safeDurationSec,
         videoUrl: relativeUrl,
         downloadUrl: relativeUrl,
         renderEngine: resolvedVideoPaths.length > 1

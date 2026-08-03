@@ -10,6 +10,8 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      bgm-init:
+        condition: service_completed_successfully
     ports:
       - "${DEMO_PORT:-3004}:3004"
     environment:
@@ -115,6 +117,21 @@ services:
         mc admin policy info local live-tu-app >/dev/null 2>&1 || mc admin policy create local live-tu-app /tmp/live-tu-policy.json
         mc admin user add local "$$MINIO_ACCESS_KEY" "$$MINIO_SECRET_KEY" || true
         mc admin policy attach local live-tu-app --user "$$MINIO_ACCESS_KEY"
+
+  bgm-init:
+    image: live-tu:${LIVE_TU_IMAGE_TAG:-demo}
+    restart: "no"
+    entrypoint: ["node", "-e"]
+    command:
+      - |
+        const fs=require('fs'),path=require('path');
+        const src='/app/assets/bgm',dst='/var/lib/live-tu/uploads/bgm';
+        fs.mkdirSync(dst,{recursive:true});
+        let n=0;
+        for(const f of fs.readdirSync(src)){const t=path.join(dst,f);if(!fs.existsSync(t)){fs.copyFileSync(path.join(src,f),t);n++;}}
+        console.log('bgm seeded:',n,'files, total',fs.readdirSync(dst).length);
+    volumes:
+      - live-tu-demo-uploads:/var/lib/live-tu/uploads
 
 volumes:
   live-tu-demo-data:

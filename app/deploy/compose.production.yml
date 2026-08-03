@@ -10,6 +10,8 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      bgm-init:
+        condition: service_completed_successfully
     expose:
       - "3004"
     environment:
@@ -133,6 +135,21 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+
+  bgm-init:
+    image: live-tu:production
+    restart: "no"
+    entrypoint: ["node", "-e"]
+    command:
+      - |
+        const fs=require('fs'),path=require('path');
+        const src='/app/assets/bgm',dst='/var/lib/live-tu/uploads/bgm';
+        fs.mkdirSync(dst,{recursive:true});
+        let n=0;
+        for(const f of fs.readdirSync(src)){const t=path.join(dst,f);if(!fs.existsSync(t)){fs.copyFileSync(path.join(src,f),t);n++;}}
+        console.log('bgm seeded:',n,'files, total',fs.readdirSync(dst).length);
+    volumes:
+      - live-tu-uploads:/var/lib/live-tu/uploads
 
 volumes:
   live-tu-data:

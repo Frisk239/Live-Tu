@@ -18,6 +18,8 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/scripts/backup.mjs ./scripts/backup.mjs
 COPY --from=build /app/scripts/restore.mjs ./scripts/restore.mjs
 COPY --from=build /app/scripts/prune.mjs ./scripts/prune.mjs
+# 真实 BGM 曲库（Pixabay 免费商用），由 bgm-init 服务拷入上传卷
+COPY --from=build /app/assets/bgm ./assets/bgm
 RUN mkdir -p /var/lib/live-tu/data /var/lib/live-tu/uploads /var/lib/live-tu/backups \
     && chown -R node:node /app /var/lib/live-tu
 USER node

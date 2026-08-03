@@ -697,49 +697,34 @@ export function initDatabase() {
         audio_url = excluded.audio_url
     `);
 
+    // 清理历史假曲（soundhelix 示例曲），保证库中只有真实可播放的曲目
+    db.prepare("DELETE FROM bgm_library WHERE audio_url LIKE '%soundhelix.com%'").run();
+
     const initialBgmList = [
-      // 1. 治愈Lofi (70-90BPM)
-      ['bgm_morning_breeze', 'Morning Breeze (BUV 晨间清爽)', 'Chillout SoundLab', JSON.stringify(['治愈Lofi', '晨间轻音乐', '护肤日常']), 82, '治愈Lofi', '已商业授权', 'uploads/bgm/morning_breeze.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'],
-      ['bgm_lofi_rain', 'Lofi Rain Coffee & Skincare', 'Lofi Beats Co.', JSON.stringify(['治愈Lofi', '舒缓氛围', '雨声夜间']), 78, '治愈Lofi', '已商业授权', 'uploads/bgm/lofi_rain.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3'],
-      ['bgm_cozy_bedroom', 'Cozy Bedroom Lofi Chill', 'Soft Velvet', JSON.stringify(['治愈Lofi', '睡前修护', '温柔柔声']), 85, '治愈Lofi', '已商业授权', 'uploads/bgm/cozy_bedroom.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-11.mp3'],
-      ['bgm_green_tea_chill', 'Green Tea Cleanse Lofi', 'Zenith Chill', JSON.stringify(['治愈Lofi', '植萃温和', '清爽淡雅']), 76, '治愈Lofi', '已商业授权', 'uploads/bgm/green_tea_chill.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3'],
-      ['bgm_sunlight_window', 'Sunlight Window Afternoon', 'Warm Beats', JSON.stringify(['治愈Lofi', '阳光质感', '日常Vlog']), 88, '治愈Lofi', '已商业授权', 'uploads/bgm/sunlight_window.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-13.mp3'],
+      // 真实曲目：Pixabay Music 免费商用（免署名），音频文件随仓库分发（assets/bgm/）
+      // 卡点Trap (138-140BPM)
+      ['bgm_real_trap_beat', 'Trap - Trap Beat', 'BombinSound', JSON.stringify(['卡点Trap', 'Trap', '硬核', '抖音卡点']), 140, '卡点Trap', 'pixabay-free-commercial', 'uploads/bgm/audio_c9de010abb.mp3', ''],
+      ['bgm_real_trap_hype', 'Trap - Trap Hype', 'ARPMedia', JSON.stringify(['卡点Trap', 'Trap', '热血', '冲刺']), 140, '卡点Trap', 'pixabay-free-commercial', 'uploads/bgm/audio_fdf868100e.mp3', ''],
+      ['bgm_real_dark_trap', 'Dark Trap', 'mirostar', JSON.stringify(['卡点Trap', 'Trap', '暗黑', '力量']), 138, '卡点Trap', 'pixabay-free-commercial', 'uploads/bgm/audio_c5812ffb52.mp3', ''],
 
-      // 2. 轻快Pop (100-120BPM)
-      ['bgm_pop_sunshine', 'Sunshine Pop Upbeat Vibe', 'Bright Music', JSON.stringify(['轻快Pop', '阳光活力', '开箱分享']), 115, '轻快Pop', '已商业授权', 'uploads/bgm/pop_sunshine.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-6.mp3'],
-      ['bgm_happy_routine', 'Happy Morning Routine Pop', 'Joy Groove', JSON.stringify(['轻快Pop', '元气满分', '护肤打卡']), 108, '轻快Pop', '已商业授权', 'uploads/bgm/happy_routine.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-14.mp3'],
-      ['bgm_fresh_vibes', 'Fresh Bright Summer Vibes', 'Solar Pop', JSON.stringify(['轻快Pop', '清爽通透', '夏日控油']), 112, '轻快Pop', '已商业授权', 'uploads/bgm/fresh_vibes.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-15.mp3'],
-      ['bgm_chic_style', 'Chic Style Fashion Groove', 'Trendy Beats', JSON.stringify(['轻快Pop', '时尚种草', '彩妆搭配']), 105, '轻快Pop', '已商业授权', 'uploads/bgm/chic_style.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-16.mp3'],
-      ['bgm_sparkle_bounce', 'Sparkle Bounce Fun Beat', 'Pop Factor', JSON.stringify(['轻快Pop', '青春活泼', '好物推荐']), 118, '轻快Pop', '已商业授权', 'uploads/bgm/sparkle_bounce.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'],
+      // 治愈Lofi (78-82BPM)
+      ['bgm_real_lofi_night', 'Good Night - Lofi Cozy Chill', 'Pixabay Music', JSON.stringify(['治愈Lofi', '安眠', '舒缓']), 78, '治愈Lofi', 'pixabay-free-commercial', 'uploads/bgm/audio_e0908e8569.mp3', ''],
+      ['bgm_real_lofi_beats', 'Lofi Beats', 'MondaMusic', JSON.stringify(['治愈Lofi', '休闲', '咖啡馆']), 80, '治愈Lofi', 'pixabay-free-commercial', 'uploads/bgm/audio_2895d67032.mp3', ''],
+      ['bgm_real_lofi_smooth', 'Lofi Smooth', 'Pixabay Music', JSON.stringify(['治愈Lofi', '丝滑', '慵懒']), 82, '治愈Lofi', 'pixabay-free-commercial', 'uploads/bgm/audio_cd0251db86.mp3', ''],
 
-      // 3. 卡点Electronic (125-140BPM)
-      ['bgm_trap_beat', 'Trap Tech Beat 128BPM (抖音卡点神曲)', 'Phonk Master', JSON.stringify(['卡点Electronic', '重低音Trap', '左右脸对比']), 128, '卡点Electronic', '已商业授权', 'uploads/bgm/trap_beat.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3'],
-      ['bgm_edm_drop', 'Electro Drop Bass Boost 130BPM', 'Cyber Synth', JSON.stringify(['卡点Electronic', '强音卡点', '硬核拉丝']), 130, '卡点Electronic', '已商业授权', 'uploads/bgm/edm_drop.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-7.mp3'],
-      ['bgm_cyber_pulse', 'Cyber Pulse Future Bass 135BPM', 'Future Sonic', JSON.stringify(['卡点Electronic', '科技质感', '成分党拆解']), 135, '卡点Electronic', '已商业授权', 'uploads/bgm/cyber_pulse.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3'],
-      ['bgm_glitch_rhythm', 'Glitch Rhythm Staccato', 'Pulse Lab', JSON.stringify(['卡点Electronic', '反转卡点', '视觉冲击']), 126, '卡点Electronic', '已商业授权', 'uploads/bgm/glitch_rhythm.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3'],
-      ['bgm_hyper_energy', 'Hyper Energy Neon Beat 138BPM', 'Neon Waves', JSON.stringify(['卡点Electronic', '高燃卡点', '爆品对标']), 138, '卡点Electronic', '已商业授权', 'uploads/bgm/hyper_energy.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3'],
-      ['bgm_techno_stomp', 'Techno Stomp Cleanse Power 132BPM', 'Electro Power', JSON.stringify(['卡点Electronic', '深度洁净', '强效控油']), 132, '卡点Electronic', '已商业授权', 'uploads/bgm/techno_stomp.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3'],
+      // 轻快Pop (118-122BPM)
+      ['bgm_real_upbeat', 'Upbeat', 'Pixabay Music', JSON.stringify(['轻快Pop', '活力', '清新']), 120, '轻快Pop', 'pixabay-free-commercial', 'uploads/bgm/audio_0639a4f890.mp3', ''],
+      ['bgm_real_upbeat_music', 'Upbeat - Upbeat Music', 'ARPMedia', JSON.stringify(['轻快Pop', '元气', '明亮']), 122, '轻快Pop', 'pixabay-free-commercial', 'uploads/bgm/audio_fd1bcf288f.mp3', ''],
+      ['bgm_real_upbeat_mountain', 'Upbeat Music', 'The Mountain', JSON.stringify(['轻快Pop', '律动', '阳光']), 118, '轻快Pop', 'pixabay-free-commercial', 'uploads/bgm/audio_6253773ef2.mp3', ''],
 
-      // 4. 品质Ambient (60-80BPM)
-      ['bgm_pure_ambient', 'Pure Water Ambient Glow (小红书沉浸种草)', 'Soft Ambient', JSON.stringify(['品质Ambient', '纯水声', '高级调性']), 75, '品质Ambient', '已商业授权', 'uploads/bgm/pure_ambient.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3'],
-      ['bgm_deep_focus', 'Deep Focus Luxury Ambient', 'Zenith Sound', JSON.stringify(['品质Ambient', '高级清透', '贵妇修护']), 65, '品质Ambient', '已商业授权', 'uploads/bgm/deep_focus.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-8.mp3'],
-      ['bgm_spa_sanctuary', 'SPA Sanctuary Oasis', 'Healing Atmosphere', JSON.stringify(['品质Ambient', '静谧沉浸', '精油芳疗']), 70, '品质Ambient', '已商业授权', 'uploads/bgm/spa_sanctuary.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3'],
-      ['bgm_glass_skin_flow', 'Glass Skin Serene Flow', 'Aura Tone', JSON.stringify(['品质Ambient', '透亮质感', '水光护肤']), 68, '品质Ambient', '已商业授权', 'uploads/bgm/glass_skin_flow.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-11.mp3'],
-      ['bgm_velvet_touch', 'Velvet Touch Minimal Soundscape', 'Minimal Sound', JSON.stringify(['品质Ambient', '极简品质', '极速退红']), 62, '品质Ambient', '已商业授权', 'uploads/bgm/velvet_touch.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-12.mp3'],
+      // 卡点Electronic (124-128BPM)
+      ['bgm_real_electronic', 'Electronic Music', 'The Mountain', JSON.stringify(['卡点Electronic', '电子', '动感']), 126, '卡点Electronic', 'pixabay-free-commercial', 'uploads/bgm/audio_c9226f08b5.mp3', ''],
+      ['bgm_real_future_bass', 'Future Bass', 'Pixabay Music', JSON.stringify(['卡点Electronic', '未来', '贝斯']), 128, '卡点Electronic', 'pixabay-free-commercial', 'uploads/bgm/audio_b382b812d7.mp3', ''],
+      ['bgm_real_futuristic', 'Futuristic Beat', 'Pixabay Music', JSON.stringify(['卡点Electronic', '未来感', '科技']), 124, '卡点Electronic', 'pixabay-free-commercial', 'uploads/bgm/futuristic-beat-146661.mp3', ''],
 
-      // 5. 节奏R&B (90-110BPM)
-      ['bgm_energy_pulse', 'Rhythmic Energy Pulse (硬核测评节奏)', 'Dynamic Sound', JSON.stringify(['节奏R&B', '商业卡点', '硬核测评']), 110, '节奏R&B', '已商业授权', 'uploads/bgm/energy_pulse.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-4.mp3'],
-      ['bgm_chill_rnb', 'Chill Sunset R&B Routine', 'Smooth Grooves', JSON.stringify(['节奏R&B', '生活方式', '夜间修护']), 95, '节奏R&B', '已商业授权', 'uploads/bgm/chill_rnb.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-9.mp3'],
-      ['bgm_velvet_groove', 'Velvet R&B Urban Groove', 'Urban Lounge', JSON.stringify(['节奏R&B', '都市精致', '洗护蓬松']), 98, '节奏R&B', '已商业授权', 'uploads/bgm/velvet_groove.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-13.mp3'],
-      ['bgm_smooth_breeze', 'Smooth Breeze R&B Jam', 'Soul Collective', JSON.stringify(['节奏R&B', '慵懒舒缓', '护肤洗发']), 92, '节奏R&B', '已商业授权', 'uploads/bgm/smooth_breeze.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-14.mp3'],
-      ['bgm_silk_glide', 'Silk Glide Soulful Beat', 'Rhythm Lab', JSON.stringify(['节奏R&B', '丝滑拉丝', '质感特写']), 104, '节奏R&B', '已商业授权', 'uploads/bgm/silk_glide.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-15.mp3'],
-      ['bgm_midnight_rnb', 'Midnight Oasis Soft R&B', 'Night Groove', JSON.stringify(['节奏R&B', '晚间精养', '修护精华']), 90, '节奏R&B', '已商业授权', 'uploads/bgm/midnight_rnb.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-16.mp3'],
-
-      // 6. ASMR纯音效
-      ['bgm_asmr_water', 'ASMR Pure Water Droplets & Texture', 'Sound Nature Lab', JSON.stringify(['ASMR纯音效', '水滴拉丝', '极致沉浸']), 0, 'ASMR纯音效', '已商业授权', 'uploads/bgm/asmr_water.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3'],
-      ['bgm_asmr_foaming', 'ASMR Foam Lathering & Bubbles', 'Foley Sound Studio', JSON.stringify(['ASMR纯音效', '绵密泡泡', '洁面按压']), 0, 'ASMR纯音效', '已商业授权', 'uploads/bgm/asmr_foaming.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3'],
-      ['bgm_asmr_unboxing', 'ASMR Glass Bottle Tapping & Crisp Opening', 'Tactile Audio', JSON.stringify(['ASMR纯音效', '瓶身敲击', '开箱拆封']), 0, 'ASMR纯音效', '已商业授权', 'uploads/bgm/asmr_unboxing.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3'],
-      ['bgm_asmr_dropper', 'ASMR Pipette Droplet & Skincare Application', 'Pure Sense', JSON.stringify(['ASMR纯音效', '滴管倾倒', '精华涂抹']), 0, 'ASMR纯音效', '已商业授权', 'uploads/bgm/asmr_dropper.mp3', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3'],
+      // 品质Ambient (70-72BPM)
+      ['bgm_real_ambient_dream', 'Calm Ambient Dreamscape', 'Morgan', JSON.stringify(['品质Ambient', '空灵', '冥想']), 70, '品质Ambient', 'pixabay-free-commercial', 'uploads/bgm/audio_bedae80d67.mp3', ''],
+      ['bgm_real_ambient', 'Ambient', 'The Mountain', JSON.stringify(['品质Ambient', '氛围', '舒缓']), 72, '品质Ambient', 'pixabay-free-commercial', 'uploads/bgm/audio_53434c9bdd.mp3', ''],
     ];
 
     for (const bgm of initialBgmList) {

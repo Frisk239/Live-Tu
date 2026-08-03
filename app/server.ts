@@ -129,6 +129,46 @@ type ReadinessReport = {
   notes: string[];
 };
 
+/** 私有/本机主机名 — Seedance 与就绪门禁都拒绝这些地址 */
+function isPrivateHostname(host: string): boolean {
+  const h = host.toLowerCase();
+  if (
+    h === 'localhost' ||
+    h === '127.0.0.1' ||
+    h === '0.0.0.0' ||
+    h === '::1' ||
+    h === 'host.docker.internal' ||
+    h.endsWith('.local') ||
+    h.endsWith('.localhost')
+  ) {
+    return true;
+  }
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) {
+    const parts = h.split('.').map(Number);
+    if (parts[0] === 10) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    if (parts[0] === 127) return true;
+  }
+  return false;
+}
+
+function isPublicIpHostname(host: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+}
+
+function isProductionPublicUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (isPrivateHostname(host)) return false;
+    // 域名必须 HTTPS；公网 IP 允许 HTTP（IP-only 演示模式，见 DEMO_RUNBOOK）
+    return parsed.protocol === 'https:' || isPublicIpHostname(host);
+  } catch {
+    return false;
+  }
+}
+
 async function getReadiness(probeExternal: boolean): Promise<ReadinessReport> {
   dotenv.config({ path: path.join(process.cwd(), '.env') });
   dotenv.config({ path: path.join(process.cwd(), 'app', '.env') });
@@ -185,32 +225,12 @@ async function getReadiness(probeExternal: boolean): Promise<ReadinessReport> {
       !minioPublicReadEnabled ||
       process.env.NODE_ENV !== 'production'
     ) return true;
-    try {
-      const parsed = new URL(minioProbe.publicUrl);
-      return (
-        parsed.protocol === 'https:' &&
-        parsed.hostname !== 'localhost' &&
-        parsed.hostname !== '127.0.0.1' &&
-        parsed.hostname !== 'host.docker.internal'
-      );
-    } catch {
-      return false;
-    }
+    return isProductionPublicUrl(minioProbe.publicUrl);
   })();
   const publicBase = process.env.PUBLIC_BASE_URL || process.env.APP_PUBLIC_URL || '';
   const publicBaseProductionReady = (() => {
     if (!publicBase || process.env.NODE_ENV !== 'production') return Boolean(publicBase);
-    try {
-      const parsed = new URL(publicBase);
-      return (
-        parsed.protocol === 'https:' &&
-        parsed.hostname !== 'localhost' &&
-        parsed.hostname !== '127.0.0.1' &&
-        parsed.hostname !== 'host.docker.internal'
-      );
-    } catch {
-      return false;
-    }
+    return isProductionPublicUrl(publicBase);
   })();
   const hasPublicStorage = Boolean(
     publicBaseProductionReady ||
@@ -227,10 +247,10 @@ async function getReadiness(probeExternal: boolean): Promise<ReadinessReport> {
       ? `MinIO 不可用：${minioProbe.error || 'probe failed'}`
       : null,
     minioProbe.configured && minioPublicReadEnabled && !minioPublicUrlProductionReady
-      ? '生产环境 MINIO_PUBLIC_URL 必须是外部可访问的 HTTPS 地址'
+      ? '生产环境 MINIO_PUBLIC_URL 必须是 HTTPS 域名或公网 IP 地址'
       : null,
     publicBase && !publicBaseProductionReady
-      ? '生产环境 PUBLIC_BASE_URL 必须是外部可访问的 HTTPS 地址'
+      ? '生产环境 PUBLIC_BASE_URL 必须是 HTTPS 域名或公网 IP 地址（本机/内网地址不可用）'
       : null,
     !yunwuReady ? '未检测到有效 YUNWU_API_KEY（文本/多模态/画图将失败）' : null,
     !seedanceConfigured ? '未配置 Seedance 中转（SEEDANCE_BASE_URL / ACCOUNT / PASSWORD）' : null,

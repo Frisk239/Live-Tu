@@ -95,6 +95,7 @@ test('database permissions grant operator ordinary workflow modules', () => {
     'module.knowledge.write',
     'module.materials.read',
     'module.materials.write',
+    'module.models.read',
     'module.pipeline.read',
     'module.pipeline.write',
     'module.presets.read',
@@ -117,7 +118,7 @@ test('login and me expose database-derived permissions', async () => {
 test('operator receives 403 for protected administration modules', async () => {
   const { cookie } = await login('haini');
   const responses = await Promise.all([
-    // knowledge/bgm 已对 operator 开放（工作台爆款直出需要产品图/BGM 试听）
+    // knowledge/bgm/models 已对 operator 开放只读（工作台爆款直出需要产品图/BGM 试听/模型列表）
     fetch(`${baseUrl}/bgm`, { headers: { Cookie: cookie } }),
     fetch(`${baseUrl}/knowledge`, { headers: { Cookie: cookie } }),
     fetch(`${baseUrl}/models/config`, { headers: { Cookie: cookie } }),
@@ -126,7 +127,7 @@ test('operator receives 403 for protected administration modules', async () => {
     fetch(`${baseUrl}/metrics`, { headers: { Cookie: cookie } }),
     fetch(`${baseUrl}/permission-probe`, { headers: { Cookie: cookie } }),
   ]);
-  assert.deepEqual(responses.map((response) => response.status), [200, 200, 403, 403, 403, 403, 403]);
+  assert.deepEqual(responses.map((response) => response.status), [200, 200, 200, 403, 403, 403, 403]);
 });
 
 test('admin database permissions allow all protected administration modules', async () => {

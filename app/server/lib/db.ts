@@ -589,6 +589,18 @@ export function initDatabase() {
         }
       },
     },
+    {
+      version: 17,
+      name: 'grant_operator_models_read',
+      up: () => {
+        // 模型配置只读：工作台模型选择器/生图依赖模型列表（GET /models/config apiKey 已掩码）
+        const insertRolePermission = db.prepare(
+          `INSERT OR IGNORE INTO role_permissions (role, permission_key)
+           VALUES (?, ?)`
+        );
+        insertRolePermission.run('operator', 'module.models.read');
+      },
+    },
   ]);
 
   // WAL mode & busy timeout

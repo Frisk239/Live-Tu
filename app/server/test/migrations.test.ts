@@ -90,7 +90,7 @@ test('upgrades a populated legacy database without losing business data', async 
       .all() as Array<{ version: number }>;
     assert.deepEqual(
       versions.map((row) => row.version),
-      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
     );
 
     const tableColumns = (table: string) =>
@@ -149,6 +149,7 @@ test('upgrades a populated legacy database without losing business data', async 
         'module.knowledge.write',
         'module.materials.read',
         'module.materials.write',
+        'module.models.read',
         'module.pipeline.read',
         'module.pipeline.write',
         'module.presets.read',

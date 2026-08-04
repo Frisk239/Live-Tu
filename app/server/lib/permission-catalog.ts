@@ -53,4 +53,6 @@ export const OPERATOR_PERMISSION_KEYS: PermissionKey[] = [
   'module.knowledge.write',
   // BGM 曲库只读（试听/查看授权信息）
   'module.bgm.read',
+  // 模型配置只读：工作台模型选择器/生图依赖模型列表，apiKey 已掩码、无写副作用
+  'module.models.read',
 ];

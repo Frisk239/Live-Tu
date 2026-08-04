@@ -113,6 +113,13 @@ export interface StepExecutor {
   execute(step: number, body: unknown): Promise<StepExecutorResult>;
   pollSeedance(taskId: string): Promise<any>;
   pollShotSession(sessionId: string): Promise<any>;
+  /** S1.3：单镜 Seedance 提交（每镜独立 HTTP 请求，付费 POST 由编排器控制重试次数） */
+  submitShot(
+    sessionId: string,
+    shotIndex: number,
+    model?: string,
+    ownerId?: string
+  ): Promise<any>;
 }
 
 class HttpStepExecutor implements StepExecutor {
@@ -174,6 +181,14 @@ class HttpStepExecutor implements StepExecutor {
 
   async pollShotSession(sessionId: string): Promise<any> {
     return this.pollWithResilience(`/api/pipeline/shot-tasks/${encodeURIComponent(sessionId)}`);
+  }
+
+  async submitShot(sessionId: string, shotIndex: number, model: string | undefined, ownerId: string | undefined): Promise<any> {
+    const json = await this.request(`/api/pipeline/step2/submit-shot`, {
+      method: 'POST',
+      body: JSON.stringify({ sessionId, shotIndex, model, _ownerId: ownerId }),
+    });
+    return json.data;
   }
 
   private async pollWithResilience(path: string): Promise<any> {
@@ -683,7 +698,7 @@ export class PipelineOrchestrator {
     for (let attempt = 1; attempt <= 3; attempt++) {
       const startedAt = Date.now();
       try {
-        const result = await this.executor.execute(stepNumber, body);
+        let result = await this.executor.execute(stepNumber, body);
         db.prepare(
           `INSERT INTO provider_calls (
             id, run_id, step_number, provider, model_code, status, duration_ms
@@ -698,6 +713,12 @@ export class PipelineOrchestrator {
         );
         if (stepNumber === 2) {
           this.assertStep2SubmittedVideo(result);
+          // S1.3：多镜头模式下 step2 只持久化 pending 镜头，
+          // 编排器在此逐镜提交 Seedance（每镜独立 HTTP 请求，失败重试 1 次，单镜失败不拖垮其他镜头）。
+          const multi = result.data?.multiShotResult;
+          if (multi?.sessionId && Array.isArray(multi.shots) && multi.shots.length > 0) {
+            result = await this.submitAllShots(runId, result, multi, body);
+          }
           return this.waitForStep2External(runId, result);
         }
         return result;
@@ -749,6 +770,65 @@ export class PipelineOrchestrator {
       err.status = 422;
       throw err;
     }
+  }
+
+  /**
+   * S1.3：多镜头逐镜提交。每镜一个独立 HTTP 请求（POST /step2/submit-shot），
+   * 单镜失败重试 1 次后仍失败则标记 failed（pollExternal 会快速失败整单，不允许假完成）；
+   * 单镜失败不影响其他镜头继续提交。提交结果合并回 result.data，供后续轮询使用。
+   */
+  private async submitAllShots(
+    runId: string,
+    result: StepExecutorResult,
+    multi: any,
+    stepBody: any
+  ): Promise<StepExecutorResult> {
+    const sessionId = String(multi.sessionId);
+    const ownerRow = db
+      .prepare('SELECT owner_id FROM pipeline_runs WHERE id = ?')
+      .get(runId) as { owner_id: string } | undefined;
+    const ownerId = ownerRow?.owner_id;
+    // step2 body 是扁平 inputs（buildStepBody 展开），videoModel 为模型显示名（如 'Seedance 2.0 Fast'）
+    const videoModel = String(stepBody?.videoModel || '');
+    const model = videoModel.includes('Fast')
+      ? 'doubao-seedance-2-0-fast'
+      : 'doubao-seedance-2-0';
+
+    const updatedShots: any[] = [];
+    for (const shot of multi.shots) {
+      let submitted: any = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          submitted = await this.executor.submitShot(sessionId, shot.shotIndex, model, ownerId);
+          break;
+        } catch (error) {
+          if (attempt === 1) {
+            console.warn(
+              `[orchestrator] shot ${shot.shotIndex} submit failed after retry:`,
+              (error as Error).message
+            );
+          } else {
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+          }
+        }
+      }
+      if (!submitted) {
+        updatedShots.push({
+          ...shot,
+          status: 'failed',
+          error_message: 'Seedance 提交失败（重试后仍失败），请重跑 Step2 或单镜重试',
+        });
+      } else {
+        updatedShots.push({ ...shot, ...submitted });
+      }
+    }
+    return {
+      ...result,
+      data: {
+        ...result.data,
+        multiShotResult: { ...multi, shots: updatedShots },
+      },
+    };
   }
 
   private async waitForStep2External(
@@ -827,8 +907,11 @@ export class PipelineOrchestrator {
             source,
           };
         }
-      } else if (providerTaskId.startsWith('seedance:')) {
-        const response = await this.executor.pollSeedance(providerTaskId.slice('seedance:'.length));
+      } else if (providerTaskId.startsWith('seedance:') || providerTaskId.startsWith('yunshu:')) {
+        // yunshu: 前缀同样走 GET /api/seedance/generations/:id，路由内部按前缀分派轮询端点
+        const isYunshu = providerTaskId.startsWith('yunshu:');
+        const prefix = isYunshu ? 'yunshu:' : 'seedance:';
+        const response = await this.executor.pollSeedance(providerTaskId.slice(prefix.length));
         const task = response.data || {};
         if (task.url) {
           return {
@@ -836,6 +919,7 @@ export class PipelineOrchestrator {
               ...partial,
               previewVideoUrl: task.url,
               seedanceStatus: task.status || 'success',
+              ...(isYunshu ? { seedanceProvider: 'yunshu', seedanceFallbackUsed: true } : {}),
             },
             source,
           };

@@ -169,6 +169,53 @@ function isProductionPublicUrl(url: string): boolean {
   }
 }
 
+/**
+ * 启动时校验 PUBLIC_BASE_URL（生产环境 fail-fast）。
+ * Seedance 图生视频要求首帧公网可达（seedance.ts resolvePublicMediaUrl）；
+ * 若生产环境缺失或指向内网，服务照常启动只会让每个 Step2 静默失败——
+ * 因此在监听端口前直接拒绝启动，并给出可读错误。
+ */
+function validatePublicBaseUrl(): void {
+  const publicBase = (process.env.PUBLIC_BASE_URL || process.env.APP_PUBLIC_URL || '').trim();
+  if (process.env.NODE_ENV !== 'production') {
+    if (!publicBase) {
+      console.warn(
+        JSON.stringify({
+          level: 'warn',
+          event: 'missing_public_base_url',
+          message:
+            '未配置 PUBLIC_BASE_URL：Step2 图生视频将无法使用（Seedance 需要公网可达的首帧 URL）。开发调试请用 https 外链图做首帧。',
+        })
+      );
+    }
+    return;
+  }
+  if (!publicBase) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'invalid_public_base_url',
+        message:
+          '生产环境必须配置 PUBLIC_BASE_URL（或 APP_PUBLIC_URL）：Seedance 图生视频需要公网可达的首帧 URL。' +
+          '示例：PUBLIC_BASE_URL=https://your-domain.com',
+      })
+    );
+    process.exit(1);
+  }
+  if (!isProductionPublicUrl(publicBase)) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'invalid_public_base_url',
+        message:
+          `PUBLIC_BASE_URL 必须是 HTTPS 域名或公网 IP 地址（当前值：${publicBase}）。` +
+          '内网/本机地址（localhost、127.x、10.x、192.168.x 等）无法被 Seedance 中转下载首帧，服务拒绝启动。',
+      })
+    );
+    process.exit(1);
+  }
+}
+
 async function getReadiness(probeExternal: boolean): Promise<ReadinessReport> {
   dotenv.config({ path: path.join(process.cwd(), '.env') });
   dotenv.config({ path: path.join(process.cwd(), 'app', '.env') });
@@ -434,6 +481,8 @@ app.use((err: any, req: express.Request, res: express.Response, _next: express.N
 
 // Vite Middleware for dev / Static serving for production
 async function startServer() {
+  validatePublicBaseUrl();
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

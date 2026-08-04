@@ -18,6 +18,8 @@ export interface VideoPreprocessResult {
   sceneChanges: number[];
   audioDuration?: number;
   format?: string;
+  /** S1.5：ffmpeg 提帧全部失败（关键帧为空）时的显式信号，调用方应据此失败或降级，而非静默继续 */
+  keyframesExtractionFailed?: boolean;
 }
 
 const uploadsRoot = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'));
@@ -89,6 +91,7 @@ export async function preprocessVideo(videoPathInput: string, videoIdInput?: str
   // 3. Extract actual keyframe image files to uploads/materials/keyframes/
   const keyframeUrls: string[] = [];
   const safeId = videoId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  let extractionFailures = 0;
 
   for (let i = 0; i < keyframeTimestamps.length; i++) {
     const t = keyframeTimestamps[i];
@@ -104,11 +107,16 @@ export async function preprocessVideo(videoPathInput: string, videoIdInput?: str
       );
       if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
         keyframeUrls.push(webUrl);
+      } else {
+        extractionFailures += 1;
       }
     } catch (err: any) {
       console.warn(`[video-preprocessor] Failed to extract keyframe at t=${t}s:`, err.message);
+      extractionFailures += 1;
     }
   }
+  // S1.5：提帧全部失败时给出显式信号（不静默返回空帧），由调用方决定失败或降级
+  const keyframesExtractionFailed = keyframeUrls.length === 0 && extractionFailures > 0;
 
   // 4. Scene change detection (approximate keyframe PTS times via ffprobe)
   const sceneChanges: number[] = [];
@@ -142,6 +150,7 @@ export async function preprocessVideo(videoPathInput: string, videoIdInput?: str
     sceneChanges: Array.from(new Set(sceneChanges)).sort((a, b) => a - b),
     audioDuration: Math.round(duration * 100) / 100,
     format: formatName,
+    keyframesExtractionFailed,
   };
 
   return result;

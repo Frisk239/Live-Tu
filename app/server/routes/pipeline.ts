@@ -25,6 +25,8 @@ import {
   normalizeSeedanceTask,
   hasSeedanceConfig,
   buildSeedanceGenerationBody,
+  preflightMediaUrl,
+  submitSeedanceVideoWithFallback,
 } from './seedance';
 import { cacheRemoteMedia, runFfmpegRender } from './render';
 import { cacheRemoteVideoToUploads } from './seedance';
@@ -73,6 +75,9 @@ function canAccessLocalPipelineMedia(req: any, mediaUrl: string, ownerId?: strin
 /** 把 Seedance 中转的原始错误转成用户可行动的提示（504/下载失败/限流） */
 function friendlySeedanceError(err: any): string {
   const msg = String(err?.message || err || '');
+  if (/Yunshu .* failed/i.test(msg)) {
+    return '主通道与 yunshu 备用通道均提交失败，请稍后重试或检查两个中转服务状态';
+  }
   if (/504|Gateway Time-out|timeout/i.test(msg)) {
     return '星河 Seedance 中转繁忙或超时（504），请稍后重试，或检查中转服务状态';
   }
@@ -383,6 +388,17 @@ pipelineRouter.post('/step1', async (req, res) => {
       keyframeUrls = preprocessRes.keyframeUrls || [];
     } catch (err: any) {
       console.warn('[Step1 Video Preprocess Warning]:', err.message);
+    }
+
+    // S1.5：关键帧全空时显式失败（可读错误），不再静默用空帧做劣质拆解；
+    // 后续 Step2 仍可退化到产品图首帧（productHeroUrl 逻辑），不受此影响。
+    if (keyframeUrls.length === 0) {
+      return res.status(422).json({
+        success: false,
+        error:
+          '视频关键帧提取失败（ffmpeg 无法从该视频抽取帧，请检查服务器 ffmpeg 环境与视频文件完整性），' +
+          '无法进行视频拆解。可改用产品图模式或重新上传视频。',
+      });
     }
 
     const videoSystemPrompt = `你是一个顶级美妆短视频结构化拆解与镜头分析专家。你将接收到由爆款视频中抽取的顺序关键帧序列。
@@ -769,66 +785,9 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
         });
       }
 
-      if (seedanceConfigured && kfUrl) {
-        try {
-          const prepared = buildSeedanceGenerationBody({
-            prompt: videoPrompt,
-            model: modelId,
-            duration: 5,
-            resolution: '720p',
-            aspectRatio: '9:16',
-            imageUrl: kfUrl,
-          }, reqHost);
-
-          if (prepared.materials.length > 0) {
-            const seedanceRes = await createSeedanceVideo(prepared.body);
-            const task = normalizeSeedanceTask(seedanceRes);
-            shotSeedanceTaskId = task.id;
-            if (task.id) {
-              const ownerId = req.authUser?.id || inputs._ownerId;
-              if (!ownerId) throw new Error('Seedance task owner is required');
-              registerSeedanceTaskOwner(String(task.id), ownerId, 'pipeline-multi-shot');
-            }
-            shotStatus = (task.status === 'success' || task.status === 'completed') ? 'completed' : 'generating';
-            shotVideoUrl = task.url || undefined;
-          } else {
-            shotStatus = 'pending';
-            shotErrorMsg = prepared.warnings[0] || '等待首帧图可访问';
-          }
-        } catch (err: any) {
-          console.warn(`[Step2 MultiShot] Seedance submission for shot ${shotIndex} failed:`, err.message);
-          shotStatus = 'failed';
-          shotErrorMsg = friendlySeedanceError(err);
-        }
-      } else {
-        shotStatus = 'failed';
-        shotErrorMsg = '未配置 Seedance 中转（SEEDANCE_BASE_URL / ACCOUNT / PASSWORD），无法生成视频镜头';
-      }
-
-      try {
-        db.prepare(`
-          UPDATE shot_generation_tasks
-             SET status = ?,
-                 seedance_task_id = ?,
-                 video_url = ?,
-                 error_message = ?,
-                 updated_at = CURRENT_TIMESTAMP
-           WHERE id = ?
-        `).run(
-          shotStatus,
-          shotSeedanceTaskId || null,
-          shotVideoUrl || null,
-          shotErrorMsg || null,
-          taskId
-        );
-      } catch (err: any) {
-        console.error(`[Step2 MultiShot] DB update failed:`, err.message);
-        return res.status(500).json({
-          success: false,
-          error: '多镜头任务状态无法持久化，请稍后从任务中心恢复',
-        });
-      }
-
+      // S1.3：step2 只做「运镜 prompt 生成 + 任务持久化（pending）」。
+      // Seedance 提交由编排器逐镜调用独立端点 POST /step2/submit-shot 完成，
+      // 避免 12 镜（LLM + 提交）全部挤在单个 300s HTTP 请求内被超时掐断。
       shotTasks.push({
         id: taskId,
         shotIndex,
@@ -839,10 +798,10 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
         referenceKeyframeUrl: structureRefUrl || undefined,
         firstFrameSource: 'product_conditioned',
         video_prompt: videoPrompt,
-        seedanceTaskId: shotSeedanceTaskId,
-        status: shotStatus,
-        video_url: shotVideoUrl,
-        error_message: shotErrorMsg,
+        seedanceTaskId: undefined,
+        status: 'pending',
+        video_url: undefined,
+        error_message: undefined,
       });
     }
 
@@ -961,8 +920,22 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
         data.seedanceHint =
           '运镜 Prompt 已生成；配置 PUBLIC_BASE_URL 或改用公网素材后可重新运行 Step2 提交 Seedance';
       } else {
-        const seedanceRes = await createSeedanceVideo(prepared.body);
-        const task = normalizeSeedanceTask(seedanceRes);
+        // S1.4：提交前首帧可达性预检（对标 LibTV「自动校验素材」默认开关，SEEDANCE_PREFLIGHT=false 可关）
+        if (process.env.SEEDANCE_PREFLIGHT !== 'false') {
+          const preflight = await preflightMediaUrl(prepared.materials[0].url);
+          if (!preflight.ok) {
+            data.seedanceStatus = 'submit_failed';
+            data.seedanceError =
+              `首帧图预检失败（${preflight.error}）：Seedance 中转无法下载该素材。` +
+              '请检查 PUBLIC_BASE_URL 是否公网可达、素材文件是否存在';
+            data.seedanceHint = '配置 PUBLIC_BASE_URL 或改用公网素材后可重新运行 Step2 提交 Seedance';
+            return res.json({ success: true, data, source: `${gatewaySource}+seedance-relay` });
+          }
+        }
+        const { task, provider: submittedProvider, fallbackUsed } = await submitSeedanceVideoWithFallback(
+          prepared.body,
+          reqHost
+        );
         if (task.id) {
           const ownerId = req.authUser?.id || inputs._ownerId;
           if (!ownerId) throw new Error('Seedance task owner is required');
@@ -970,6 +943,8 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
         }
         data.seedanceTaskId = task.id;
         data.seedanceStatus = task.status;
+        data.seedanceProvider = submittedProvider;
+        data.seedanceFallbackUsed = fallbackUsed || undefined;
         data.previewVideoUrl = task.url || undefined;
         data.seedanceInferenceId = task.inferenceId;
         data.seedanceModel = prepared.modelId;
@@ -977,7 +952,7 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
         return res.json({
           success: true,
           data,
-          source: `${gatewaySource}+seedance-relay`,
+          source: `${gatewaySource}+${fallbackUsed ? 'yunshu-fallback' : 'seedance-relay'}`,
           seedance: task,
         });
       }
@@ -998,6 +973,122 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
   }
 
   return res.json({ success: true, data, source: gatewaySource });
+});
+
+// POST /api/pipeline/step2/submit-shot — 单镜 Seedance 提交（S1.3）
+// step2 只持久化 pending 镜头；编排器逐镜调用本端点提交，每镜一个独立 HTTP 请求。
+// 幂等：镜头已有有效 seedance_task_id（非 failed）时直接返回现状，避免重复扣费。
+pipelineRouter.post('/step2/submit-shot', async (req, res) => {
+  const { sessionId, shotIndex, model } = req.body || {};
+  const ownerId = req.authUser?.id || req.body?._ownerId;
+  if (!sessionId || shotIndex === undefined) {
+    return res.status(400).json({ success: false, error: '缺少 sessionId / shotIndex' });
+  }
+  if (!ownerId) {
+    return res.status(401).json({ success: false, error: '缺少镜头所有者' });
+  }
+  try {
+    const row = db.prepare(
+      `SELECT * FROM shot_generation_tasks
+        WHERE session_id = ? AND shot_index = ? AND owner_id = ?`
+    ).get(sessionId, shotIndex, ownerId) as any;
+    if (!row) {
+      return res.status(404).json({ success: false, error: '未找到该镜头任务' });
+    }
+
+    // 幂等：已提交且非失败状态直接返回现状
+    if (row.seedance_task_id && row.status !== 'failed') {
+      return res.json({
+        success: true,
+        data: {
+          shotIndex,
+          status: row.status,
+          seedanceTaskId: row.seedance_task_id,
+          video_url: row.video_url || undefined,
+          error_message: row.error_message || undefined,
+        },
+      });
+    }
+
+    if (!hasSeedanceConfig()) {
+      return res.status(503).json({
+        success: false,
+        error: '未配置 Seedance 中转（SEEDANCE_BASE_URL / ACCOUNT / PASSWORD），无法生成视频镜头',
+      });
+    }
+
+    const reqHost = `${req.protocol}://${req.get('host')}`;
+    const prepared = buildSeedanceGenerationBody(
+      {
+        prompt: row.video_prompt || 'product close-up, smooth cinematic motion, 60fps, high detail',
+        model: model || 'doubao-seedance-2-0-fast',
+        duration: 5,
+        resolution: '720p',
+        aspectRatio: '9:16',
+        imageUrl: row.first_frame_url,
+      },
+      reqHost
+    );
+
+    if (prepared.materials.length === 0) {
+      return res.status(422).json({
+        success: false,
+        error: prepared.warnings[0] || '缺少 Seedance 可下载的产品首帧图（请配置 PUBLIC_BASE_URL 或改用公网素材）',
+      });
+    }
+
+    // S1.4：提交前首帧可达性预检（对标 LibTV「自动校验素材」默认开关，SEEDANCE_PREFLIGHT=false 可关）
+    if (process.env.SEEDANCE_PREFLIGHT !== 'false') {
+      const preflight = await preflightMediaUrl(prepared.materials[0].url);
+      if (!preflight.ok) {
+        return res.status(422).json({
+          success: false,
+          error:
+            `首帧图预检失败（${preflight.error}）：Seedance 中转无法下载该素材。` +
+            '请检查 PUBLIC_BASE_URL 是否公网可达、素材文件是否存在',
+        });
+      }
+    }
+
+    const { task, provider: submittedProvider, fallbackUsed } = await submitSeedanceVideoWithFallback(
+      prepared.body,
+      reqHost
+    );
+    if (!task.id) {
+      throw new Error('Seedance 未返回任务 ID');
+    }
+    registerSeedanceTaskOwner(String(task.id), ownerId, 'pipeline-multi-shot');
+
+    const shotStatus = task.status === 'success' || task.status === 'completed' ? 'completed' : 'generating';
+    db.prepare(
+      `UPDATE shot_generation_tasks
+          SET status = ?, seedance_task_id = ?, video_url = ?, error_message = NULL,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?`
+    ).run(shotStatus, String(task.id), task.url || null, row.id);
+    if (fallbackUsed) {
+      db.prepare(
+        `UPDATE shot_generation_tasks SET error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+      ).run('已自动切换 yunshu 备用通道提交', row.id);
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        shotIndex,
+        status: shotStatus,
+        seedanceTaskId: String(task.id),
+        video_url: task.url || undefined,
+        error_message: undefined,
+      },
+    });
+  } catch (err: any) {
+    console.warn(`[Step2 submit-shot] shot ${shotIndex} submission failed:`, err.message);
+    return res.status(502).json({
+      success: false,
+      error: friendlySeedanceError(err),
+    });
+  }
 });
 
 // GET /api/pipeline/shot-tasks/:sessionId — 多镜头分段生成任务轮询
@@ -1079,8 +1170,7 @@ pipelineRouter.get('/shot-tasks/:sessionId', async (req, res) => {
               `${req.protocol}://${req.get('host')}`
             );
             if (prepared.materials.length > 0) {
-              const seedanceRes = await createSeedanceVideo(prepared.body);
-              const task = normalizeSeedanceTask(seedanceRes);
+              const { task } = await submitSeedanceVideoWithFallback(prepared.body);
               if (task.id) {
                 if (req.authUser?.id) registerSeedanceTaskOwner(String(task.id), req.authUser.id, 'pipeline-shot-qa-regenerate');
                 db.prepare(

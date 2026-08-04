@@ -61,6 +61,9 @@ test('durably executes all five steps and deduplicates start requests', async ()
     async pollShotSession() {
       throw new Error('not expected');
     },
+    async submitShot() {
+      throw new Error('not expected');
+    },
   };
   const orchestrator = new PipelineOrchestrator('http://unused', fakeExecutor);
   const input = {
@@ -124,6 +127,9 @@ test('retries from the failed step without re-running completed upstream steps',
     async pollShotSession() {
       throw new Error('not expected');
     },
+    async submitShot() {
+      throw new Error('not expected');
+    },
   };
   const orchestrator = new PipelineOrchestrator('http://unused', fakeExecutor);
   const run = orchestrator.start({
@@ -175,6 +181,9 @@ test('preserves the complete provider task id while polling Seedance', async () 
     async pollShotSession() {
       throw new Error('not expected');
     },
+    async submitShot() {
+      throw new Error('not expected');
+    },
   };
   const orchestrator = new PipelineOrchestrator('http://unused', fakeExecutor);
   const run = orchestrator.start({
@@ -207,6 +216,9 @@ test('does not automatically resubmit on ambiguous provider 5xx', async () => {
     async pollShotSession() {
       throw new Error('not expected');
     },
+    async submitShot() {
+      throw new Error('not expected');
+    },
   };
   const orchestrator = new PipelineOrchestrator('http://unused', fakeExecutor);
   const run = orchestrator.start({
@@ -237,6 +249,9 @@ test('does not automatically resubmit a running step after process recovery', as
       throw new Error('not expected');
     },
     async pollShotSession() {
+      throw new Error('not expected');
+    },
+    async submitShot() {
       throw new Error('not expected');
     },
   };
@@ -288,6 +303,9 @@ test('cancelled runs do not commit late step results', async () => {
     async pollShotSession() {
       throw new Error('not expected');
     },
+    async submitShot() {
+      throw new Error('not expected');
+    },
   };
   const orchestrator = new PipelineOrchestrator('http://unused', fakeExecutor);
   const run = orchestrator.start({
@@ -307,4 +325,84 @@ test('cancelled runs do not commit late step results', async () => {
   const cancelled = orchestrator.get(run.id, 'test-owner');
   assert.equal(cancelled.status, 'cancelled');
   assert.equal(cancelled.steps.some((step) => step.status === 'completed'), false);
+});
+
+test('S1.3 submits multi-shot shots one-by-one via submitShot before polling', async () => {
+  const submitted: Array<{ sessionId: string; shotIndex: number; model?: string; ownerId?: string }> = [];
+  let pollCount = 0;
+  const fakeExecutor: StepExecutor = {
+    async execute(step) {
+      if (step === 1) return { data: { static_image_prompt: 'prompt', shotList: [] }, source: 'fake' };
+      if (step === 2) {
+        return {
+          data: {
+            video_prompt: 'motion',
+            isMultiShot: true,
+            multiShotResult: {
+              sessionId: 'shot_sess_s13',
+              totalShots: 2,
+              shots: [
+                { id: 't1', shotIndex: 1, status: 'pending', video_prompt: 'p1', keyframeUrl: '/uploads/materials/a.png' },
+                { id: 't2', shotIndex: 2, status: 'pending', video_prompt: 'p2', keyframeUrl: '/uploads/materials/b.png' },
+              ],
+            },
+          },
+          source: 'fake',
+        };
+      }
+      if (step === 3) return { data: { title: 'title', hook: 'hook', cta: 'cta' }, source: 'fake' };
+      if (step === 4) {
+        return { data: { bgm_recommendation: { track_name: 'track' } }, source: 'fake' };
+      }
+      return { data: { videoUrl: '/uploads/renders/final.mp4' }, source: 'fake' };
+    },
+    async pollSeedance() {
+      throw new Error('not expected');
+    },
+    async pollShotSession() {
+      pollCount += 1;
+      return {
+        data: {
+          totalShots: 2,
+          completedShots: 2,
+          concatenatedVideoUrl: '/uploads/renders/concat.mp4',
+          shots: [
+            { id: 't1', shotIndex: 1, status: 'completed', seedanceTaskId: 'seed-1', video_url: '/uploads/renders/s1.mp4' },
+            { id: 't2', shotIndex: 2, status: 'completed', seedanceTaskId: 'seed-2', video_url: '/uploads/renders/s2.mp4' },
+          ],
+        },
+      };
+    },
+    async submitShot(sessionId, shotIndex, model, ownerId) {
+      submitted.push({ sessionId, shotIndex, model, ownerId });
+      return { shotIndex, status: 'generating', seedanceTaskId: `seed-${shotIndex}` };
+    },
+  };
+  const orchestrator = new PipelineOrchestrator('http://unused', fakeExecutor);
+  const run = orchestrator.start({
+    ownerId: 'test-owner',
+    idempotencyKey: 'multi-shot-submit-request',
+    productId: 'prod_buv_cleanser',
+    pipelineData: {
+      step1: { inputs: { mediaUrl: 'https://example.com/reference.mp4' } },
+      step2: { inputs: { videoModel: 'Seedance 2.0 Fast' } },
+      step3: { inputs: {} },
+      step4: { inputs: {} },
+      step5: { inputs: {} },
+    },
+  });
+
+  const completed = await waitForStatus(orchestrator, run.id);
+  assert.equal(completed.status, 'completed');
+  // 每镜独立提交一次，owner 从 run 透传
+  assert.deepEqual(
+    submitted.map((s) => ({ shotIndex: s.shotIndex, model: s.model, ownerId: s.ownerId })),
+    [
+      { shotIndex: 1, model: 'doubao-seedance-2-0-fast', ownerId: 'test-owner' },
+      { shotIndex: 2, model: 'doubao-seedance-2-0-fast', ownerId: 'test-owner' },
+    ]
+  );
+  assert.ok(pollCount >= 1, '提交完成后应轮询 shot session');
+  const step2Output = completed.steps[1].output as any;
+  assert.equal(step2Output.multiShotResult.shots[0].seedanceTaskId, 'seed-1');
 });

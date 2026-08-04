@@ -1,6 +1,6 @@
 # Live-Tu 全方位改进计划 v2 — 分阶段执行 × 逐阶段验收
 
-> 基于 **git 实际代码审计**（非 commit message 声称），整合视频全链路、Harness 增强、内容库扩充，切分为 **10 个可独立执行的 Stage**。每个 Stage 由一个独立会话完成，完成后验收再启动下一个。
+> 基于 **git 实际代码审计**（非 commit message 声称），整合视频全链路、Harness 增强、内容库扩充、工程质量修复，切分为 **11 个可独立执行的 Stage**。每个 Stage 由一个独立会话完成，完成后验收再启动下一个。
 
 ---
 
@@ -32,7 +32,8 @@
 
 ```mermaid
 flowchart TB
-    S1["Stage 1\nHarness 工程收尾\n⚡ 快速修复"] --> S2["Stage 2\n视频预处理基础设施\n🔧 FFmpeg 引擎"]
+    S11["Stage 11\n工程质量修复\n🛡️ 可信度加固"] --> S1["Stage 1\nHarness 工程收尾\n⚡ 快速修复"]
+    S1 --> S2["Stage 2\n视频预处理基础设施\n🔧 FFmpeg 引擎"]
     S2 --> S3["Stage 3\nLLM 视频分析能力\n🧠 多帧/原生视频"]
     S3 --> S4["Stage 4\n多镜头视频生成\n🎬 分段生成+拼接"]
     S4 --> S5["Stage 5\n全链路联动\n🔗 Step 3-5 参考原视频"]
@@ -44,6 +45,7 @@ flowchart TB
     
     S5 --> S10["Stage 10\n高级基础设施\n🏗️ Gemini API + 多模型"]
     
+    style S11 fill:#e64980,color:white
     style S1 fill:#ff6b6b,color:white
     style S2 fill:#ff6b6b,color:white
     style S3 fill:#ff6b6b,color:white
@@ -339,6 +341,63 @@ flowchart TB
 
 ---
 
+## Stage 11: 工程质量修复（CI 可信度 + 数据安全 + 前端债务）
+
+> **目标**：让「测试全绿」变回真实信号，修复重启丢配置的数据行为，清除前端类型/死代码债务，补完运维闭环（备份调度/容器字体/配置入库）。
+> **优先级**：🔴 **P0 先行** —— 本 Stage 是其余所有功能 Stage 的信任基础（假绿测试会让任何后续验收失真）
+> **复杂度**：🟡 中 | **估时**：2–3 个会话 | **审计日期**：2026-08-04（全仓工程审计）
+
+### 背景（审计结论摘要）
+
+```
+假绿测试       10 个测试文件用 console.assert 当断言 → 失败静默通过，CI 半虚绿
+测试零检查     tsconfig exclude "server/test" → 测试代码不被 tsc 检查
+重启丢配置     db.ts 每次启动强制重跑"迁移" → 覆盖用户模型配置（重启即还原）
+前端债务       115 处 any / ~2,500 行死代码 / 4 处轮询互踩（Step2 超时保护永不生效）
+运维断链       备份脚本无调度器、容器缺 CJK 字体、.env.production.example 被 gitignore 误杀
+```
+
+### 范围
+
+| # | 改动 | 文件 | 说明 | 优先级 |
+|:--|:---|:---|:---|:---|
+| 11.1 | CI 补跑高质量单测 | `.github/workflows/ci.yml` | 增加 `npm run test:materials-ux` + `npm run test:dual-gate`——已写好、质量最高却从未进 CI 的两套测试 | P0 |
+| 11.2 | 修复假测试 | `server/test/*.test.ts`（10 个文件） | `console.assert` → `node:assert/strict` + `test()`；无法修复的孤儿测试直接删除；全部接入 npm script | P0 |
+| 11.3 | 测试纳入类型检查 | `app/tsconfig.json:26` | 移除 `exclude: ["server/test"]` | P0 |
+| 11.4 | 修复启动时覆盖用户数据 | `server/lib/db.ts:879-943` | `realModels` upsert + `is_default` 强制重置改为一次性迁移（进 `schema_migrations`），否则用户模型配置每次重启被还原 | P0 |
+| 11.5 | 合并双份模型种子 | `server/lib/db.ts:721-743, 919-932` | `initialModels`/`realModels` 两份几乎相同的列表合并为单一事实源 | P1 |
+| 11.6 | 演示数据不进生产 | `server/lib/db.ts:636-866` | 空库演示任务（`task_seed_*`）与 Unsplash 外链产品种子加 `NODE_ENV !== 'production'` 条件；模型/BGM/预设种子属功能默认值，保留但迁移语义一次性化（见 11.4） | P1 |
+| 11.7 | 修复轮询超时失效 | `src/components/Step2Card.tsx:177-262` | effect 每次 tick 改 status → interval 重建 → `attempts` 归零 → `maxAttempts=60` 永不生效；修复后超时保护真实生效 | P0 |
+| 11.8 | tsconfig 开 strict | `app/tsconfig.json` + `app/src` | `strict: true`，按审计清单逐条清理 115 处 `any`/`as any` | P1 |
+| 11.9 | 删除死代码 | `src/`（5 个零引用 Modal + `ui/` 8 组件 + `runFullPipelineAutoLegacy` + 2 个死 handler） | 约 2,500 行（占全库 ~14%） | P1 |
+| 11.10 | fetch 收敛 + 错误约定统一 | `src/services/api.ts` + 12 处直连 fetch 调用点 | 统一走 apiService、统一 `API_BASE_URL`；错误处理收敛为单一约定（当前 4 种混用：抛异常/吞错/`{success:false}`/null） | P1 |
+| 11.11 | 统一轮询 hook | 新增 `usePolling` + 4 处轮询调用点 | 合并轮询逻辑；任务轮询加版本号/序号防「后返回覆盖先返回」 | P1 |
+| 11.12 | Node 版本约束 + 锁文件清理 | `app/package.json` | 补 `engines: { node: ">=24" }`（代码用 `node:sqlite`，Node <23.4 需 flag / Node 20 直接崩）；删除过期双锁文件 `bun.lock` | P1 |
+| 11.13 | 容器 CJK 字体 + BACKUP_DIR | `app/Dockerfile`、`app/compose.yml` | 装 `fonts-noto-cjk`（当前容器内中文字幕 drawtext 断链）；开发 compose 补 `BACKUP_DIR` 指向备份卷（当前备份落容器层，重建即丢） | P1 |
+| 11.14 | 配置入库补全 | `app/.gitignore`、`.env.example`、`deploy/.env.production.example` | 放行 `!deploy/.env.production.example`（RUNBOOK 第一步引用，新克隆即缺失）；example 补 `BACKUP_DIR`/`APP_PUBLIC_URL`/`FFMPEG_FONTFILE`/`FFMPEG_PATH`/`IMAGE_MODEL`/`PIPELINE_*` 等 10+ 键 | P1 |
+| 11.15 | 定时备份 + 恢复演练脚本化 | `.github/workflows/ci.yml`（schedule）或服务器 cron + `app/scripts/` | `backup.mjs` 写得很好但没有调度器 = 没有备份；恢复演练从临时目录升级为真实卷回演脚本 | P2 |
+| 11.16 | 密钥轮换 + 仓库治理 | 运维动作 + `.gitignore` | 轮换并删除 `docs/云雾.txt` 明文密钥；清 `.scratch/` 入库残留（10 个文件）、失效 gitlink（`reference/repo/*` 无 `.gitmodules`） | P2 |
+| 11.17 | 巨型组件拆分 | `src/App.tsx`（2583 行）、`src/components/Step1Card.tsx`（2059 行） | 先抽公共 Modal（全库 17 处 `fixed inset-0` 覆盖层重复）+ 状态收敛（zustand/context）再拆文件 | P2 |
+
+### 交付物
+- CI 全绿，且每条绿都是真实断言（全仓无 `console.assert` 测试残留）
+- 重启服务不再覆盖用户模型配置（伪迁移一次性化）
+- 前端 `strict` 通过、死代码清零、轮询单一实现
+- 容器内中文字幕可渲染、备份可由调度器触发、新克隆部署 RUNBOOK 第一步可用
+
+### 验收标准
+- [ ] `npm run lint` 覆盖 `server/test`（移除 exclude 后类型错误清零）
+- [ ] CI 包含 materials-ux 与 dual-gate；全仓 grep 无 `console.assert` 测试残留
+- [ ] 修改模型配置 → 重启服务 → 配置保留（`db.ts` 伪迁移已删除或一次性化）
+- [ ] 全新生产库（`NODE_ENV=production`）无演示任务/演示产品
+- [ ] Step2 轮询超过 60 tick 后确实中止（修复前永不中止）
+- [ ] `tsc --noEmit` 在 strict 模式下通过，`app/src` 无 `any` 断言残留
+- [ ] 容器内中文字幕 drawtext 渲染正常（字体链完整）
+- [ ] 备份产物出现在 `BACKUP_DIR` 挂载卷；恢复演练脚本可一键跑通
+- [ ] 新克隆仓库按 RUNBOOK 第一步可找到 `.env.production.example`
+
+---
+
 ## 执行路线图
 
 ```mermaid
@@ -346,8 +405,11 @@ gantt
     title Live-Tu 分阶段执行路线图
     dateFormat YYYY-MM-DD
     
+    section 🛡️ 工程基础（先行，P0）
+    Stage 11 工程质量修复     :crit, s11, 2026-08-05, 3d
+    
     section 🔴 关键路径（视频全链路）
-    Stage 1 Harness 收尾      :crit, s1, 2026-07-30, 1d
+    Stage 1 Harness 收尾      :crit, s1, after s11, 1d
     Stage 2 视频预处理基础设施  :crit, s2, after s1, 1d
     Stage 3 LLM 视频分析+Step1 :crit, s3, after s2, 2d
     Stage 4 多镜头生成+拼接    :s4, after s3, 2d
@@ -363,8 +425,9 @@ gantt
     Stage 10 高级基础设施       :s10, after s5, 2d
 ```
 
-### 两条并行轨道
+### 三条执行轨道
 
+- **工程基础**：Stage 11（工程质量修复）**先行**——假绿测试会让所有后续验收失真，重启丢配置会在生产放量时成为数据事故；P0 项完成前不建议启动功能 Stage
 - **关键路径**：Stage 1 → 2 → 3 → 4 → 5 → 6（视频全链路，串行依赖）
 - **内容扩充**：Stage 7 → 8（可在 Stage 1 完成后并行启动）
 - **收尾**：Stage 9、10 在各自前置完成后执行

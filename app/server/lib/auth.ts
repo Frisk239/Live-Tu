@@ -113,10 +113,15 @@ function clearSessionCookie(res: Response) {
 export function initializeAuth() {
   db.prepare('DELETE FROM auth_sessions WHERE expires_at <= ?').run(new Date().toISOString());
 
-  const userCount = db.prepare('SELECT COUNT(*) AS count FROM users').get() as { count: number };
-  if (userCount.count > 0) return;
-
   const isProduction = process.env.NODE_ENV === 'production';
+  // 短路条件必须是「存在可登录的 admin」，而不是「users 表非空」：
+  // db.ts 会种子化一个 disabled 的 system 用户（内部编排轮询用），
+  // 若按表非空判断，全新生产库将永不创建 ADMIN_USERNAME 管理员，导致无法登录。
+  const existingAdmin = db.prepare(
+    "SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND enabled = 1"
+  ).get() as { count: number };
+  if (existingAdmin.count > 0) return;
+
   const username = (process.env.ADMIN_USERNAME || (isProduction ? '' : 'haini')).trim();
   const password = process.env.ADMIN_PASSWORD || (isProduction ? '' : '888');
 

@@ -83,7 +83,8 @@ test('persists multi-shot tasks before provider work and isolates sessions by ow
       'SELECT owner_id, status FROM shot_generation_tasks WHERE session_id = ?'
     ).get(sessionId) as { owner_id: string; status: string };
     assert.equal(persisted.owner_id, 'owner-one');
-    assert.equal(persisted.status, 'completed');
+    // S1.3：step2 只持久化 pending，Seedance 提交走独立端点 submit-shot
+    assert.equal(persisted.status, 'pending');
 
     const ownerResponse = await fetch(`${baseUrl}/shot-tasks/${sessionId}`, {
       headers: { 'x-test-user': 'owner-one' },
@@ -99,6 +100,31 @@ test('persists multi-shot tasks before provider work and isolates sessions by ow
       headers: { 'x-test-user': 'admin-one' },
     });
     assert.equal(adminResponse.status, 200);
+
+    // submit-shot：未配置 Seedance 时应返回 503（可读错误），且不会崩溃
+    const submitShot = await fetch(`${baseUrl}/step2/submit-shot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-test-user': 'owner-one' },
+      body: JSON.stringify({ sessionId, shotIndex: 1 }),
+    });
+    const submitBody = await submitShot.json();
+    assert.equal(submitShot.status, 503, JSON.stringify(submitBody));
+
+    // 参数缺失应 400
+    const missingParams = await fetch(`${baseUrl}/step2/submit-shot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-test-user': 'owner-one' },
+      body: JSON.stringify({ sessionId }),
+    });
+    assert.equal(missingParams.status, 400);
+
+    // 越权提交（其他 owner 的镜头）应 404
+    const forbiddenSubmit = await fetch(`${baseUrl}/step2/submit-shot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-test-user': 'owner-two' },
+      body: JSON.stringify({ sessionId, shotIndex: 1 }),
+    });
+    assert.equal(forbiddenSubmit.status, 404);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve()))

@@ -369,6 +369,16 @@ export default function App() {
     }
   };
 
+  // Step1 内删除素材后刷新素材库列表（避免列表出现已删除的幽灵项）
+  const handleMaterialDeleted = useCallback(async () => {
+    try {
+      const updated = await apiService.materials.fetchMaterials();
+      setMaterials(updated);
+    } catch (err) {
+      console.warn('[App] 素材库刷新失败:', err);
+    }
+  }, []);
+
   const [tasks, setTasks] = useState<WorkspaceSession[]>([]);
   const [pipelineRuns, setPipelineRuns] = useState<PipelineRunSnapshot[]>([]);
   const [isSessionManagerOpen, setIsSessionManagerOpen] = useState(false);
@@ -2457,6 +2467,7 @@ export default function App() {
                     onUpdateOutput={handleStep1UpdateOutput}
                     onGeneratedImage={handleStep1GeneratedImage}
                     onProductAssetsChanged={handleProductAssetsChanged}
+                    onMaterialDeleted={handleMaterialDeleted}
                     onRun={runStep1}
                     onAbort={() => handleAbortCurrentStep(1)}
                     onReset={handleStep1Reset}

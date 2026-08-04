@@ -47,26 +47,44 @@ export const MaterialsPageView: React.FC<MaterialsPageViewProps> = ({
   const [selectedTagFilter, setSelectedTagFilter] = useState<string>('all');
   const [selectedPreview, setSelectedPreview] = useState<MaterialItem | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [tagPickerMaterialId, setTagPickerMaterialId] = useState<string | null>(null);
 
   const handleFileUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     setIsUploading(true);
+    setUploadProgress(0);
 
-    try {
-      const newItems: MaterialItem[] = [];
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const item = await apiService.materials.uploadMaterial(file);
+    const newItems: MaterialItem[] = [];
+    const failed: { name: string; reason: string }[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        // 顺序上传：总体进度 = 已完成文件数 + 当前文件进度（加权平均）
+        const item = await apiService.materials.uploadMaterial(file, (pct) => {
+          setUploadProgress(Math.round(((i + pct / 100) / files.length) * 100));
+        });
         newItems.push(item);
+        setUploadProgress(Math.round(((i + 1) / files.length) * 100));
+      } catch (err: any) {
+        // 逐文件容错：单个失败不中断其余文件
+        failed.push({ name: file.name, reason: err?.message || '网络问题' });
       }
-      onAddMaterials(newItems);
-    } catch (err: any) {
-      notify(`上传失败: ${err?.message || '网络问题'}`, 'error');
-    } finally {
-      setIsUploading(false);
     }
+    if (newItems.length > 0) onAddMaterials(newItems);
+    if (failed.length > 0) {
+      notify(
+        `上传完成：成功 ${newItems.length} 项，失败 ${failed.length} 项（${failed
+          .map((f) => f.name)
+          .join('、')}）`,
+        'error'
+      );
+    } else if (newItems.length > 0) {
+      notify(`✅ 批量上传完成：成功 ${newItems.length} 项`, 'success');
+    }
+    setIsUploading(false);
   };
 
   const handleImportViralDirectory = async () => {
@@ -174,7 +192,25 @@ export const MaterialsPageView: React.FC<MaterialsPageViewProps> = ({
 
       {/* Upload Dropzone Section */}
       <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-2xs">
-        <label className="relative group border border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-6 bg-slate-50/50 hover:bg-blue-50/30 text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-3">
+        <label
+          className={`relative group border border-dashed rounded-xl p-6 text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-3 ${
+            isDragOver
+              ? 'border-blue-500 bg-blue-50/60'
+              : 'border-slate-300 hover:border-blue-500 bg-slate-50/50 hover:bg-blue-50/30'
+          }`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setIsDragOver(true);
+          }}
+          onDragLeave={() => setIsDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setIsDragOver(false);
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+              void handleFileUpload(e.dataTransfer.files);
+            }
+          }}
+        >
           <input
             type="file"
             multiple
@@ -186,12 +222,28 @@ export const MaterialsPageView: React.FC<MaterialsPageViewProps> = ({
             <Upload className="w-6 h-6" />
           </div>
           <div>
-            <p className="text-xs font-bold text-slate-900">
-              {isUploading ? '素材正在解析并调用 FFprobe 提取元数据中...' : '点击上传或将爆款视频/原图拖拽至此处'}
-            </p>
-            <p className="text-[11px] text-slate-500 mt-1">
-              支持 MP4, MOV, JPG, PNG 批量导入，系统将自动使用 FFprobe 提取 exact duration & dimensions
-            </p>
+            {isUploading ? (
+              <div className="flex flex-col items-center gap-2">
+                <p className="text-xs font-bold text-slate-900">
+                  正在上传并解析素材… {uploadProgress}%
+                </p>
+                <div className="w-48 bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                  <div
+                    className="bg-blue-500 h-full transition-all duration-200"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            ) : (
+              <>
+                <p className="text-xs font-bold text-slate-900">
+                  点击上传或将爆款视频/原图拖拽至此处
+                </p>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  支持 MP4, MOV, JPG, PNG 批量导入，系统将自动使用 FFprobe 提取 exact duration & dimensions
+                </p>
+              </>
+            )}
           </div>
         </label>
       </div>

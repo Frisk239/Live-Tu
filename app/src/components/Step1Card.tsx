@@ -46,12 +46,16 @@ export interface BatchStep1QueueItem {
   url: string;
   type: 'video' | 'image';
   size?: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'uploading' | 'pending' | 'running' | 'completed' | 'failed';
   progress: number;
   executionTimeMs?: number;
   output?: Step1Output;
   errorMessage?: string;
   createdAt: string;
+  /** 本地文件上传创建的素材 id；删除队列项时同步删后端文件。素材库导入/示例包项无此字段，不会被误删 */
+  materialId?: string;
+  /** 仅上传阶段失败（文件未落库）的标记，禁止进入反推队列 */
+  uploadFailed?: boolean;
 }
 
 interface Step1CardProps {
@@ -72,6 +76,8 @@ interface Step1CardProps {
   onGeneratedImage?: (payload: { imageUrl: string; promptUsed: string }) => void;
   /** 产品图上传/删除后通知父级刷新（爆款直出依赖产品图作首帧） */
   onProductAssetsChanged?: () => void;
+  /** 素材删除后通知父级刷新素材库列表 */
+  onMaterialDeleted?: () => void;
 }
 
 export const Step1Card: React.FC<Step1CardProps> = React.memo(({
@@ -90,6 +96,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
   onOpenMaterials,
   onGeneratedImage,
   onProductAssetsChanged,
+  onMaterialDeleted,
 }) => {
   // Mode Switch State: 'single' | 'batch'
   const [executionMode, setExecutionMode] = useState<'single' | 'batch'>('single');
@@ -106,6 +113,10 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
   const [isCapturingFrame, setIsCapturingFrame] = useState(false);
   /** Keep original video URL while previewing extracted still */
   const [sourceVideoUrl, setSourceVideoUrl] = useState<string>('');
+  /** 本组件直接上传的素材 id（X 删除时同步删后端文件；素材库导入/示例不设） */
+  const [uploadedMaterialId, setUploadedMaterialId] = useState<string | null>(null);
+  const [isUploadingSingle, setIsUploadingSingle] = useState(false);
+  const [singleUploadProgress, setSingleUploadProgress] = useState(0);
 
   const isVideoMedia = (url: string) => {
     if (!url) return false;
@@ -187,6 +198,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
       if (!blob) throw new Error('抓帧失败');
       const file = new File([blob], `keyframe_${Date.now()}.png`, { type: 'image/png' });
       const uploaded = await apiService.materials.uploadMaterial(file);
+      setUploadedMaterialId(uploaded.id);
       onUpdateInputs({ mediaUrl: uploaded.url });
       notify('✅ 已抓取当前帧并设为 Step1 分析素材（同时可同步到素材库）', 'success');
     } catch (err: any) {
@@ -335,24 +347,143 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
     }
   };
 
+  // ---- 单素材上传（带进度）与移除 ----
+  const handleSingleUpload = async (file: File) => {
+    setIsUploadingSingle(true);
+    setSingleUploadProgress(0);
+    try {
+      const uploaded = await apiService.materials.uploadMaterial(file, setSingleUploadProgress);
+      setUploadedMaterialId(uploaded.id);
+      if (file.type.startsWith('video')) {
+        setSourceVideoUrl(uploaded.url);
+      } else {
+        setSourceVideoUrl('');
+      }
+      onUpdateInputs({ mediaUrl: uploaded.url });
+    } catch (err: any) {
+      notify(err?.message || '上传素材失败', 'error');
+    } finally {
+      setIsUploadingSingle(false);
+    }
+  };
+
+  const handleRemoveSingleMaterial = async () => {
+    const id = uploadedMaterialId;
+    setUploadedMaterialId(null);
+    setSourceVideoUrl('');
+    onUpdateInputs({ mediaUrl: '' });
+    if (id) {
+      try {
+        await apiService.materials.deleteMaterial(id);
+        onMaterialDeleted?.();
+        notify('✅ 已移除素材并删除本地上传文件', 'success');
+      } catch (err: any) {
+        notify(`素材已从工作台移除，但文件删除失败：${err?.message || '未知错误'}`, 'error');
+      }
+    } else {
+      notify('素材已从工作台移除', 'info');
+    }
+  };
+
   // --- BATCH PARALLEL QUEUE LOGIC ---
   const handleBatchFileUpload = async (files: FileList | File[]) => {
-    const newItems: BatchStep1QueueItem[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const uploaded = await apiService.materials.uploadMaterial(file);
-      newItems.push({
-        id: 'batch_upload_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substring(2, 5),
-        name: file.name,
-        url: uploaded.url,
-        type: file.type.startsWith('video') ? 'video' : 'image',
-        size: (file.size / (1024 * 1024)).toFixed(1) + ' MB',
-        status: 'pending',
-        progress: 0,
-        createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      });
+    const list = Array.from(files);
+    // 立即入队占位，上传过程中实时更新进度；失败项标记 uploadFailed 不允许反推
+    const placeholders: BatchStep1QueueItem[] = list.map((file, i) => ({
+      id: 'batch_upload_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substring(2, 5),
+      name: file.name,
+      url: '',
+      type: file.type.startsWith('video') ? 'video' : 'image',
+      size: (file.size / (1024 * 1024)).toFixed(1) + ' MB',
+      status: 'uploading',
+      progress: 0,
+      createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    }));
+    setBatchQueue((prev) => [...prev, ...placeholders]);
+
+    // 逐文件容错：单个失败不中断其余文件上传
+    const failed: { name: string; reason: string }[] = [];
+    let successCount = 0;
+    for (let i = 0; i < placeholders.length; i++) {
+      const placeholder = placeholders[i];
+      const file = list[i];
+      try {
+        const uploaded = await apiService.materials.uploadMaterial(file, (pct) => {
+          setBatchQueue((prev) =>
+            prev.map((q) => (q.id === placeholder.id ? { ...q, progress: pct } : q))
+          );
+        });
+        setBatchQueue((prev) =>
+          prev.map((q) =>
+            q.id === placeholder.id
+              ? {
+                  ...q,
+                  url: uploaded.url,
+                  materialId: uploaded.id,
+                  status: 'pending',
+                  progress: 100,
+                }
+              : q
+          )
+        );
+        successCount++;
+      } catch (err: any) {
+        setBatchQueue((prev) =>
+          prev.map((q) =>
+            q.id === placeholder.id
+              ? {
+                  ...q,
+                  status: 'failed',
+                  uploadFailed: true,
+                  progress: 0,
+                  errorMessage: `上传失败：${err?.message || '网络异常'}`,
+                }
+              : q
+          )
+        );
+        failed.push({ name: file.name, reason: err?.message || '网络异常' });
+      }
     }
-    setBatchQueue((prev) => [...prev, ...newItems]);
+
+    if (failed.length > 0) {
+      notify(
+        `批量上传完成：成功 ${successCount} 项，失败 ${failed.length} 项（${failed.map((f) => f.name).join('、')}）`,
+        'error'
+      );
+    } else if (successCount > 0) {
+      notify(`✅ 批量上传完成：成功 ${successCount} 项`, 'success');
+    }
+  };
+
+  // 队列项删除：本地上传项（materialId）同步删后端文件，素材库导入/示例包仅移出队列
+  const removeQueueItem = async (item: BatchStep1QueueItem) => {
+    setBatchQueue((prev) => prev.filter((q) => q.id !== item.id));
+    if (item.materialId) {
+      try {
+        await apiService.materials.deleteMaterial(item.materialId);
+        onMaterialDeleted?.();
+      } catch (err: any) {
+        notify(`文件删除失败（已移出队列）：${err?.message || '未知错误'}`, 'error');
+      }
+    }
+  };
+
+  // 清空队列：批量清理本地上传文件，避免孤儿文件
+  const clearBatchQueue = async () => {
+    if (isBatchRunning) return;
+    const toDelete = batchQueue.filter((q) => q.materialId);
+    setBatchQueue([]);
+    if (toDelete.length === 0) return;
+    const results = await Promise.allSettled(
+      toDelete.map((q) => apiService.materials.deleteMaterial(q.materialId as string))
+    );
+    const failedCount = results.filter((r) => r.status === 'rejected').length;
+    if (failedCount > 0) {
+      notify(`队列已清空（${failedCount} 个文件删除失败）`, 'error');
+    } else {
+      notify('✅ 队列已清空', 'success');
+    }
+    onMaterialDeleted?.();
   };
 
   // Run single item in queue
@@ -413,7 +544,9 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
 
   // Run full batch queue serially (PRD: 批量反推队列)
   const runAllBatchParallel = async () => {
-    const pendingItems = batchQueue.filter((q) => q.status === 'pending' || q.status === 'failed');
+    const pendingItems = batchQueue.filter(
+    (q) => !q.uploadFailed && (q.status === 'pending' || q.status === 'failed')
+  );
     if (pendingItems.length === 0) return;
 
     setIsBatchRunning(true);
@@ -598,8 +731,15 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
   const runningTasks = batchQueue.filter((q) => q.status === 'running').length;
   const completedTasks = batchQueue.filter((q) => q.status === 'completed').length;
   const failedTasks = batchQueue.filter((q) => q.status === 'failed').length;
+  const uploadingTasks = batchQueue.filter((q) => q.status === 'uploading').length;
+  const uploadingWeight = batchQueue.reduce(
+    (acc, q) => (q.status === 'uploading' ? acc + (q.progress || 0) : acc),
+    0
+  );
   const batchOverallProgress =
-    totalTasks > 0 ? Math.round(((completedTasks + failedTasks) / totalTasks) * 100) : 0;
+    totalTasks > 0
+      ? Math.round(((completedTasks + failedTasks) * 100 + uploadingWeight) / totalTasks)
+      : 0;
 
   // Active modal target output prompt
   const editingQueueItem = batchQueue.find((q) => q.id === editingQueueItemId);
@@ -717,6 +857,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
             <button
               type="button"
               onClick={onReset}
+              title="重置：保留本步输入，仅清空产物与状态（清空输入请点素材右上角 × 或工作台一键清空）"
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors shadow-surface-sm"
             >
               <RotateCcw className="w-3.5 h-3.5" />
@@ -816,14 +957,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                   onDrop={async (e) => {
                     e.preventDefault();
                     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-                      const f = e.dataTransfer.files[0];
-                      const uploaded = await apiService.materials.uploadMaterial(f);
-                      if (f.type.startsWith('video')) {
-                        setSourceVideoUrl(uploaded.url);
-                      } else {
-                        setSourceVideoUrl('');
-                      }
-                      onUpdateInputs({ mediaUrl: uploaded.url });
+                      await handleSingleUpload(e.dataTransfer.files[0]);
                     }
                   }}
                   className="relative group border-2 border-dashed border-slate-300 dark:border-slate-700 hover:border-emerald-500 dark:hover:border-emerald-400 rounded-xl p-3 bg-slate-50 dark:bg-slate-900 text-center transition-all cursor-pointer overflow-hidden"
@@ -833,14 +967,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                     accept="video/*,image/*"
                     onChange={async (e) => {
                       if (e.target.files && e.target.files[0]) {
-                        const f = e.target.files[0];
-                        const uploaded = await apiService.materials.uploadMaterial(f);
-                        if (f.type.startsWith('video')) {
-                          setSourceVideoUrl(uploaded.url);
-                        } else {
-                          setSourceVideoUrl('');
-                        }
-                        onUpdateInputs({ mediaUrl: uploaded.url });
+                        await handleSingleUpload(e.target.files[0]);
                       }
                     }}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
@@ -865,6 +992,14 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                       <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity pointer-events-none">
                         <span className="text-xs text-white font-medium">点击或拖拽更换画面素材</span>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleRemoveSingleMaterial()}
+                        className="absolute top-1.5 right-1.5 z-20 w-6 h-6 rounded-full bg-rose-500 hover:bg-rose-600 text-white flex items-center justify-center shadow-sm transition-colors"
+                        title="移除素材（本地上传将同时删除文件）"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   ) : (
                     <div className="py-6 flex flex-col items-center justify-center gap-2 pointer-events-none">
@@ -873,6 +1008,18 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                         拖拽视频/图片至此，或点击本地上传
                       </p>
                       <p className="text-[11px] text-slate-400">支持 MP4 抽帧 / JPG / PNG / Live Photo</p>
+                    </div>
+                  )}
+
+                  {isUploadingSingle && (
+                    <div className="absolute inset-0 z-20 bg-slate-950/70 backdrop-blur-sm flex flex-col items-center justify-center gap-3">
+                      <span className="text-xs text-white font-bold">正在上传… {singleUploadProgress}%</span>
+                      <div className="w-2/3 bg-slate-700 rounded-full h-2 overflow-hidden">
+                        <div
+                          className="bg-emerald-400 h-full transition-all duration-200"
+                          style={{ width: `${singleUploadProgress}%` }}
+                        />
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1391,7 +1538,16 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
           {/* Top Control & Upload Bar */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
             {/* Batch Drag & Drop Upload Zone */}
-            <div className="lg:col-span-7 bg-slate-50 dark:bg-slate-800/50 border-2 border-dashed border-emerald-300 dark:border-emerald-800 hover:border-emerald-500 rounded-2xl p-5 text-center flex flex-col items-center justify-center relative transition-all group cursor-pointer">
+            <div
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  void handleBatchFileUpload(e.dataTransfer.files);
+                }
+              }}
+              className="lg:col-span-7 bg-slate-50 dark:bg-slate-800/50 border-2 border-dashed border-emerald-300 dark:border-emerald-800 hover:border-emerald-500 rounded-2xl p-5 text-center flex flex-col items-center justify-center relative transition-all group cursor-pointer"
+            >
               <input
                 type="file"
                 multiple
@@ -1519,10 +1675,10 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                 )}
 
                 <button
-                  onClick={() => setBatchQueue([])}
+                  onClick={() => void clearBatchQueue()}
                   disabled={isBatchRunning || totalTasks === 0}
                   className="p-2.5 rounded-xl bg-slate-800 hover:bg-rose-900/40 hover:text-rose-300 text-slate-400 border border-slate-700 text-xs transition-all disabled:opacity-40"
-                  title="清空多任务队列"
+                  title="清空多任务队列（本地上传文件将一并删除）"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -1581,11 +1737,17 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                       {/* Left File Info & Thumbnail */}
                       <div className="flex items-center gap-3.5 min-w-0">
                         <div className="relative w-16 h-16 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 shrink-0 bg-slate-900">
-                          <img
-                            src={item.url}
-                            alt={item.name}
-                            className="w-full h-full object-cover"
-                          />
+                          {item.status === 'uploading' ? (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <Upload className="w-5 h-5 text-blue-400 animate-pulse" />
+                            </div>
+                          ) : (
+                            <img
+                              src={item.url}
+                              alt={item.name}
+                              className="w-full h-full object-cover"
+                            />
+                          )}
                           <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-slate-950/80 text-[9px] font-bold text-white font-mono uppercase">
                             {item.type === 'video' ? 'MP4' : 'IMG'}
                           </div>
@@ -1619,6 +1781,21 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
 
                       {/* Middle Status Pill & Progress Bar */}
                       <div className="flex items-center gap-3 shrink-0">
+                        {item.status === 'uploading' && (
+                          <div className="space-y-1 text-right">
+                            <span className="px-3 py-1 rounded-full bg-blue-500/15 text-blue-700 dark:text-blue-300 border border-blue-500/40 text-xs font-bold flex items-center gap-1.5">
+                              <Upload className="w-3.5 h-3.5 animate-pulse" />
+                              <span>上传中 ({item.progress}%)</span>
+                            </span>
+                            <div className="w-32 bg-slate-200 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden ml-auto">
+                              <div
+                                className="bg-blue-500 h-full transition-all duration-300"
+                                style={{ width: `${item.progress}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
                         {item.status === 'pending' && (
                           <span className="px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 text-xs font-semibold flex items-center gap-1.5">
                             <Clock className="w-3.5 h-3.5 text-slate-400" />
@@ -1651,13 +1828,13 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                         {item.status === 'failed' && (
                           <span className="px-3 py-1 rounded-full bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-300 border border-rose-300 dark:border-rose-800 text-xs font-bold flex items-center gap-1.5">
                             <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
-                            <span>处理异常</span>
+                            <span>{item.uploadFailed ? '上传失败' : '处理异常'}</span>
                           </span>
                         )}
 
                         {/* Actions for Item */}
                         <div className="flex items-center gap-1.5">
-                          {item.status === 'pending' || item.status === 'failed' ? (
+                          {(item.status === 'pending' || item.status === 'failed') && !item.uploadFailed ? (
                             <button
                               onClick={() => runSingleQueueItem(item.id)}
                               className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-sm flex items-center gap-1"
@@ -1677,12 +1854,14 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                           ) : null}
 
                           <button
-                            onClick={() =>
-                              setBatchQueue((prev) => prev.filter((q) => q.id !== item.id))
-                            }
-                            disabled={item.status === 'running'}
+                            onClick={() => void removeQueueItem(item)}
+                            disabled={item.status === 'running' || item.status === 'uploading'}
                             className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-colors disabled:opacity-30"
-                            title="从队列删除"
+                            title={
+                              item.materialId
+                                ? '从队列删除（本地上传文件将一并删除）'
+                                : '从队列删除'
+                            }
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>

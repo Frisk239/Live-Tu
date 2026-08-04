@@ -364,17 +364,35 @@ export const apiService = {
       }
     },
 
-    async uploadMaterial(file: File): Promise<MaterialItem> {
+    async uploadMaterial(file: File, onProgress?: (percent: number) => void): Promise<MaterialItem> {
       const form = new FormData();
       form.append('file', file, file.name);
       form.append('name', file.name);
-      const res = await fetch(`${API_BASE_URL}/materials/upload-file`, {
-        method: 'POST',
-        body: form,
+      // XHR 才能拿到上传进度；错误响应体与 fetch 版本保持一致
+      const { json, status } = await new Promise<{ json: any; status: number }>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${API_BASE_URL}/materials/upload-file`);
+        xhr.upload.onprogress = (e) => {
+          if (onProgress && e.lengthComputable) {
+            onProgress(Math.min(99, Math.round((e.loaded / e.total) * 100)));
+          }
+        };
+        xhr.onload = () => {
+          let json: any = {};
+          try {
+            json = JSON.parse(xhr.responseText || '{}');
+          } catch {
+            json = { raw: xhr.responseText };
+          }
+          resolve({ json, status: xhr.status });
+          if (onProgress) onProgress(100);
+        };
+        xhr.onerror = () => reject(new Error('网络异常，上传失败'));
+        xhr.onabort = () => reject(new Error('上传已取消'));
+        xhr.send(form);
       });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json.success) {
-        throw new Error(json.error || `上传素材失败 (${res.status})`);
+      if (status < 200 || status >= 300 || json.success !== true) {
+        throw new Error(json.error || `上传素材失败 (${status})`);
       }
       return json.data;
     },

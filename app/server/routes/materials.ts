@@ -131,7 +131,7 @@ materialsRouter.post('/upload-file', (req, res) => {
         success: false,
         error:
           uploadError.code === 'LIMIT_FILE_SIZE'
-            ? '文件超过 100MB 上传限制'
+            ? '文件超过 200MB 上传限制'
             : '不支持的文件类型',
       });
     }
@@ -300,7 +300,7 @@ materialsRouter.post('/upload', async (req, res) => {
       const estimatedBytes = Math.ceil(base64Str.length * 0.75);
       const maxAllowedBytes = isVideo ? 100 * 1024 * 1024 : 20 * 1024 * 1024;
       if (estimatedBytes > maxAllowedBytes) {
-        return res.status(413).json({ success: false, error: `文件超过大小限制 (最大 ${isVideo ? '100MB' : '20MB'})` });
+        return res.status(413).json({ success: false, error: `文件超过大小限制 (最大 ${isVideo ? '200MB' : '20MB'})` });
       }
 
       const matches = dataUrl.match(/^data:(.+);base64,(.+)$/);

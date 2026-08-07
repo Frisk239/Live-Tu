@@ -124,8 +124,8 @@ cp deploy/.env.demo.example deploy/.env.demo
 ```bash
 # 必须修改的项
 PUBLIC_BASE_URL=http://YOUR_SERVER_IP:3004    # 改为服务器公网 IP
-ADMIN_USERNAME=your-admin-name
-ADMIN_PASSWORD=your-strong-password
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin123456!
 MODEL_KEY_ENCRYPTION_SECRET=<openssl rand -hex 32 的输出>
 MEDIA_URL_SIGNING_SECRET=<openssl rand -hex 32 的输出>
 METRICS_TOKEN=<openssl rand -hex 32 的输出>
@@ -230,6 +230,17 @@ curl --fail https://your-domain.com/api/ready
 ---
 
 ## 验证部署
+
+### 默认测试账号
+
+| 环境 | 用户名 | 密码 | 角色 |
+|------|--------|------|------|
+| 开发/Demo | `admin` | `admin123456!` | 管理员 |
+| 开发/Demo | `operator` | `admin123456!` | 操作员 |
+
+> 生产环境必须通过 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 环境变量配置独立的强密码（≥12位）。
+
+### 验证清单
 
 部署后完整验证清单：
 

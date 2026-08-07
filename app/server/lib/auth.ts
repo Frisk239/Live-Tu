@@ -122,8 +122,8 @@ export function initializeAuth() {
   ).get() as { count: number };
   if (existingAdmin.count > 0) return;
 
-  const username = (process.env.ADMIN_USERNAME || (isProduction ? '' : 'haini')).trim();
-  const password = process.env.ADMIN_PASSWORD || (isProduction ? '' : '888');
+  const username = (process.env.ADMIN_USERNAME || (isProduction ? '' : 'admin')).trim();
+  const password = process.env.ADMIN_PASSWORD || (isProduction ? '' : 'admin123456!');
 
   if (!username || !password) {
     throw new Error('首次生产启动必须配置 ADMIN_USERNAME 和 ADMIN_PASSWORD');
@@ -140,8 +140,8 @@ export function initializeAuth() {
   // exercises the operator permission boundary. Production always creates
   // only the explicitly configured administrator.
   if (!isProduction && !process.env.ADMIN_USERNAME) {
-    insertUser.run(randomUUID(), 'haini', hashPassword('888'), 'operator');
-    insertUser.run(randomUUID(), 'admin', hashPassword('888'), 'admin');
+    insertUser.run(randomUUID(), 'admin', hashPassword('admin123456!'), 'admin');
+    insertUser.run(randomUUID(), 'operator', hashPassword('admin123456!'), 'operator');
     return;
   }
   insertUser.run(randomUUID(), username, hashPassword(password), 'admin');

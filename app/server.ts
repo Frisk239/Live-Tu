@@ -15,8 +15,10 @@ import { productsRouter, handleSellingPointsOptimize } from './server/routes/pro
 import { bgmRouter } from './server/routes/bgm';
 import { renderRouter } from './server/routes/render';
 import { presetsRouter } from './server/routes/presets';
+import { workbenchRouter } from './server/routes/workbench';
 import { videoRouter } from './server/routes/video';
 import { initializePipelineRuns, runsRouter } from './server/routes/runs';
+import { recoverStaleShotClaims } from './server/lib/workflow-controller';
 import {
   authRouter,
   initializeAuth,
@@ -462,6 +464,10 @@ app.use(
   renderRouter
 );
 app.use(['/api/presets', '/api/v1/presets'], requireAuth, presetsRouter);
+// S2 工作台：轻量状态端点（付费提交在 workflow-controller 内部经视频端口门控），
+// 不挂 limitExpensiveOperations —— 该限流按路由族 20 次/分钟，密集的草稿/预检/确认
+// 会被误伤成 429（E2E 实测复现：journey 存草稿被限流 → 刷新后无分镜草稿可恢复）。
+app.use(['/api/workbench', '/api/v1/workbench'], requireAuth, workbenchRouter);
 
 // Global Error Handling Middleware
 app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -487,9 +493,17 @@ async function startServer() {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: {
+        // 内网穿透访问开发服务器时，仅允许明确配置的 Host。
+        allowedHosts: (process.env.VITE_ALLOWED_HOSTS || 'frp-ski.com')
+          .split(',')
+          .map((host) => host.trim())
+          .filter(Boolean),
         middlewareMode: true,
         watch: {
           ignored: ['**/data/**', '**/uploads/**', '**/dist/**', '**/test-results/**', '**/.system_generated/**', '**/*.db*'],
+        },
+        hmr: {
+          port: Number(process.env.VITE_HMR_PORT || 24679),
         },
       },
       appType: 'spa',
@@ -503,10 +517,42 @@ async function startServer() {
     });
   }
 
-  const server = app.listen(PORT, '0.0.0.0', () => {
-    initializePipelineRuns(`http://127.0.0.1:${PORT}`);
-    console.log(`BUV Pipeline Server running on http://0.0.0.0:${PORT}`);
-  });
+  // P3 真实 Demo 闭环：HTTPS 测试环境（HTTPS_CERT/HTTPS_KEY 指向 PEM 文件）。
+  // 生产环境 TLS 由 Caddy 终止；此模式仅用于 HTTPS 测试环境（自签名证书由
+  // scripts/run-p3-demo.mjs 用 openssl 生成）。
+  let server: ReturnType<typeof app.listen> | import('node:https').Server;
+  if (process.env.HTTPS_CERT && process.env.HTTPS_KEY) {
+    const https = await import('node:https');
+    const { readFileSync } = await import('node:fs');
+    server = https.createServer(
+      {
+        cert: readFileSync(process.env.HTTPS_CERT),
+        key: readFileSync(process.env.HTTPS_KEY),
+      },
+      app
+    );
+    server.listen(PORT, '0.0.0.0', () => {
+      initializePipelineRuns(`https://127.0.0.1:${PORT}`);
+      try {
+        recoverStaleShotClaims();
+      } catch (error) {
+        console.warn('[server] recoverStaleShotClaims 失败:', error);
+      }
+      console.log(`BUV Pipeline Server (HTTPS) running on https://0.0.0.0:${PORT}`);
+    });
+  } else {
+    server = app.listen(PORT, '0.0.0.0', () => {
+      initializePipelineRuns(`http://127.0.0.1:${PORT}`);
+      // P0 加固：启动时把上次进程遗留的「submitting 占位」标为失败（付费结果不确定，
+      // 绝不假装成功；用户重试会走原子 claim 重新占位，不会重复扣费）。
+      try {
+        recoverStaleShotClaims();
+      } catch (error) {
+        console.warn('[server] recoverStaleShotClaims 失败:', error);
+      }
+      console.log(`BUV Pipeline Server running on http://0.0.0.0:${PORT}`);
+    });
+  }
 
   const shutdown = (signal: string) => {
     if (shuttingDown) return;

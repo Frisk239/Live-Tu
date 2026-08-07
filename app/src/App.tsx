@@ -1,9 +1,19 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { StepId, PipelineData, PresetTemplate, MaterialItem, TaskItem, ProductItem, WorkspaceSession } from './types';
-import { ModelConfigState, DEFAULT_MODEL_CONFIG } from './data/models';
+import { ModelConfigState, DEFAULT_MODEL_CONFIG, DEFAULT_TEXT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from './data/models';
 import { Navbar } from './components/Navbar';
 import { Sidebar, MainViewType } from './components/Sidebar';
 import { LoginScreen } from './components/LoginScreen';
+// S2 工作台：provider + 控制器 hook + 结果导向起点 + 预检面板 + 分镜表 + 保存徽章
+import { WorkbenchProvider, useWorkbench } from './hooks/useWorkbench';
+import { WorkbenchHome } from './components/WorkbenchHome';
+import { PreflightPanel } from './components/PreflightPanel';
+import { ShotPlanTable } from './components/ShotPlanTable';
+import { SaveStateBadge } from './components/SaveStateBadge';
+import type {
+  PreflightResult,
+  ShotPlanShot,
+} from '../shared/workbench-contract';
 import { StepProgress, AutoPipelineProgress } from './components/StepProgress';
 import { OnboardingModal } from './components/OnboardingModal';
 import { SessionManagerModal } from './components/SessionManagerModal';
@@ -65,8 +75,8 @@ function createEmptyPipelineData(): PipelineData {
         platform: 'xiaohongshu',
         bloggerType: 'daily_seeding',
         viralReason: '真实场景自然光+产品质感特写',
-        textModel: 'Gemini 3.6 Flash',
-        imageModel: 'GPT Image 1',
+        textModel: DEFAULT_TEXT_MODEL,
+        imageModel: DEFAULT_IMAGE_MODEL,
       },
     },
     step2: {
@@ -76,8 +86,8 @@ function createEmptyPipelineData(): PipelineData {
         imageUrl: '',
         videoTone: 'xiaohongshu_healing',
         durationSec: 4,
-        textModel: 'Gemini 3.6 Flash',
-        videoModel: 'Seedance 2.0 Fast',
+        textModel: DEFAULT_TEXT_MODEL,
+        videoModel: DEFAULT_VIDEO_MODEL,
       },
     },
     step3: {
@@ -86,7 +96,7 @@ function createEmptyPipelineData(): PipelineData {
         videoPrompt: '',
         targetPlatform: 'xiaohongshu',
         scriptPersona: '油皮亲妈',
-        textModel: 'Gemini 3.6 Flash',
+        textModel: DEFAULT_TEXT_MODEL,
       },
     },
     step4: {
@@ -95,7 +105,7 @@ function createEmptyPipelineData(): PipelineData {
         copywritingTitle: '',
         tonePreference: '治愈',
         commercialScenario: '抖音/小红书商业化',
-        textModel: 'Gemini 3.6 Flash',
+        textModel: DEFAULT_TEXT_MODEL,
       },
     },
     step5: {
@@ -126,7 +136,8 @@ function clearUserScopedClientState(options?: { preserveActiveView?: boolean }) 
   }
 }
 
-export default function App() {
+function AppShell() {
+  const workbench = useWorkbench();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isAuthChecked, setIsAuthChecked] = useState(false);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -134,6 +145,12 @@ export default function App() {
     (permission: Permission) => Boolean(authUser?.permissions.includes(permission)),
     [authUser]
   );
+
+  // S2：登录后恢复服务端真实工作台状态（刷新/重启恢复）
+  useEffect(() => {
+    if (isLoggedIn) void workbench.recover();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoggedIn]);
 
   useEffect(() => {
     let active = true;
@@ -169,19 +186,31 @@ export default function App() {
     [can]
   );
 
-  const handleSetActiveView = useCallback((view: MainViewType) => {
-    const allowedView = resolveAllowedView(view);
-    setActiveView(allowedView);
-    try {
-      localStorage.setItem('aigc_active_view', allowedView);
-    } catch {}
-    if (allowedView === 'tasks') {
-      apiService.tasks.fetchTasks().then((list) => {
-        if (list?.length) setTasks(list);
-      }).catch(() => {});
-      apiService.runs.list().then(setPipelineRuns).catch(() => {});
-    }
-  }, [resolveAllowedView]);
+  // Spec4：页面切换守卫——离开流水线页面前先确保工作台草稿已保存；
+  // 保存失败（含保存进行中，P1-1 后 saveDraft 明确返回 false）必须阻止切换。
+  const handleSetActiveView = useCallback(
+    async (view: MainViewType) => {
+      const allowedView = resolveAllowedView(view);
+      if (activeView === 'pipeline' && allowedView !== 'pipeline') {
+        if (!(await workbench.ensureSaved())) {
+          notify('工作台草稿尚未保存，已取消切换', 'error');
+          return;
+        }
+      }
+      setActiveView(allowedView);
+      try {
+        localStorage.setItem('aigc_active_view', allowedView);
+      } catch {}
+      if (allowedView === 'tasks') {
+        apiService.tasks.fetchTasks().then((list) => {
+          if (list?.length) setTasks(list);
+        }).catch(() => {});
+        apiService.runs.list().then(setPipelineRuns).catch(() => {});
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [resolveAllowedView, activeView, workbench]
+  );
 
   useEffect(() => {
     if (!authUser) return;
@@ -241,55 +270,99 @@ export default function App() {
   // Presets state (fetched from API)
   const [presets, setPresets] = useState<PresetTemplate[]>([]);
 
+  // S0 三态：bootstrap 资源各自的加载失败信息 + 重试入口。
+  // 后端故障绝不能表现为「素材/任务/预设/模型被清空」。
+  type BootstrapResource = 'products' | 'materials' | 'tasks' | 'presets' | 'models';
+  const RESOURCE_LABELS: Record<BootstrapResource, string> = {
+    products: '产品知识库',
+    materials: '素材库',
+    tasks: '任务历史',
+    presets: '预设模板',
+    models: '模型配置',
+  };
+  const [bootstrapErrors, setBootstrapErrors] = useState<
+    Partial<Record<BootstrapResource, string>>
+  >({});
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
+  const [bootstrapLoading, setBootstrapLoading] = useState(false);
+  const bootstrapErrorCount = Object.keys(bootstrapErrors).length;
+  // 记录上次 bootstrap 的登录用户：仅账号切换时清空业务态（账户隔离），
+  // 同一账号重试（失败重试）时保留旧数据，避免请求期间闪成空数据。
+  const lastBootstrapUserIdRef = useRef<string | null>(null);
+
   // Bootstrap all persistent resources from SQLite-backed APIs
   useEffect(() => {
     if (!isLoggedIn) return;
     let cancelled = false;
+    const userId = authUser?.id || null;
+    const accountChanged = userId !== lastBootstrapUserIdRef.current;
+    lastBootstrapUserIdRef.current = userId;
 
-    // Never render another account's in-memory or browser-cached business state while
-    // the new account is bootstrapping. Server data is the only source of truth.
-    setProducts([]);
-    setActiveProductId('');
-    setMaterials([]);
-    setTasks([]);
-    setPipelineRuns([]);
-    setPresets([]);
-    setPipelineData(createEmptyPipelineData());
-    setCurrentStep(1);
-    setDraftTaskIdSynced('');
-    setDraftSavedLabel(null);
-    clearUserScopedClientState({ preserveActiveView: true });
+    if (accountChanged) {
+      // Never render another account's in-memory or browser-cached business state while
+      // the new account is bootstrapping. Server data is the only source of truth.
+      setProducts([]);
+      setActiveProductId('');
+      setMaterials([]);
+      setTasks([]);
+      setPipelineRuns([]);
+      setPresets([]);
+      setPipelineData(createEmptyPipelineData());
+      setCurrentStep(1);
+      setDraftTaskIdSynced('');
+      setDraftSavedLabel(null);
+      clearUserScopedClientState({ preserveActiveView: true });
+    }
+
+    setBootstrapLoading(true);
+    setBootstrapErrors({});
 
     const bootstrap = async () => {
+      const errors: Partial<Record<BootstrapResource, string>> = {};
+
+      // 逐资源 try/catch：单个资源失败不阻断其余资源，但失败必须显式上报（绝不静默空态）
+      let productList: ProductItem[] = [];
       try {
-        const [productList, materialList, taskList, presetList, models] = await Promise.all([
-          apiService.products.fetchProducts().catch((err) => {
-            console.warn('[App] products fetch failed:', err);
-            return [] as ProductItem[];
-          }),
-          apiService.materials.fetchMaterials().catch((err) => {
-            console.warn('[App] materials fetch failed:', err);
-            return [] as MaterialItem[];
-          }),
-          apiService.tasks.fetchTasks().catch((err) => {
-            console.warn('[App] tasks fetch failed:', err);
-            return [] as TaskItem[];
-          }),
-          apiService.presets.fetchPresets().catch((err) => {
-            console.warn('[App] presets fetch failed:', err);
-            return [] as PresetTemplate[];
-          }),
-          apiService.models.fetchModels().catch((err) => {
-            console.warn('[App] models fetch failed:', err);
-            return null;
-          }),
-        ]);
+        productList = await apiService.products.fetchProducts();
+      } catch (err: any) {
+        errors.products = err?.message || '产品知识库加载失败';
+      }
+      let materialList: MaterialItem[] = [];
+      try {
+        materialList = await apiService.materials.fetchMaterials();
+      } catch (err: any) {
+        errors.materials = err?.message || '素材库加载失败';
+      }
+      let taskList: TaskItem[] = [];
+      try {
+        taskList = await apiService.tasks.fetchTasks();
+      } catch (err: any) {
+        errors.tasks = err?.message || '任务历史加载失败';
+      }
+      let presetList: PresetTemplate[] = [];
+      try {
+        presetList = await apiService.presets.fetchPresets();
+      } catch (err: any) {
+        errors.presets = err?.message || '预设模板加载失败';
+      }
+      let models: ModelConfigState | null = null;
+      try {
+        models = await apiService.models.fetchModels();
+      } catch (err: any) {
+        errors.models = err?.message || '模型配置加载失败';
+      }
 
-        if (cancelled) return;
+      if (cancelled) return;
 
+      setBootstrapErrors(errors);
+      // P0 修复：失败资源**不写回**（保留已有数据），只有成功才更新。
+      // 否则请求结束会把旧数据覆盖成 []，仍然表现为「素材/任务被清空」。
+      if (!errors.products) {
         setProducts(productList);
         setActiveProductId(productList[0]?.id || '');
-        setMaterials(materialList);
+      }
+      if (!errors.materials) setMaterials(materialList);
+      if (!errors.tasks) {
         setTasks(taskList);
         if (taskList.length > 0) {
           // Restore working draft if present
@@ -309,28 +382,27 @@ export default function App() {
             }
           }
         }
-        setPresets(presetList);
-        if (models && models.textModels) {
-          setModelConfig({
-            textModels: models.textModels || [],
-            imageModels: models.imageModels || [],
-            videoModels: models.videoModels || [],
-            autoRecommendationEnabled: models.autoRecommendationEnabled ?? true,
-            defaultTextModel: models.defaultTextModel || 'Gemini 3.6 Flash',
-            defaultImageModel: models.defaultImageModel || 'GPT Image 1',
-            defaultVideoModel: models.defaultVideoModel || 'Seedance 2.0 Fast',
-          });
-        }
-      } catch (err) {
-        console.warn('[App] bootstrap failed:', err);
       }
+      if (!errors.presets) setPresets(presetList);
+      if (!errors.models && models && models.textModels) {
+        setModelConfig({
+          textModels: models.textModels || [],
+          imageModels: models.imageModels || [],
+          videoModels: models.videoModels || [],
+          autoRecommendationEnabled: models.autoRecommendationEnabled ?? true,
+          defaultTextModel: models.defaultTextModel || DEFAULT_TEXT_MODEL,
+          defaultImageModel: models.defaultImageModel || DEFAULT_IMAGE_MODEL,
+          defaultVideoModel: models.defaultVideoModel || DEFAULT_VIDEO_MODEL,
+        });
+      }
+      if (!cancelled) setBootstrapLoading(false);
     };
 
     bootstrap();
     return () => {
       cancelled = true;
     };
-  }, [isLoggedIn]);
+  }, [isLoggedIn, bootstrapAttempt]);
 
   const handleUpdateProducts = async (nextProducts: ProductItem[]) => {
     const prevIds = new Set(products.map((p) => p.id));
@@ -349,6 +421,35 @@ export default function App() {
       setProducts(nextProducts);
     } catch (error: any) {
       notify(error?.message || '产品知识库保存失败，未应用更改', 'error');
+    }
+  };
+
+  /**
+   * S0 产品上下文切换（switchProductContext）：
+   * 1. 自动保存当前版本（草稿落库），保存失败则取消切换；
+   * 2. 服务端先作废旧产品产物；**切换失败绝不切换 UI**（否则绕过服务端 stale 保护，
+   *    operator 只读权限尤其容易触发 403）；
+   * 3. 成功后才切换工作台绑定产品。
+   */
+  const handleSelectProduct = async (productId: string) => {
+    if (!productId || productId === activeProductId) return;
+    if (!(await saveCurrentDraftBeforeTransition())) return;
+    try {
+      const result = await apiService.products.switchContext(productId);
+      if (result.staleCount > 0) {
+        notify(
+          `已切换到「${productId}」：${result.staleCount} 个旧产品产物已标记过期，需重新生成后才能发布`,
+          'error'
+        );
+      } else {
+        notify(`已切换到「${productId}」`, 'success');
+      }
+      setActiveProductId(productId);
+    } catch (err: any) {
+      notify(
+        `切换产品失败，仍停留在「${activeProduct?.name || activeProductId}」：${err?.message || '网络错误'}`,
+        'error'
+      );
     }
   };
 
@@ -552,6 +653,11 @@ export default function App() {
 
   const saveCurrentDraftBeforeTransition = async () => {
     const currentSerialized = JSON.stringify({ currentStep, pipelineData });
+    // S2：工作台草稿（自主模式/分镜编辑/SaveState）保存失败必须阻止破坏性切换（证据 #8）
+    if (!(await workbench.ensureSaved())) {
+      notify('工作台草稿尚未保存，已取消切换', 'error');
+      return false;
+    }
     if (currentSerialized === lastSavedSnapshotRef.current) return true;
     const saved = await persistTaskSnapshot(pipelineData, {
       status: 'draft',
@@ -1045,8 +1151,8 @@ export default function App() {
           platform: 'xiaohongshu',
           bloggerType: 'daily_seeding',
           viralReason: '',
-          textModel: 'Gemini 3.6 Flash',
-          imageModel: 'GPT Image 1',
+          textModel: DEFAULT_TEXT_MODEL,
+          imageModel: DEFAULT_IMAGE_MODEL,
         },
       },
       step2: {
@@ -1056,8 +1162,8 @@ export default function App() {
           imageUrl: '',
           videoTone: 'xiaohongshu_healing',
           durationSec: 4,
-          textModel: 'Gemini 3.6 Flash',
-          videoModel: 'Seedance 2.0 Fast',
+          textModel: DEFAULT_TEXT_MODEL,
+          videoModel: DEFAULT_VIDEO_MODEL,
         },
       },
       step3: {
@@ -1066,7 +1172,7 @@ export default function App() {
           videoPrompt: '',
           targetPlatform: 'xiaohongshu',
           scriptPersona: '油皮亲妈',
-          textModel: 'Gemini 3.6 Flash',
+          textModel: DEFAULT_TEXT_MODEL,
         },
       },
       step4: {
@@ -1075,7 +1181,7 @@ export default function App() {
           copywritingTitle: '',
           tonePreference: '治愈',
           commercialScenario: '抖音/小红书商业化',
-          textModel: 'Gemini 3.6 Flash',
+          textModel: DEFAULT_TEXT_MODEL,
         },
       },
       step5: {
@@ -1409,7 +1515,7 @@ export default function App() {
     try {
       const productAssetIds = getProductAssetIds();
       const directOutMode = isVideoMediaUrl(pipelineData.step1.inputs.mediaUrl)
-        ? 'viral'
+        ? 'viral_recreation_v2'
         : 'legacy';
       const pipelineForRun = {
         ...pipelineData,
@@ -1522,8 +1628,8 @@ export default function App() {
           platform: 'xiaohongshu',
           bloggerType: 'daily_seeding',
           viralReason: '',
-          textModel: 'Gemini 3.6 Flash',
-          imageModel: 'GPT Image 1',
+          textModel: DEFAULT_TEXT_MODEL,
+          imageModel: DEFAULT_IMAGE_MODEL,
         },
       },
       step2: {
@@ -1533,8 +1639,8 @@ export default function App() {
           imageUrl: '',
           videoTone: 'xiaohongshu_healing',
           durationSec: 4,
-          textModel: 'Gemini 3.6 Flash',
-          videoModel: 'Seedance 2.0 Fast',
+          textModel: DEFAULT_TEXT_MODEL,
+          videoModel: DEFAULT_VIDEO_MODEL,
         },
       },
       step3: {
@@ -1543,7 +1649,7 @@ export default function App() {
           videoPrompt: '',
           targetPlatform: 'xiaohongshu',
           scriptPersona: '油皮亲妈',
-          textModel: 'Gemini 3.6 Flash',
+          textModel: DEFAULT_TEXT_MODEL,
         },
       },
       step4: {
@@ -1552,7 +1658,7 @@ export default function App() {
           copywritingTitle: '',
           tonePreference: '治愈',
           commercialScenario: '抖音/小红书商业化',
-          textModel: 'Gemini 3.6 Flash',
+          textModel: DEFAULT_TEXT_MODEL,
         },
       },
       step5: {
@@ -1585,8 +1691,8 @@ export default function App() {
           platform: rawData.step1?.inputs?.platform || 'douyin',
           bloggerType: rawData.step1?.inputs?.bloggerType || 'skincare_expert',
           viralReason: rawData.step1?.inputs?.viralReason || preset.description || '',
-          textModel: rawData.step1?.inputs?.textModel || 'Gemini 3.6 Flash',
-          imageModel: rawData.step1?.inputs?.imageModel || 'GPT Image 1',
+          textModel: rawData.step1?.inputs?.textModel || DEFAULT_TEXT_MODEL,
+          imageModel: rawData.step1?.inputs?.imageModel || DEFAULT_IMAGE_MODEL,
         },
         output: rawData.step1?.output,
       },
@@ -1597,8 +1703,8 @@ export default function App() {
           imageUrl: rawData.step2?.inputs?.imageUrl || cover,
           videoTone: rawData.step2?.inputs?.videoTone || 'douyin_beat',
           durationSec: rawData.step2?.inputs?.durationSec || 4,
-          textModel: rawData.step2?.inputs?.textModel || 'Gemini 3.6 Flash',
-          videoModel: rawData.step2?.inputs?.videoModel || 'Seedance 2.0 Fast',
+          textModel: rawData.step2?.inputs?.textModel || DEFAULT_TEXT_MODEL,
+          videoModel: rawData.step2?.inputs?.videoModel || DEFAULT_VIDEO_MODEL,
         },
         output: rawData.step2?.output,
       },
@@ -1608,7 +1714,7 @@ export default function App() {
           videoPrompt: rawData.step3?.inputs?.videoPrompt || rawData.step2?.output?.video_prompt || '',
           targetPlatform: rawData.step3?.inputs?.targetPlatform || 'douyin',
           scriptPersona: rawData.step3?.inputs?.scriptPersona || '成分党',
-          textModel: rawData.step3?.inputs?.textModel || 'Gemini 3.6 Flash',
+          textModel: rawData.step3?.inputs?.textModel || DEFAULT_TEXT_MODEL,
         },
         output: rawData.step3?.output,
       },
@@ -1618,7 +1724,7 @@ export default function App() {
           copywritingTitle: rawData.step4?.inputs?.copywritingTitle || rawData.step3?.output?.title || preset.title || '',
           tonePreference: rawData.step4?.inputs?.tonePreference || '卡点',
           commercialScenario: rawData.step4?.inputs?.commercialScenario || '抖音/小红书商业化',
-          textModel: rawData.step4?.inputs?.textModel || 'Gemini 3.6 Flash',
+          textModel: rawData.step4?.inputs?.textModel || DEFAULT_TEXT_MODEL,
         },
         output: rawData.step4?.output,
       },
@@ -2167,6 +2273,210 @@ export default function App() {
   const goToStep4 = useCallback(() => setCurrentStep(4), []);
   const goToStep5 = useCallback(() => setCurrentStep(5), []);
 
+  // ==================== S2 工作台集成 ====================
+  // 分镜计划：由 step1 拆解结果派生 typed ShotPlanShot（可局部编辑）
+  const workbenchShots = React.useMemo<ShotPlanShot[]>(() => {
+    const list = (pipelineData.step1?.output as any)?.shotList;
+    if (!Array.isArray(list) || list.length === 0) return [];
+    return (list as any[]).map((item, index) => ({
+      shotIndex: Number(item.shotIndex ?? index + 1),
+      startTime: parseFloat(item.startTime) || 0,
+      endTime: parseFloat(item.endTime) || 5,
+      shotSize: (item.shotType as any) || 'unknown',
+      cameraPosition: (item as any).cameraPosition || 'front',
+      cameraMovement: item.cameraMovement || 'static',
+      lighting: (item as any).lighting || 'natural',
+      dialogue: Array.isArray((item as any).dialogue) ? (item as any).dialogue : [],
+      soundEffects: Array.isArray((item as any).soundEffects) ? (item as any).soundEffects : [],
+      mustKeep: Array.isArray((item as any).mustKeep) ? (item as any).mustKeep : [],
+      mustReplace: Array.isArray((item as any).mustReplace) ? (item as any).mustReplace : [],
+      generationMode: 'image_to_video',
+      capabilityConstraints: {
+        maxDurationSec: 5,
+        minDurationSec: 3,
+        supportedAspectRatios: ['9:16'],
+        supportedResolutions: ['720p'],
+        requiredReferenceInputs: 1,
+      },
+      status: 'pending',
+      blockers: [],
+      warnings: [],
+      evidence: [],
+      candidates: [
+        ...((item as any).keyframeUrl
+          ? [{ id: `cand-${index}-kf`, url: (item as any).keyframeUrl, prompt: '', model: 'GPT Image 2', createdAt: Date.now() }]
+          : []),
+      ],
+      selectedCandidateId: null,
+      promptOverride: null,
+      modelId: 'Seedance 2.0 Fast',
+    }));
+  }, [pipelineData.step1?.output]);
+  const [shotOverrides, setShotOverrides] = React.useState<Record<number, Partial<ShotPlanShot>>>({});
+  // S2 刷新/重启恢复：分镜计划从服务端草稿（workbench_state.draft_json）恢复，
+  // 不依赖会被账号隔离重置的 localStorage（证据 #7）。
+  const draftShots = React.useMemo<ShotPlanShot[]>(() => {
+    if (!workbench.state?.draftJson) return [];
+    try {
+      const parsed = JSON.parse(workbench.state.draftJson);
+      return Array.isArray(parsed?.shots) ? (parsed.shots as ShotPlanShot[]) : [];
+    } catch {
+      return [];
+    }
+  }, [workbench.state?.draftJson]);
+  // P5 派生上下文透传：前端重建草稿时不得丢掉 referenceKeyframes / productAssetUrls，
+  // 否则覆盖服务端草稿后预检 first_frame_missing、首帧派生上下文缺失。
+  const draftDerivationContext = React.useMemo<{
+    referenceKeyframes?: string[];
+    productAssetUrls?: string[];
+  }>(() => {
+    if (!workbench.state?.draftJson) return {};
+    try {
+      const parsed = JSON.parse(workbench.state.draftJson);
+      return {
+        referenceKeyframes: Array.isArray(parsed?.referenceKeyframes)
+          ? (parsed.referenceKeyframes as string[])
+          : undefined,
+        productAssetUrls: Array.isArray(parsed?.productAssetUrls)
+          ? (parsed.productAssetUrls as string[])
+          : undefined,
+      };
+    } catch {
+      return {};
+    }
+  }, [workbench.state?.draftJson]);
+  const planShots = workbenchShots.length > 0 ? workbenchShots : draftShots;
+  // 局部编辑（promptOverride/候选选择）叠加到「实际展示的分镜」（服务端草稿恢复后也可编辑）
+  const effectiveShots = React.useMemo(
+    () => planShots.map((shot) => ({ ...shot, ...(shotOverrides[shot.shotIndex] || {}) })),
+    [planShots, shotOverrides]
+  );
+  const [preflight, setPreflight] = React.useState<PreflightResult | null>(null);
+  const [preflightLoading, setPreflightLoading] = React.useState(false);
+
+  // 分镜草稿同步：出现镜头 → 写入工作台草稿（SaveState 由 hook 管理）
+  React.useEffect(() => {
+    if (effectiveShots.length === 0) return;
+    workbench.setDraft({
+      shots: effectiveShots as any,
+      videoModelId: modelConfig?.defaultVideoModel || 'Seedance 2.0 Fast',
+      referenceInputCount: 1,
+      // Spec2：携带当前产品 id，服务端按真实 product_assets 计数做预检（客户端硬编码只作展示）
+      productId: activeProduct?.id,
+      // P5：派生上下文（参考关键帧/产品图）来自服务端草稿，透传不被覆盖丢失
+      ...draftDerivationContext,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveShots, activeProduct?.id]);
+
+  // 绑定 sessionId（step2 多镜头 session；刷新后从服务端状态恢复）与 runId
+  const workbenchSessionId =
+    (pipelineData.step2?.output as any)?.multiShotResult?.sessionId || null;
+  React.useEffect(() => {
+    workbench.bind({
+      sessionId: workbenchSessionId || workbench.state?.sessionId || null,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workbenchSessionId, workbench.state?.sessionId]);
+
+  // Spec3：三档自主模式真实差异（不再是同一逻辑）——
+  // managed：拆解/分镜确认自动通过 + 付费授权开启后自动预检并批量提交（全自动闭环）；
+  // confirm_key_points：只自动确认拆解结果，分镜计划与批量提交全部显式；
+  // step_by_step：三个确认点全部显式（此处不自动做任何事）。
+  // 付费授权独立默认关闭：managed 未授权时只走到「自动确认」，绝不自动花钱。
+  const deconstructionConfirmed = Boolean(workbench.state?.confirms?.deconstruction);
+  const shotPlanConfirmed = Boolean(workbench.state?.confirms?.shot_plan);
+  const batchSubmitted = Boolean(workbench.state?.confirms?.batch_submit);
+  // 有效分镜 = 本地拆解结果 ∪ 服务端草稿恢复（刷新/重启后 pipelineData 为空，
+  // 但服务端草稿可恢复——自动确认必须基于 planShots 而非 workbenchShots）
+  const hasPlanShots = planShots.length > 0;
+  React.useEffect(() => {
+    if (!hasPlanShots) return;
+    void (async () => {
+      if (workbench.autonomyMode === 'managed') {
+        if (!deconstructionConfirmed) {
+          if (await workbench.ensureSaved()) await workbench.confirm('deconstruction');
+          return;
+        }
+        if (!shotPlanConfirmed) {
+          if (await workbench.ensureSaved()) await workbench.confirm('shot_plan');
+          return;
+        }
+        // 授权开启 + 尚未提交 → 自动预检，通过则自动批量提交（阻塞/未授权则停在可检查状态）
+        if (!batchSubmitted && workbench.paidAuthEnabled) {
+          const preflight = await workbench.runPreflight();
+          if (preflight?.canSubmit) {
+            if (await workbench.ensureSaved()) await workbench.confirm('batch_submit');
+          }
+        }
+        return;
+      }
+      // confirm_key_points：仅拆解结果自动确认；分镜计划与批量提交由用户显式确认
+      if (workbench.autonomyMode === 'confirm_key_points' && !deconstructionConfirmed) {
+        if (await workbench.ensureSaved()) await workbench.confirm('deconstruction');
+      }
+      // step_by_step：什么都不自动做
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    workbench.autonomyMode,
+    hasPlanShots,
+    deconstructionConfirmed,
+    shotPlanConfirmed,
+    batchSubmitted,
+    workbench.paidAuthEnabled,
+  ]);
+
+  const handleRunPreflight = async () => {
+    if (!(await workbench.ensureSaved())) {
+      notify('草稿保存失败，无法运行预检', 'error');
+      return;
+    }
+    setPreflightLoading(true);
+    try {
+      const result = await workbench.runPreflight();
+      if (result) setPreflight(result);
+    } finally {
+      setPreflightLoading(false);
+    }
+  };
+
+  const handleConfirmBatch = async () => {
+    // 提交前保存最新的 promptOverride / 候选首帧。服务端 confirm 会基于刚保存的
+    // 草稿重新执行预检，避免用户在上一次预检后编辑却提交了旧值。
+    if (!(await workbench.ensureSaved())) {
+      notify('工作台草稿尚未保存，已取消批量提交', 'error');
+      return;
+    }
+    const result = await workbench.confirm('batch_submit');
+    if (result.preflight) setPreflight(result.preflight);
+    if (result.ok) {
+      notify('✅ 批量提交完成：全部待生成镜头已进入生成队列', 'success');
+    } else {
+      notify(result.error || '批量提交被拒绝', 'error');
+    }
+  };
+
+  const handleHomeViralUploaded = (payload: { url: string; name: string }) => {
+    setPipelineData((prev) => ({
+      ...prev,
+      step1: { ...prev.step1, inputs: { ...prev.step1.inputs, mediaUrl: payload.url }, status: 'pending' },
+    }));
+    setCurrentStep(1);
+    notify(`✅ 爆款视频已导入：${payload.name}`);
+    // 双素材就绪 + managed 模式 → 自动触发全自动 pipeline（最快出稿）
+    const hasProductAssets = getProductAssetIds().length > 0 || Boolean(activeProduct?.coverImage);
+    if (hasProductAssets && workbench.autonomyMode === 'managed') {
+      setTimeout(() => runFullPipelineAuto(), 300);
+    } else if (!hasProductAssets) {
+      notify('💡 请上传产品图后点击「一键直出」按钮', 'success');
+    }
+  };
+  const handleHomeSelectProduct = (productId: string) => {
+    void handleSelectProduct(productId);
+  };
+  const handleHomeNotify = (message: string, type?: 'success' | 'error') => notify(message, type);
+
   if (!isAuthChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 text-sm text-slate-500">
@@ -2196,7 +2506,7 @@ export default function App() {
         can={can}
         activeProduct={activeProduct}
         products={products}
-        onSelectActiveProduct={(id) => setActiveProductId(id)}
+        onSelectActiveProduct={(id) => void handleSelectProduct(id)}
         onOpenSessionManager={() => setIsSessionManagerOpen(true)}
       />
 
@@ -2209,9 +2519,38 @@ export default function App() {
           activeSessionTitle={tasks.find((t) => t.id === draftTaskId)?.title || (draftTaskId ? `草稿会话 (${draftTaskId.slice(-4)})` : '新建工作区')}
           onOpenSessionManager={() => setIsSessionManagerOpen(true)}
           onCreateNewWorkspace={handleCreateNewWorkspace}
+          engineReadiness={{
+            ffmpegInstalled: engineReadiness.ffmpegInstalled,
+            seedanceReady: engineReadiness.seedanceReady,
+          }}
         />
 
         <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6">
+          {/* S0 失败即空数据修复：bootstrap 任一资源失败必须显式提示 + 重试入口，
+              绝不静默渲染成「素材/任务/预设/模型全被清空」；加载期间显示同步指示 */}
+          {bootstrapLoading && bootstrapErrorCount === 0 && (
+            <div className="mb-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs text-slate-500 flex items-center gap-2">
+              <span className="inline-block w-3.5 h-3.5 border-2 border-slate-300 border-t-blue-500 rounded-full animate-spin" />
+              正在从服务器同步产品/素材/任务/预设/模型配置…
+            </div>
+          )}
+          {bootstrapErrorCount > 0 && (
+            <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 shadow-xs flex flex-wrap items-center gap-3">
+              <span className="font-bold">⚠ 部分数据加载失败（后端可能不可用）</span>
+              <span className="text-amber-700">
+                {Object.entries(bootstrapErrors)
+                  .map(([key, message]) => `${RESOURCE_LABELS[key as BootstrapResource]}: ${message}`)
+                  .join('；')}
+              </span>
+              <button
+                onClick={() => setBootstrapAttempt((n) => n + 1)}
+                className="ml-auto rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-3 py-1.5 transition-colors cursor-pointer"
+              >
+                重试加载
+              </button>
+            </div>
+          )}
+
           {/* VIEW ROUTING */}
 
           <React.Suspense
@@ -2346,7 +2685,7 @@ export default function App() {
             <KnowledgePageView
               products={products}
               activeProductId={activeProductId}
-              onSelectActiveProduct={(id) => setActiveProductId(id)}
+              onSelectActiveProduct={(id) => void handleSelectProduct(id)}
               onUpdateProducts={handleUpdateProducts}
               onBackToPipeline={() => handleSetActiveView('pipeline')}
             />
@@ -2361,6 +2700,38 @@ export default function App() {
           {/* 6. MAIN PIPELINE VIEW */}
           {safeActiveView === 'pipeline' && can('module.pipeline.read') && (
             <div className="space-y-6">
+              {/* S2：保存状态徽章 + 可安全离开（服务端 phase/耗时/重试/失败原因） */}
+              <SaveStateBadge
+                saveState={workbench.saveState}
+                safeToLeave={workbench.safeToLeave}
+                serverPhase={workbench.state?.serverPhase}
+                elapsedMs={workbench.state?.elapsedMs}
+                retryCount={workbench.state?.retryCount}
+                failureReason={workbench.state?.failureReason}
+                onRetrySave={() => void workbench.saveDraft()}
+                estimatedCostUsd={workbench.state?.estimatedCostUsd}
+                incurredCostUsd={workbench.state?.incurredCostUsd}
+                waitEstimate={workbench.state?.waitEstimate}
+                qaProgress={
+                  (workbench.state?.qaTotalShots ?? 0) > 0
+                    ? { passed: workbench.state?.qaPassedShots ?? 0, total: workbench.state?.qaTotalShots ?? 0 }
+                    : undefined
+                }
+              />
+
+              {/* S2：结果导向起点（无爆款视频时展示双主 CTA；预设/素材库为次级入口） */}
+              {!pipelineData.step1?.inputs?.mediaUrl ? (
+                <WorkbenchHome
+                  products={products}
+                  activeProductId={activeProductId}
+                  onSelectProduct={handleHomeSelectProduct}
+                  onViralUploaded={handleHomeViralUploaded}
+                  onOpenPresets={() => handleSetActiveView('presets')}
+                  onOpenMaterials={() => handleSetActiveView('materials')}
+                  onNotify={handleHomeNotify}
+                />
+              ) : (
+              <>
               {/* Active Selling Points Banner */}
               {activeProduct && products.length > 0 ? (
               <div className="p-4 rounded-2xl bg-white border border-slate-200/80 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
@@ -2387,7 +2758,7 @@ export default function App() {
                 <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end flex-wrap">
                   <select
                     value={activeProduct.id}
-                    onChange={(e) => setActiveProductId(e.target.value)}
+                    onChange={(e) => void handleSelectProduct(e.target.value)}
                     className="px-3 py-1.5 rounded-xl bg-white text-slate-800 border border-slate-300 text-xs font-bold focus:outline-none cursor-pointer shadow-xs hover:border-indigo-400"
                   >
                     {products.map((p) => (
@@ -2551,10 +2922,91 @@ export default function App() {
                     onAbort={() => handleAbortCurrentStep(5)}
                     onReset={handleStep5Reset}
                     onPrev={goToStep4}
+                    shotQaSummary={(workbench.state?.shotStates || [])
+                      .filter((s) => s.semanticVerdict !== 'pending')
+                      .map((s) => ({
+                        shotIndex: s.shotIndex,
+                        verdict: s.semanticVerdict,
+                        summary: s.qaSummary,
+                      }))}
+                    qaPassed={workbench.state?.qaPassedShots ?? 0}
+                    qaTotal={workbench.state?.qaTotalShots ?? 0}
                   />
                 )}
               </div>
               </React.Suspense>
+
+              {/* S2：拆解结果确认点（关键节点确认模式） */}
+              {planShots.length > 0 && !deconstructionConfirmed && (
+                <div
+                  className="rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4 flex flex-wrap items-center justify-between gap-3"
+                  data-testid="confirm-deconstruction"
+                >
+                  <div>
+                    <p className="text-sm font-bold text-slate-800">拆解结果已生成（{planShots.length} 镜）</p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      确认后进入分镜计划；JSON / 原始 prompt / provider 参数默认折叠，普通模式只展示产品语言。
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => void workbench.confirm('deconstruction')}
+                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold"
+                    data-testid="confirm-deconstruction-btn"
+                  >
+                    确认拆解结果
+                  </button>
+                </div>
+              )}
+
+              {/* S2：分镜计划表（确认点 + 单镜局部编辑/候选/重试；刷新后从服务端草稿恢复） */}
+              {planShots.length > 0 && (
+                <ShotPlanTable
+                  shots={planShots}
+                  sessionId={workbenchSessionId || workbench.state?.sessionId}
+                  runId={workbench.state?.runId}
+                  confirmed={shotPlanConfirmed}
+                  onShotsChanged={(nextShots) => {
+                    const overrides: Record<number, Partial<ShotPlanShot>> = {};
+                    for (const shot of nextShots) {
+                      const base = planShots.find((s) => s.shotIndex === shot.shotIndex);
+                      if (!base) continue;
+                      const diff = Object.fromEntries(
+                        Object.entries(shot).filter(
+                          ([key, value]) => JSON.stringify((base as any)[key]) !== JSON.stringify(value)
+                        )
+                      );
+                      if (Object.keys(diff).length > 0) overrides[shot.shotIndex] = diff as Partial<ShotPlanShot>;
+                    }
+                    setShotOverrides(overrides);
+                  }}
+                  onConfirmPlan={() => {
+                    void (async () => {
+                      if (await workbench.ensureSaved()) {
+                        const result = await workbench.confirm('shot_plan');
+                        if (result.ok) notify('✅ 分镜计划已确认', 'success');
+                        else notify(result.error || '确认失败', 'error');
+                      }
+                    })();
+                  }}
+                  onRequestPreflight={() => void handleRunPreflight()}
+                  canConfirm={Boolean(workbenchSessionId || workbench.state?.runId || workbench.state?.sessionId)}
+                />
+              )}
+
+              {/* S2：提交前预检（成本/余额/等待/能力/素材/减成本策略） */}
+              {planShots.length > 0 && (
+                <PreflightPanel
+                  preflight={preflight}
+                  loading={preflightLoading}
+                  onRun={() => void handleRunPreflight()}
+                  onConfirmBatch={() => void handleConfirmBatch()}
+                  paidAuthEnabled={workbench.paidAuthEnabled}
+                  onTogglePaidAuth={(enabled) => void workbench.togglePaidAuth(enabled)}
+                  canSubmit={Boolean(preflight?.canSubmit)}
+                />
+              )}
+              </>
+              )}
             </div>
           )}
         </main>
@@ -2579,5 +3031,14 @@ export default function App() {
         onCreateNewWorkspace={handleCreateNewWorkspace}
       />
     </div>
+  );
+}
+
+// S2：工作台 Provider 包裹（SaveState/自主模式/付费授权/确认点/预检/重试）
+export default function App() {
+  return (
+    <WorkbenchProvider>
+      <AppShell />
+    </WorkbenchProvider>
   );
 }

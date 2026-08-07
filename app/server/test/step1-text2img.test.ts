@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import type { Server } from 'node:http';
 import { pipelineRouter } from '../routes/pipeline';
+import { initDatabase } from '../lib/db';
+import { hasGatewayKey } from './_helpers';
 
 const app = express();
 app.use(express.json());
@@ -13,6 +15,8 @@ let baseUrl = '';
 
 describe('Ticket 11 — 文生图 API / 静态图生成测试', () => {
   before((_, done) => {
+    // 文生图需要 model_config / materials 等表，先初始化隔离数据库
+    initDatabase();
     server = app.listen(0, () => {
       const addr = server.address() as any;
       baseUrl = `http://127.0.0.1:${addr.port}`;
@@ -24,7 +28,10 @@ describe('Ticket 11 — 文生图 API / 静态图生成测试', () => {
     if (server) server.close(done);
   });
 
-  it('POST /api/pipeline/generate-image 应成功接受 prompt 并返回图片 URL 属性', async () => {
+  // 快乐路径依赖真实画图 API Key；CI 无 Key 时跳过（本地配置 Key 后自动恢复）
+  const happyPath = hasGatewayKey() ? it : it.skip;
+
+  happyPath('POST /api/pipeline/generate-image 应成功接受 prompt 并返回图片 URL 属性', async () => {
     const res = await fetch(`${baseUrl}/api/pipeline/generate-image`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

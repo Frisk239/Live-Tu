@@ -16,7 +16,7 @@ const CATEGORY_META: Record<
   image: {
     title: '文生图 AI 模型',
     badge: 'Image',
-    emptyHint: '暂无启用的文生图模型。请到「模型配置」页启用 GPT Image 1 等。',
+    emptyHint: '暂无启用的文生图模型。请到「模型配置」页启用 GPT Image 2 等。',
   },
   video: {
     title: '图生视频 AI 模型',

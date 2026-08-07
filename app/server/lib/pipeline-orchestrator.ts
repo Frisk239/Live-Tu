@@ -4,24 +4,10 @@ import { internalWorkerHeaders } from './auth';
 import { buildShotMigrationPlan } from './migration-plan';
 import { resolveRunProductAssets } from './product-assets';
 import { evaluatePublishGate, gateAllowsCompleted } from './publish-gate';
-
-type RunStatus =
-  | 'queued'
-  | 'running'
-  | 'waiting_external'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'needs_review';
-type StepStatus =
-  | 'pending'
-  | 'running'
-  | 'waiting_external'
-  | 'completed'
-  | 'failed'
-  | 'cancelled'
-  | 'stale'
-  | 'needs_review';
+import { mapWithConcurrency } from './limited-concurrency';
+// S0：状态类型单一来源（run-state.ts 同时驱动 SQLite CHECK 约束，防止契约漂移）
+import type { RunStatus, StepStatus } from '../../shared/run-state';
+export type { RunStatus, StepStatus } from '../../shared/run-state';
 
 export type StartPipelineInput = {
   ownerId: string;
@@ -34,12 +20,25 @@ export type StartPipelineInput = {
   pipelineData: Record<string, any>;
 };
 
-function isViralDirectOutMode(input: StartPipelineInput): boolean {
+/** viral_recreation_v2 属于直出模式家族（双输入强制、step2 多镜提交语义一致） */
+export function isViralDirectOutMode(input: StartPipelineInput): boolean {
   const mode =
     input.directOutMode ||
     input.pipelineData?.directOutMode ||
     input.pipelineData?.mode;
-  return mode === 'viral' || mode === 'viral_direct_out';
+  // viral_recreation_v2：爆款复刻 v2（虚构人物控制图，无 UGC 帧进 provider）。
+  // 与 viral/viral_direct_out 一样要求双输入（爆款素材 + 产品图），
+  // step2 提交在 submit-shot 端点按模式分支走虚构人物首帧派生。
+  return mode === 'viral' || mode === 'viral_direct_out' || mode === 'viral_recreation_v2';
+}
+
+/** viral_recreation_v2 模式显式判定（供 orchestor/step2 分支使用） */
+export function isViralRecreationV2Mode(input: StartPipelineInput): boolean {
+  const mode =
+    input.directOutMode ||
+    input.pipelineData?.directOutMode ||
+    input.pipelineData?.mode;
+  return mode === 'viral_recreation_v2';
 }
 
 /**
@@ -118,7 +117,9 @@ export interface StepExecutor {
     sessionId: string,
     shotIndex: number,
     model?: string,
-    ownerId?: string
+    ownerId?: string,
+    runId?: string,
+    retryCount?: number
   ): Promise<any>;
 }
 
@@ -183,10 +184,17 @@ class HttpStepExecutor implements StepExecutor {
     return this.pollWithResilience(`/api/pipeline/shot-tasks/${encodeURIComponent(sessionId)}`);
   }
 
-  async submitShot(sessionId: string, shotIndex: number, model: string | undefined, ownerId: string | undefined): Promise<any> {
+  async submitShot(
+    sessionId: string,
+    shotIndex: number,
+    model: string | undefined,
+    ownerId: string | undefined,
+    runId: string | undefined,
+    retryCount: number | undefined
+  ): Promise<any> {
     const json = await this.request(`/api/pipeline/step2/submit-shot`, {
       method: 'POST',
-      body: JSON.stringify({ sessionId, shotIndex, model, _ownerId: ownerId }),
+      body: JSON.stringify({ sessionId, shotIndex, model, _ownerId: ownerId, _runId: runId, _retryCount: retryCount }),
     });
     return json.data;
   }
@@ -278,16 +286,28 @@ export class PipelineOrchestrator {
       [];
 
     const id = randomUUID();
+    // S0 产物可追溯：Run 创建时定格绑定产品的单调递增 revision（products.revision）。
+    // 不用 updated_at —— 它是秒级时间戳，同秒内修改产品版本不变，旧成片仍能通过版本校验。
+    // 后续所有 Artifact 都继承该版本；产品被编辑/切换后即可判定旧产物过期。
+    // 注意：绑定前必须 String() —— node:sqlite 把 number 绑进 TEXT 列会存成 '0.0'，
+    // 与整数 revision 的文本形式 '0' 不一致，导致版本比较恒不等。
+    const productVersion = input.productId
+      ? ((db.prepare('SELECT revision FROM products WHERE id = ?').get(input.productId) as
+          | { revision: number | null }
+          | undefined)?.revision ?? null)
+      : null;
+    const productVersionText = productVersion == null ? null : String(productVersion);
     db.exec('BEGIN IMMEDIATE');
     try {
       db.prepare(
         `INSERT INTO pipeline_runs (
-          id, owner_id, product_id, status, current_step, input_json, idempotency_key
-        ) VALUES (?, ?, ?, 'queued', 1, ?, ?)`
+          id, owner_id, product_id, product_version, status, current_step, input_json, idempotency_key
+        ) VALUES (?, ?, ?, ?, 'queued', 1, ?, ?)`
       ).run(
         id,
         input.ownerId,
         input.productId || null,
+        productVersionText,
         JSON.stringify({
           pipelineData: input.pipelineData,
           productId: input.productId,
@@ -532,13 +552,16 @@ export class PipelineOrchestrator {
       }
     }
 
-    // Publish gate 软失败（成片已生成但未达发布标准）→ needs_review，不静默 completed
+    // Publish gate 使用单一白名单契约：只有 passed=true 且 status='passed' 才能 completed。
+    // 缺失、未知或自相矛盾的报告一律 needs_review，避免新增状态绕过黑名单。
     const step5Output = this.previousOutput(runId, 5);
-    if (step5Output?.publishReport?.status === 'needs_review') {
+    const publishReport = step5Output?.publishReport;
+    if (!publishReport || !gateAllowsCompleted(publishReport, false)) {
+      const gateStatus = publishReport?.status || 'missing';
       db.prepare(
         `UPDATE pipeline_steps
             SET status = 'needs_review', error_code = 'PUBLISH_NEEDS_REVIEW',
-                error_message = '成片已生成但未通过发布门禁，需人工审核',
+                error_message = '成片已生成但未通过发布门禁（${gateStatus}），需人工审核',
                 updated_at = CURRENT_TIMESTAMP
           WHERE run_id = ? AND step_number = 5`
       ).run(runId);
@@ -584,6 +607,7 @@ export class PipelineOrchestrator {
       productAssetIds: productAssets.map((a) => a.id),
       productAssets,
       _ownerId: input._ownerId || input.ownerId,
+      _runId: runId,
     };
     const out1 = this.previousOutput(runId, 1);
     const out2 = this.previousOutput(runId, 2);
@@ -773,9 +797,12 @@ export class PipelineOrchestrator {
   }
 
   /**
-   * S1.3：多镜头逐镜提交。每镜一个独立 HTTP 请求（POST /step2/submit-shot），
-   * 单镜失败重试 1 次后仍失败则标记 failed（pollExternal 会快速失败整单，不允许假完成）；
-   * 单镜失败不影响其他镜头继续提交。提交结果合并回 result.data，供后续轮询使用。
+   * S1.3 + S3：多镜头逐镜提交。每镜一个独立 HTTP 请求（POST /step2/submit-shot），
+   * 同一轮独立镜头允许受限并发（默认 2，PIPELINE_SHOT_CONCURRENCY 可调），
+   * Promise.allSettled——单镜失败/超时不拖垮其他镜头；
+   * 每镜失败重试 1 次后仍失败则标记 failed（不允许假完成）。
+   * 付费防重：items 中每个镜头只出现一次（同镜重复提交由 submit-shot 端点的
+   * 原子 claim + 幂等检查兜底），并发只作用于不同镜头。
    */
   private async submitAllShots(
     runId: string,
@@ -793,35 +820,62 @@ export class PipelineOrchestrator {
     const model = videoModel.includes('Fast')
       ? 'doubao-seedance-2-0-fast'
       : 'doubao-seedance-2-0';
+    const shotConcurrency = Math.max(
+      1,
+      Math.floor(Number(process.env.PIPELINE_SHOT_CONCURRENCY || 2)) || 2
+    );
+    const perShotTimeoutMs = Number(process.env.PIPELINE_SHOT_SUBMIT_TIMEOUT_MS || 0) || 0;
 
     const updatedShots: any[] = [];
-    for (const shot of multi.shots) {
-      let submitted: any = null;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          submitted = await this.executor.submitShot(sessionId, shot.shotIndex, model, ownerId);
-          break;
-        } catch (error) {
-          if (attempt === 1) {
-            console.warn(
-              `[orchestrator] shot ${shot.shotIndex} submit failed after retry:`,
-              (error as Error).message
+    const outcomes = await mapWithConcurrency(
+      multi.shots,
+      shotConcurrency,
+      async (shot: any) => {
+        let submitted: any = null;
+        let lastError: unknown = null;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            submitted = await this.executor.submitShot(
+              sessionId,
+              shot.shotIndex,
+              model,
+              ownerId,
+              runId,
+              attempt
             );
-          } else {
-            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            break;
+          } catch (error) {
+            lastError = error;
+            if (attempt === 0) {
+              await new Promise((resolve) => setTimeout(resolve, 1_000));
+            } else {
+              console.warn(
+                `[orchestrator] shot ${shot.shotIndex} submit failed after retry:`,
+                (error as Error).message
+              );
+            }
           }
         }
-      }
-      if (!submitted) {
+        return { shot, submitted, lastError };
+      },
+      { timeoutMs: perShotTimeoutMs }
+    );
+
+    for (const outcome of outcomes) {
+      const shot: any = outcome.value?.shot ?? multi.shots[outcome.index];
+      if (outcome.status === 'rejected' || !outcome.value?.submitted) {
+        const reason = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason || '');
         updatedShots.push({
           ...shot,
           status: 'failed',
-          error_message: 'Seedance 提交失败（重试后仍失败），请重跑 Step2 或单镜重试',
+          error_message: reason || 'Seedance 提交失败（重试后仍失败），请重跑 Step2 或单镜重试',
         });
       } else {
-        updatedShots.push({ ...shot, ...submitted });
+        updatedShots.push({ ...shot, ...outcome.value.submitted });
       }
     }
+    // 结果按 shotIndex 排序，保持确定性
+    updatedShots.sort((a, b) => Number(a.shotIndex) - Number(b.shotIndex));
     return {
       ...result,
       data: {
@@ -947,10 +1001,47 @@ export class PipelineOrchestrator {
                 completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
           WHERE run_id = ? AND step_number = ?`
       ).run(JSON.stringify(sanitizedOutput), runId, stepNumber);
+      // S0 产物 provenance：每个 Artifact 记录绑定产品/版本、参考版本、模型、prompt、来源 Run，
+      // 供「切换产品后旧产物禁止发布」与质量回归追溯使用。
+      const run = db
+        .prepare('SELECT product_id, product_version, id FROM pipeline_runs WHERE id = ?')
+        .get(runId) as { product_id: string | null; product_version: string | null; id: string } | undefined;
+      const stepInput = parseJson<any>(
+        (
+          db
+            .prepare('SELECT input_json FROM pipeline_steps WHERE run_id = ? AND step_number = ?')
+            .get(runId, stepNumber) as { input_json: string } | undefined
+        )?.input_json,
+        {}
+      );
+      const model =
+        sanitizedOutput?.modelInfo?.modelCode ||
+        sanitizedOutput?.modelUsed ||
+        sanitizedOutput?.imageModel ||
+        sanitizedOutput?.videoModel ||
+        sanitizedOutput?.textModel ||
+        stepInput?.videoModel ||
+        stepInput?.imageModel ||
+        stepInput?.textModel ||
+        stepInput?.model ||
+        null;
+      const prompt =
+        sanitizedOutput?.video_prompt ||
+        sanitizedOutput?.static_image_prompt ||
+        sanitizedOutput?.image_prompt ||
+        sanitizedOutput?.prompt ||
+        sanitizedOutput?.copywriting ||
+        null;
+      const referenceVersion =
+        sanitizedOutput?.referenceVersion ||
+        sanitizedOutput?.mediaRef?.version ||
+        sanitizedOutput?.sourceVideoVersion ||
+        null;
       db.prepare(
         `INSERT INTO artifacts (
-          id, run_id, step_number, artifact_type, uri, content_json, content_hash, source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          id, run_id, step_number, artifact_type, uri, content_json, content_hash, source,
+          product_id, product_version, reference_version, model, prompt, source_run_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         randomUUID(),
         runId,
@@ -959,7 +1050,13 @@ export class PipelineOrchestrator {
         artifactUri(sanitizedOutput),
         JSON.stringify(sanitizedOutput),
         createHash('sha256').update(JSON.stringify(sanitizedOutput)).digest('hex'),
-        source.includes('mock') ? 'mock' : 'real'
+        source.includes('mock') ? 'mock' : 'real',
+        run?.product_id ?? null,
+        run?.product_version ?? null,
+        referenceVersion,
+        model,
+        prompt ? String(prompt).slice(0, 2000) : null,
+        run?.id ?? null
       );
       db.exec('COMMIT');
     } catch (error) {

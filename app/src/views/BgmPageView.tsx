@@ -43,6 +43,8 @@ const POPULAR_TAGS = ['全部标签', '治愈Lofi', '轻快Pop', '卡点Electron
 
 export const BgmPageView: React.FC<BgmPageViewProps> = ({ onBackToPipeline }) => {
   const [tracks, setTracks] = useState<BgmTrack[]>([]);
+  // S0 三态：加载失败显式提示 + 重试，绝不静默空态
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [playingId, setPlayingId] = useState<string | null>(null);
@@ -123,10 +125,12 @@ export const BgmPageView: React.FC<BgmPageViewProps> = ({ onBackToPipeline }) =>
 
   const loadTracks = async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const list = await apiService.bgm.fetchBgm();
       setTracks(list);
-    } catch {
+    } catch (err: any) {
+      setLoadError(err?.message || '读取 BGM 库失败（后端不可用）');
       setTracks([]);
     } finally {
       setLoading(false);
@@ -403,7 +407,21 @@ export const BgmPageView: React.FC<BgmPageViewProps> = ({ onBackToPipeline }) =>
 
       {/* Track List Display */}
       <div className="p-5 rounded-2xl bg-white border border-slate-200/80 shadow-2xs">
-        {loading ? (
+        {loadError ? (
+          <div className="text-center py-12">
+            <div className="mx-auto w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mb-3">
+              <Activity className="w-6 h-6 text-red-400" />
+            </div>
+            <p className="text-sm font-semibold text-red-600">BGM 库加载失败</p>
+            <p className="text-xs text-slate-500 mt-1">{loadError}</p>
+            <button
+              onClick={() => void loadTracks()}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold px-3.5 py-1.5 transition-colors cursor-pointer"
+            >
+              <Activity className="w-3.5 h-3.5" /> 重试加载
+            </button>
+          </div>
+        ) : loading ? (
           <p className="text-sm text-slate-400 text-center py-10">加载标准化 BGM 曲库…</p>
         ) : filteredTracks.length === 0 ? (
           <div className="text-center py-12 text-slate-400">

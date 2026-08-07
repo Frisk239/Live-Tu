@@ -1,10 +1,17 @@
 import { initDatabase } from '../lib/db';
 import express from 'express';
 import { pipelineRouter } from '../routes/pipeline';
+import { authStub, hasGatewayKey } from './_helpers';
 
 async function runStep3Test() {
   console.log('--- Starting Ticket 07 Step 3 Copywriting & Compliance Scan Tests ---');
   initDatabase();
+
+  // Step 3 文案生成依赖真实 LLM Key；CI 无 Key 时干净跳过（本地配置 Key 后自动恢复）
+  if (!hasGatewayKey()) {
+    console.log('SKIPPED: 未配置 YUNWU_API_KEY/GEMINI_API_KEY，跳过需要真实 LLM 的文案生成测试');
+    return;
+  }
 
   const app = express();
   app.use(express.json());
@@ -28,15 +35,15 @@ async function runStep3Test() {
     });
 
     const jsonStep3 = await resStep3.json();
-    console.assert(jsonStep3.success === true, 'Test 1 Failed: step3 response success false');
+    if (!(jsonStep3.success === true)) throw new Error('Test 1 Failed: step3 response success false');
     const d = jsonStep3.data;
-    console.assert(Boolean(d.title), 'Test 1 Failed: title missing');
-    console.assert(Boolean(d.hook), 'Test 1 Failed: hook missing');
-    console.assert(Boolean(d.body), 'Test 1 Failed: body missing');
-    console.assert(Array.isArray(d.hashtags) && d.hashtags.length > 0, 'Test 1 Failed: hashtags missing');
-    console.assert(Boolean(d.cta), 'Test 1 Failed: cta missing');
-    console.assert(Boolean(d.platform_fit?.douyin), 'Test 1 Failed: platform_fit.douyin missing');
-    console.assert(Boolean(d.platform_fit?.xiaohongshu), 'Test 1 Failed: platform_fit.xiaohongshu missing');
+    if (!(Boolean(d.title))) throw new Error('Test 1 Failed: title missing');
+    if (!(Boolean(d.hook))) throw new Error('Test 1 Failed: hook missing');
+    if (!(Boolean(d.body))) throw new Error('Test 1 Failed: body missing');
+    if (!(Array.isArray(d.hashtags) && d.hashtags.length > 0)) throw new Error('Test 1 Failed: hashtags missing');
+    if (!(Boolean(d.cta))) throw new Error('Test 1 Failed: cta missing');
+    if (!(Boolean(d.platform_fit?.douyin))) throw new Error('Test 1 Failed: platform_fit.douyin missing');
+    if (!(Boolean(d.platform_fit?.xiaohongshu))) throw new Error('Test 1 Failed: platform_fit.xiaohongshu missing');
 
     console.log(`✓ Test 1 Passed: Generated copywriting title: "${d.title}"`);
 
@@ -58,9 +65,9 @@ async function runStep3Test() {
     });
 
     const jsonHit = await resHit.json();
-    console.assert(jsonHit.success === true, 'Test 2 Failed: step3 response success false');
+    if (!(jsonHit.success === true)) throw new Error('Test 2 Failed: step3 response success false');
     const dHit = jsonHit.data;
-    console.assert(Array.isArray(dHit.warnings) && dHit.warnings.length > 0, 'Test 2 Failed: warnings expected when prohibited words are present in text');
+    if (!(Array.isArray(dHit.warnings) && dHit.warnings.length > 0)) throw new Error('Test 2 Failed: warnings expected when prohibited words are present in text');
     console.log(`✓ Test 2 Passed: Prohibited words compliance scan detected ${dHit.warnings.length} warning(s)`);
 
     console.log('--- ALL TICKET 07 STEP 3 TESTS PASSED! ---');

@@ -32,6 +32,28 @@ db.prepare(
   'operator'
 );
 
+// P5 二轮收口：/generations 只接受受信提交（shotId + 受信资产 ID）。
+// 为测试所有权隔离，预置 owner-a 的可信镜头与产品资产。
+db.prepare(
+  `INSERT INTO products (id, name, positioning, price, revision)
+   VALUES ('owner-product', 'BUV', 'test', '49', 1)`
+).run();
+db.prepare(
+  `INSERT INTO product_assets (id, product_id, role, url, owner_id, safety_status, safety_evidence, safety_version, sha256)
+   VALUES ('owner-asset-1', 'owner-product', 'hero', 'https://assets.example.com/owner-a-pack.png', 'owner-a', 'pass', '{"face":false,"overlay":false,"watermark":false}', 'v2', ?)`
+).run('c'.repeat(64));
+db.prepare(
+  `INSERT INTO conditioned_first_frames
+     (id, owner_id, conditioned_first_frame_url, product_asset_urls_json, provider, model, prompt_version, prompt,
+      safety_status, safety_evidence, safety_version, sha256)
+   VALUES ('owner-cff-1', 'owner-a', 'https://assets.example.com/owner-a-derived.png', '[]', 'test', 'test', 'v2', 'x',
+           'pass', '{"face":false,"overlay":false,"watermark":false}', 'v2', ?)`
+).run('c'.repeat(64));
+db.prepare(
+  `INSERT INTO shot_generation_tasks (id, session_id, owner_id, shot_index, status, video_prompt, first_frame_url)
+   VALUES ('owner-shot-1', 'owner-session-1', 'owner-a', 1, 'pending', 'prompt', 'https://assets.example.com/owner-a-derived.png')`
+).run();
+
 const originalFetch = globalThis.fetch;
 const localFetch = originalFetch;
 let providerCalls = 0;
@@ -88,13 +110,15 @@ after(async () => {
 });
 
 test('created task is readable by its owner but not another tenant', async () => {
+  // P5 二轮收口：/generations 不再接受任意 body，走受信提交（shotId + sessionId，
+  // 素材来源由服务端按 owner+URL 核验——owner-a 的镜头/资产已在上面预置）
   const create = await localFetch(`${baseUrl}/generations`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-test-user': 'owner-a' },
-    body: JSON.stringify({ prompt: 'owner A paid task' }),
+    body: JSON.stringify({ shotId: 'owner-shot-1', sessionId: 'owner-session-1' }),
   });
   assert.equal(create.status, 200);
-  const taskId = (await create.json() as any).data.id;
+  const taskId = (await create.json() as any).data.taskId;
   assert.equal(taskId, 'created-provider-task');
 
   const ownerPoll = await localFetch(`${baseUrl}/generations/${taskId}`, {

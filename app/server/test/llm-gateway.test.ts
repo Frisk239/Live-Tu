@@ -5,6 +5,10 @@ async function runTests() {
   console.log('--- Starting Ticket 02 LLM Gateway Tests ---');
   initDatabase();
 
+  // Test 3 用 mock fetch 验证 payload 结构，不产生真实网络调用；
+  // 但网关在「无 API Key」时会提前抛错，故注入占位 Key 让逻辑走到 fetch（被 mock 拦截）
+  process.env.YUNWU_API_KEY = process.env.YUNWU_API_KEY || 'test-dummy-key-for-mocked-fetch';
+
   // Test 1: extractJsonObject helper
   const jsonResult = extractJsonObject('```json\n{"foo": "bar"}\n```');
   console.assert(jsonResult.foo === 'bar', 'Test 1 Failed: extractJsonObject fenced JSON');

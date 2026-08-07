@@ -8,8 +8,23 @@ import {
   PERMISSION_KEYS,
   PERMISSION_NAMES,
 } from './permission-catalog.js';
+import {
+  MODEL_CATALOG,
+  assertModelCatalogIntegrity,
+} from './model-catalog.js';
+import {
+  RUN_STATUS_CHECK_SQL,
+  SHOT_STATUS_CHECK_SQL,
+  STEP_STATUS_CHECK_SQL,
+  RUN_STATUSES,
+  STEP_STATUSES,
+} from '../../shared/run-state.js';
 
 export { defaultPresets };
+
+// S0：启动前断言模型目录本身可信（ID 唯一、每类恰好一个默认模型）。
+// 目录重复曾导致 fresh DB / CI 初始化 UNIQUE constraint failed（P0），必须让它在启动时立刻暴露。
+assertModelCatalogIntegrity();
 
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), 'data'));
 const uploadsDir = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'));
@@ -31,11 +46,77 @@ type Migration = {
   version: number;
   name: string;
   up: () => void;
+  /**
+   * 默认在事务内执行（原子 + 自动回滚）。
+   * 需要重建表并临时切换 PRAGMA foreign_keys 的迁移必须设为 false：
+   * SQLite 不允许在事务内切换 foreign_keys，这类迁移自己管理事务与完整性校验。
+   */
+  transactional?: boolean;
 };
 
 function hasColumn(table: string, column: string): boolean {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return columns.some((item) => item.name === column);
+}
+
+/**
+ * 取新旧两表共有列（按名字求交集，顺序取新表列序）。
+ */
+function sharedColumnNames(oldTable: string, newTable: string): string[] {
+  const oldCols = db.prepare(`PRAGMA table_info(${oldTable})`).all() as Array<{ name: string }>;
+  const newCols = db.prepare(`PRAGMA table_info(${newTable})`).all() as Array<{ name: string }>;
+  const oldNames = new Set(oldCols.map((c) => c.name));
+  return newCols.map((c) => c.name).filter((n) => oldNames.has(n));
+}
+
+/**
+ * 把旧表共有列数据复制到新表（INSERT INTO ... SELECT），返回复制行数。
+ * 必须在事务内、旧表尚未 DROP 前调用。
+ */
+function copySharedRows(oldTable: string, newTable: string): number {
+  const shared = sharedColumnNames(oldTable, newTable);
+  if (shared.length === 0) return 0;
+  const colList = shared.map((n) => `"${n}"`).join(', ');
+  const result = db
+    .prepare(`INSERT INTO ${newTable} (${colList}) SELECT ${colList} FROM ${oldTable}`)
+    .run();
+  return Number(result.changes);
+}
+
+/**
+ * SQLite 表重建（官方 12 步流程简化版）：用于修改 CHECK 约束等无法 ALTER 的 DDL。
+ * - 迁移期间临时关闭外键检查（PRAGMA foreign_keys 连接级、须在事务外切换）；
+ * - 先把旧表共有列数据 INSERT...SELECT 进新表，再 DROP 旧表——绝不静默清空存量数据；
+ * - 重建后执行 PRAGMA foreign_key_check 验证引用完整性，失败则抛错阻止迁移通过。
+ */
+function rebuildTable(table: string, checkColumnSql: string, createNew: (checkSql: string) => void) {
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      createNew(checkColumnSql);
+      // 数据保全：新表建好后、旧表删除前，先复制共有列全部存量行。
+      // （v28 修复：此前直接 DROP 旧表会清空 shot_versions 等表的全部版本历史。）
+      const copied = copySharedRows(table, `${table}_new`);
+      db.exec(`DROP TABLE ${table}`);
+      db.exec(`ALTER TABLE ${table}_new RENAME TO ${table}`);
+      db.exec('COMMIT');
+      if (copied > 0) {
+        console.warn(`[db] rebuildTable: ${table} 已保全 ${copied} 行存量数据`);
+      }
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    const violations = db.prepare('PRAGMA foreign_key_check').all();
+    if (violations.length > 0) {
+      throw new Error(
+        `重建 ${table} 后外键校验失败：${JSON.stringify(violations.slice(0, 5))}`
+      );
+    }
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
 }
 
 function runMigrations(migrations: Migration[]) {
@@ -55,6 +136,11 @@ function runMigrations(migrations: Migration[]) {
 
   for (const migration of [...migrations].sort((a, b) => a.version - b.version)) {
     if (applied.has(migration.version)) continue;
+    if (migration.transactional === false) {
+      migration.up();
+      insert.run(migration.version, migration.name);
+      continue;
+    }
     db.exec('BEGIN IMMEDIATE');
     try {
       migration.up();
@@ -601,6 +687,681 @@ export function initDatabase() {
         insertRolePermission.run('operator', 'module.models.read');
       },
     },
+    {
+      version: 18,
+      name: 'align_model_catalog',
+      up: () => {
+        // S0：一次性把 model_config 对齐到单一 typed catalog（model-catalog.ts）。
+        // 这是唯一的目录对齐点：之后每次重启不再 upsert/重置模型配置，
+        // 管理员在「模型配置中心」保存的修改（enabled/is_default/base_url 等）必须保留。
+        const del = db.prepare('DELETE FROM model_config WHERE id = ?');
+        const fakeIds = [
+          'DeepSeek R1',
+          'Claude 3.5 Sonnet',
+          'Imagen 4 Ultra',
+          'Imagen 4',
+          'Imagen 4 Fast',
+          'Nano Banana Pro',
+          'Nano Banana 2 Lite',
+          'Omni Flash',
+          'Veo 3.1 Preview',
+          'Veo 3.1 Fast Preview',
+        ];
+        for (const id of fakeIds) del.run(id);
+
+        // 去重：历史脏数据可能残留重复 id（如两行 GPT Image 2），保留最早一行
+        db.exec(`
+          DELETE FROM model_config
+          WHERE rowid NOT IN (SELECT MIN(rowid) FROM model_config GROUP BY id)
+        `);
+
+        // 补齐目录中缺失的模型；INSERT OR IGNORE 绝不覆盖管理员已修改的行
+        const insert = db.prepare(`
+          INSERT OR IGNORE INTO model_config (
+            id, name, category, provider, base_url, api_key, model_code,
+            recommended_scenario, speed_rating, speed_ms, quality_rating,
+            description, badge, enabled, is_default
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const m of MODEL_CATALOG) {
+          insert.run(
+            m.id,
+            m.id,
+            m.category,
+            m.provider,
+            m.baseUrl,
+            m.apiKey,
+            m.modelCode,
+            m.recommendedScenario,
+            m.speedRating,
+            m.speedMs,
+            m.qualityRating,
+            m.description,
+            m.badge,
+            m.enabled,
+            m.isDefault
+          );
+        }
+
+        // 每类恰好一个默认模型：无默认 → 取目录默认；多个默认 → 优先保留目录默认 id
+        for (const category of ['text', 'image', 'video'] as const) {
+          const rows = db
+            .prepare(
+              `SELECT id, is_default FROM model_config WHERE category = ? AND enabled = 1 ORDER BY rowid`
+            )
+            .all(category) as Array<{ id: string; is_default: number }>;
+          const defaults = rows.filter((r) => r.is_default === 1);
+          const catalogDefault = MODEL_CATALOG.find(
+            (m) => m.category === category && m.isDefault === 1
+          )?.id;
+          if (defaults.length === 0) {
+            if (catalogDefault) {
+              db.prepare(
+                `UPDATE model_config SET is_default = 1 WHERE id = ? AND category = ?`
+              ).run(catalogDefault, category);
+            }
+          } else if (defaults.length > 1) {
+            const keep =
+              defaults.find((r) => r.id === catalogDefault)?.id || defaults[0].id;
+            db.prepare(
+              `UPDATE model_config SET is_default = CASE WHEN id = ? THEN 1 ELSE 0 END WHERE category = ?`
+            ).run(keep, category);
+          }
+        }
+
+        // 兼容历史库：旧种子曾把所有模型 enabled=0（UI 选择器被清空）
+        const enabledCount = (
+          db
+            .prepare('SELECT COUNT(*) AS count FROM model_config WHERE enabled = 1')
+            .get() as { count: number }
+        ).count;
+        const totalModels = (
+          db.prepare('SELECT COUNT(*) AS count FROM model_config').get() as { count: number }
+        ).count;
+        if (totalModels > 0 && enabledCount === 0) {
+          db.exec('UPDATE model_config SET enabled = 1');
+        }
+      },
+    },
+    {
+      version: 19,
+      name: 'add_needs_review_run_status',
+      transactional: false,
+      up: () => {
+        // S0：软门禁路径会写 status='needs_review'，但旧 CHECK 只允许
+        // ('queued','running','waiting_external','completed','failed','cancelled')，
+        // 结果落库时 CHECK constraint failed 崩溃。SQLite 改 CHECK 必须重建表。
+        // CHECK 表达式从 run-state.ts 单一来源生成，保证契约一致。
+        rebuildTable('pipeline_runs', RUN_STATUS_CHECK_SQL, (sql) => {
+          // 注意：索引名是数据库级唯一的。旧表上的 idx_pipeline_* 索引仍存在时，
+          // CREATE INDEX IF NOT EXISTS ... ON pipeline_runs_new(...) 是 no-op，
+          // DROP TABLE 旧表后索引会一起消失 —— 必须先删旧索引再建新索引。
+          db.exec('DROP INDEX IF EXISTS idx_pipeline_runs_owner_created');
+          db.exec('DROP INDEX IF EXISTS idx_pipeline_runs_status');
+          db.exec(`
+            CREATE TABLE pipeline_runs_new (
+              id TEXT PRIMARY KEY,
+              owner_id TEXT NOT NULL,
+              product_id TEXT,
+              ${sql},
+              current_step INTEGER NOT NULL DEFAULT 1,
+              input_json TEXT NOT NULL,
+              error_code TEXT,
+              error_message TEXT,
+              idempotency_key TEXT NOT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              started_at DATETIME,
+              completed_at DATETIME,
+              FOREIGN KEY (owner_id) REFERENCES users(id),
+              FOREIGN KEY (product_id) REFERENCES products(id),
+              UNIQUE (owner_id, idempotency_key)
+            )
+          `);
+          db.exec(`
+            INSERT INTO pipeline_runs_new (
+              id, owner_id, product_id, status, current_step, input_json,
+              error_code, error_message, idempotency_key,
+              created_at, updated_at, started_at, completed_at
+            )
+            SELECT
+              id, owner_id, product_id, status, current_step, input_json,
+              error_code, error_message, idempotency_key,
+              created_at, updated_at, started_at, completed_at
+            FROM pipeline_runs
+          `);
+          db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_pipeline_runs_owner_created
+              ON pipeline_runs_new(owner_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status
+              ON pipeline_runs_new(status, updated_at);
+          `);
+        });
+        rebuildTable('pipeline_steps', STEP_STATUS_CHECK_SQL, (sql) => {
+          db.exec('DROP INDEX IF EXISTS idx_pipeline_steps_run');
+          db.exec(`
+            CREATE TABLE pipeline_steps_new (
+              id TEXT PRIMARY KEY,
+              run_id TEXT NOT NULL,
+              step_number INTEGER NOT NULL,
+              ${sql},
+              attempt INTEGER NOT NULL DEFAULT 0,
+              input_json TEXT NOT NULL DEFAULT '{}',
+              output_json TEXT,
+              provider_task_id TEXT,
+              error_code TEXT,
+              error_message TEXT,
+              started_at DATETIME,
+              completed_at DATETIME,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY (run_id) REFERENCES pipeline_runs(id) ON DELETE CASCADE,
+              UNIQUE (run_id, step_number)
+            )
+          `);
+          db.exec(`
+            INSERT INTO pipeline_steps_new (
+              id, run_id, step_number, status, attempt, input_json, output_json,
+              provider_task_id, error_code, error_message,
+              started_at, completed_at, updated_at
+            )
+            SELECT
+              id, run_id, step_number, status, attempt, input_json, output_json,
+              provider_task_id, error_code, error_message,
+              started_at, completed_at, updated_at
+            FROM pipeline_steps
+          `);
+          db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_pipeline_steps_run
+              ON pipeline_steps_new(run_id, step_number);
+          `);
+        });
+      },
+    },
+    {
+      version: 20,
+      name: 'add_artifact_provenance',
+      up: () => {
+        // S0：产物可追溯 + 产品上下文隔离。
+        // 每个 Artifact 记录绑定的产品与版本、参考版本、模型、prompt、来源 Run；
+        // 切换产品上下文后旧产品产物标记 stale，禁止再发布。
+        if (!hasColumn('pipeline_runs', 'product_version')) {
+          db.exec('ALTER TABLE pipeline_runs ADD COLUMN product_version TEXT');
+        }
+        for (const col of [
+          'product_id',
+          'product_version',
+          'reference_version',
+          'model',
+          'prompt',
+          'source_run_id',
+        ]) {
+          if (!hasColumn('artifacts', col)) {
+            db.exec(`ALTER TABLE artifacts ADD COLUMN ${col} TEXT`);
+          }
+        }
+        if (!hasColumn('artifacts', 'stale')) {
+          db.exec('ALTER TABLE artifacts ADD COLUMN stale INTEGER NOT NULL DEFAULT 0');
+        }
+        db.exec(
+          'CREATE INDEX IF NOT EXISTS idx_artifacts_product ON artifacts(product_id, stale)'
+        );
+      },
+    },
+    {
+      version: 21,
+      name: 'add_product_revision_and_generated_media_registry',
+      up: () => {
+        // S0 第二轮回合修复：
+        // 1. products.revision —— 单调递增版本号。CURRENT_TIMESTAMP 是秒级，
+        //    同秒内更新产品后 updated_at 不变，旧成片仍能通过版本校验。
+        //    revision 每次 PUT 递增，作为唯一可信的 product_version。
+        if (!hasColumn('products', 'revision')) {
+          db.exec('ALTER TABLE products ADD COLUMN revision INTEGER NOT NULL DEFAULT 0');
+          // 现有产品按 rowid 赋单调值，保证两两不同
+          db.exec('UPDATE products SET revision = rowid WHERE revision = 0');
+        }
+        // 2. generated_media —— 手工五步链路（不经 orchestrator）的产物登记表。
+        //    工作台直接调 /api/pipeline/step2、/step5 生成的视频/成片在此登记，
+        //    发布守卫才能追溯「旧产品成片」并 100% 阻断；未登记的 URL 无法证明归属。
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS generated_media (
+            id TEXT PRIMARY KEY,
+            product_id TEXT,
+            product_version TEXT,
+            uri TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'step_output',
+            stale INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_generated_media_product
+            ON generated_media(product_id, uri, stale);
+        `);
+      },
+    },
+    {
+      version: 22,
+      name: 'scope_generated_media_to_owner',
+      up: () => {
+        if (!hasColumn('generated_media', 'owner_id')) {
+          db.exec(
+            "ALTER TABLE generated_media ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'system'"
+          );
+        }
+        db.exec(`
+          DROP INDEX IF EXISTS idx_generated_media_product;
+          CREATE INDEX IF NOT EXISTS idx_generated_media_owner_product
+            ON generated_media(owner_id, product_id, uri, stale);
+        `);
+      },
+    },
+    {
+      version: 23,
+      name: 'add_cost_ledger',
+      up: () => {
+        // S1 成本账本（生产埋点）：逐 run/shot 记录 provider、model、版本、seed、
+        // 排队/生成时间、重试、失败原因、计费单位、估算/实际成本、人工选择结果、
+        // prompt/pipeline/git 版本。未知成本一律存 NULL（unknown），绝不写 0。
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS cost_ledger (
+            id TEXT PRIMARY KEY,
+            scope TEXT NOT NULL CHECK (scope IN ('run', 'sample', 'shot')),
+            run_id TEXT,
+            sample_id TEXT,
+            shot_id TEXT,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            model_version TEXT NOT NULL,
+            seed INTEGER,
+            prompt_version TEXT NOT NULL DEFAULT 'v1.0.0 (S1 无模板)',
+            queue_ms INTEGER,
+            generation_ms INTEGER,
+            retries INTEGER NOT NULL DEFAULT 0,
+            failure_reason TEXT,
+            billing_tokens INTEGER,
+            billing_images INTEGER,
+            billing_videos INTEGER,
+            billing_audio_seconds INTEGER,
+            estimated_usd_cents INTEGER,
+            actual_usd_cents INTEGER,
+            currency TEXT NOT NULL DEFAULT 'USD',
+            source TEXT NOT NULL DEFAULT 'ledger',
+            manual_choice TEXT,
+            scorecard_version TEXT,
+            pipeline_version TEXT,
+            git_commit TEXT,
+            recorded_at INTEGER NOT NULL,
+            owner_id TEXT NOT NULL DEFAULT 'system'
+          );
+          CREATE INDEX IF NOT EXISTS idx_cost_ledger_run ON cost_ledger(run_id);
+          CREATE INDEX IF NOT EXISTS idx_cost_ledger_shot ON cost_ledger(shot_id);
+          CREATE INDEX IF NOT EXISTS idx_cost_ledger_owner_time
+            ON cost_ledger(owner_id, recorded_at);
+        `);
+      },
+    },
+    {
+      version: 24,
+      name: 'increase_cost_ledger_precision_and_link_pipeline_runs',
+      up: () => {
+        // AI 单次调用经常低于 $0.01；从 cents 升级为 micros，避免 $0.004 被舍入成 0。
+        db.exec(`
+          ALTER TABLE cost_ledger
+            RENAME COLUMN estimated_usd_cents TO estimated_usd_micros;
+          ALTER TABLE cost_ledger
+            RENAME COLUMN actual_usd_cents TO actual_usd_micros;
+          UPDATE cost_ledger
+            SET estimated_usd_micros = estimated_usd_micros * 10000
+            WHERE estimated_usd_micros IS NOT NULL;
+          UPDATE cost_ledger
+            SET actual_usd_micros = actual_usd_micros * 10000
+            WHERE actual_usd_micros IS NOT NULL;
+        `);
+        if (!hasColumn('shot_generation_tasks', 'pipeline_run_id')) {
+          db.exec('ALTER TABLE shot_generation_tasks ADD COLUMN pipeline_run_id TEXT');
+        }
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_shot_tasks_pipeline_run
+            ON shot_generation_tasks(pipeline_run_id, shot_index);
+        `);
+      },
+    },
+    {
+      version: 26,
+      name: 'add_submitting_shot_status',
+      transactional: false,
+      up: () => {
+        // S2 P0 修复：并发付费防重。'submitting' 是镜头提交的原子占位状态——
+        // 条件 UPDATE（pending/failed → submitting）作为 claim，只有一个请求能成功；
+        // 成功/失败后再落到 generating/completed/failed。服务重启时由 recover 处理
+        // 悬挂的 submitting（标记失败，绝不自动重提，沿用 AMBIGUOUS_SUBMISSION 哲学）。
+        rebuildTable('shot_generation_tasks', SHOT_STATUS_CHECK_SQL, (sql) => {
+          db.exec('DROP INDEX IF EXISTS idx_shot_tasks_pipeline_run');
+          db.exec(`
+            CREATE TABLE shot_generation_tasks_new (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              owner_id TEXT,
+              shot_index INTEGER NOT NULL,
+              ${sql},
+              seedance_task_id TEXT,
+              video_url TEXT,
+              error_message TEXT,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              concat_status TEXT DEFAULT 'pending',
+              concatenated_video_url TEXT,
+              video_prompt TEXT,
+              first_frame_url TEXT,
+              qa_status TEXT DEFAULT 'pending',
+              qa_attempt INTEGER NOT NULL DEFAULT 0,
+              pipeline_run_id TEXT,
+              FOREIGN KEY (owner_id) REFERENCES users(id),
+              UNIQUE (session_id, shot_index)
+            )
+          `);
+          db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_shot_tasks_pipeline_run
+              ON shot_generation_tasks(pipeline_run_id, shot_index)
+          `);
+        });
+      },
+    },
+    {
+      version: 25,
+      name: 'add_workbench_state',
+      up: () => {
+        // S2 工作台持久化状态：三档自主模式 + 独立付费授权 + SaveState +
+        // 三处确认点 + 用户分镜草稿（promptOverride/候选选择）。
+        // SaveState / AutonomyMode / ConfirmType 枚举与 shared/workbench-contract.ts 同步。
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS workbench_state (
+            id TEXT PRIMARY KEY,
+            owner_id TEXT NOT NULL,
+            run_id TEXT,
+            session_id TEXT,
+            autonomy_mode TEXT NOT NULL DEFAULT 'managed'
+              CHECK (autonomy_mode IN ('managed', 'confirm_key_points', 'step_by_step')),
+            paid_auth_enabled INTEGER NOT NULL DEFAULT 0,
+            confirms_json TEXT NOT NULL DEFAULT '{}',
+            draft_json TEXT,
+            save_state TEXT NOT NULL DEFAULT 'saved'
+              CHECK (save_state IN ('saving', 'saved', 'dirty', 'offline_retry')),
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_workbench_state_owner ON workbench_state(owner_id, run_id);
+          CREATE INDEX IF NOT EXISTS idx_workbench_state_session ON workbench_state(session_id);
+        `);
+      },
+    },
+    {
+      version: 27,
+      name: 'add_shot_versions_shot_qa_reports_golden_runs',
+      up: () => {
+        // P3 质量闭环：镜头版本历史 + 语义 QA 报告存储 + 黄金样例真实运行记录
+
+        // shot_versions：每次生成/重试记录为一个版本，可比较/回退
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS shot_versions (
+            id TEXT PRIMARY KEY,
+            shot_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            video_url TEXT,
+            prompt TEXT,
+            model_code TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+              CHECK (status IN ('pending', 'completed', 'failed', 'reverted')),
+            qa_report_id TEXT,
+            cost_ledger_id TEXT,
+            failure_reason TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (owner_id) REFERENCES users(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_shot_versions_shot ON shot_versions(shot_id, version DESC);
+          CREATE INDEX IF NOT EXISTS idx_shot_versions_run ON shot_versions(run_id);
+        `);
+
+        // shot_qa_reports：每个镜头每个版本的完整 QA 报告（JSON 存储）
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS shot_qa_reports (
+            id TEXT PRIMARY KEY,
+            shot_id TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            owner_id TEXT NOT NULL,
+            report_json TEXT NOT NULL,
+            tech_status TEXT DEFAULT 'unverified',
+            semantic_status TEXT DEFAULT 'unverified',
+            overall_verdict TEXT DEFAULT 'unverified',
+            manual_passed INTEGER NOT NULL DEFAULT 0,
+            manual_pass_comment TEXT,
+            checked_at INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (owner_id) REFERENCES users(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_qa_reports_shot ON shot_qa_reports(shot_id, version DESC);
+          CREATE INDEX IF NOT EXISTS idx_qa_reports_run ON shot_qa_reports(run_id);
+        `);
+
+        // golden_runs：真实黄金样例运行记录（P3 质量基线 §一）
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS golden_runs (
+            id TEXT PRIMARY KEY,
+            sample_id TEXT NOT NULL,
+            run_index INTEGER NOT NULL,
+            owner_id TEXT NOT NULL DEFAULT 'system',
+            started_at INTEGER,
+            completed_at INTEGER,
+            duration_ms INTEGER,
+            provider TEXT,
+            model TEXT,
+            model_code TEXT,
+            seed INTEGER,
+            prompt TEXT,
+            prompt_version TEXT,
+            artifact_url TEXT,
+            artifact_status TEXT DEFAULT 'missing',
+            tech_qa_status TEXT,
+            semantic_verdict TEXT,
+            semantic_report_json TEXT,
+            estimated_cost_micros INTEGER,
+            actual_cost_micros INTEGER,
+            failure_reason TEXT,
+            retry_count INTEGER NOT NULL DEFAULT 0,
+            human_score REAL,
+            human_comment TEXT,
+            human_reviewer TEXT,
+            git_commit TEXT DEFAULT 'unknown',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_golden_runs_sample ON golden_runs(sample_id, run_index);
+        `);
+
+        // 扩展 shot_generation_tasks：增加 current_version 列
+        if (!hasColumn('shot_generation_tasks', 'current_version')) {
+          db.exec('ALTER TABLE shot_generation_tasks ADD COLUMN current_version INTEGER NOT NULL DEFAULT 1');
+        }
+      },
+    },
+    {
+      version: 28,
+      name: 'widen_shot_versions_status_check',
+      transactional: false,
+      up: () => {
+        // P3 真实运行修复：shot_versions.status CHECK 缺 'generating'——
+        // 真实 provider 异步返回 generating 时版本行插入直接 CHECK 失败（retry_failed）。
+        // 重建表，扩展 CHECK 到 (pending, generating, completed, failed, reverted)。
+        rebuildTable('shot_versions', 'status TEXT NOT NULL DEFAULT \'pending\'', (sql) => {
+          db.exec('DROP INDEX IF EXISTS idx_shot_versions_shot');
+          db.exec('DROP INDEX IF EXISTS idx_shot_versions_run');
+          db.exec(`
+            CREATE TABLE shot_versions_new (
+              id TEXT PRIMARY KEY,
+              shot_id TEXT NOT NULL,
+              run_id TEXT NOT NULL,
+              owner_id TEXT NOT NULL,
+              version INTEGER NOT NULL,
+              video_url TEXT,
+              prompt TEXT,
+              model_code TEXT,
+              ${sql.replace(
+                "status TEXT NOT NULL DEFAULT 'pending'",
+                "status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'generating', 'completed', 'failed', 'reverted'))"
+              )},
+              qa_report_id TEXT,
+              cost_ledger_id TEXT,
+              failure_reason TEXT,
+              created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              FOREIGN KEY (owner_id) REFERENCES users(id)
+            )
+          `);
+          db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_shot_versions_shot ON shot_versions_new(shot_id, version DESC);
+            CREATE INDEX IF NOT EXISTS idx_shot_versions_run ON shot_versions_new(run_id);
+          `);
+        });
+      },
+    },
+    {
+      version: 29,
+      name: 'conditioned_first_frames_provenance',
+      up: () => {
+        // 产品条件化首帧 provenance（S3「爆款视频 + 产品图 → 复刻成片」）：
+        // 记录首帧如何由 参考关键帧 + 产品素材 派生，供证据 JSON / 审计 / 回归对比使用。
+        // 首帧是内部派生资产（derivedFirstFrameUrl），不是用户输入。
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS conditioned_first_frames (
+            id TEXT PRIMARY KEY,
+            run_id TEXT,
+            session_id TEXT,
+            shot_id TEXT,
+            owner_id TEXT NOT NULL,
+            reference_video_url TEXT,
+            reference_keyframe_url TEXT,
+            product_asset_urls_json TEXT NOT NULL,
+            conditioned_first_frame_url TEXT NOT NULL,
+            local_path TEXT,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            prompt_version TEXT NOT NULL,
+            prompt TEXT,
+            confidence REAL,
+            preflight_status TEXT,
+            preflight_issues_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (owner_id) REFERENCES users(id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_cff_shot ON conditioned_first_frames(shot_id);
+          CREATE INDEX IF NOT EXISTS idx_cff_session ON conditioned_first_frames(session_id);
+          CREATE INDEX IF NOT EXISTS idx_cff_owner ON conditioned_first_frames(owner_id);
+        `);
+      },
+    },
+    {
+      version: 30,
+      name: 'shot_first_frame_derivation_context',
+      up: () => {
+        // S3 输入模型纠正：用户只输入 referenceVideoUrl + productAssetUrls。
+        // 镜头任务记录「参考视频 / 参考关键帧」（系统自动提取的构图基座）与
+        // 「派生首帧」（内部派生产物 derivedFirstFrameUrl——明确标记，不是用户输入）。
+        // first_frame_url 仍为工作字段（提交时由派生流程写入）。
+        if (!hasColumn('shot_generation_tasks', 'reference_keyframe_url')) {
+          db.exec('ALTER TABLE shot_generation_tasks ADD COLUMN reference_keyframe_url TEXT');
+        }
+        if (!hasColumn('shot_generation_tasks', 'reference_video_url')) {
+          db.exec('ALTER TABLE shot_generation_tasks ADD COLUMN reference_video_url TEXT');
+        }
+        if (!hasColumn('shot_generation_tasks', 'derived_first_frame_url')) {
+          db.exec('ALTER TABLE shot_generation_tasks ADD COLUMN derived_first_frame_url TEXT');
+        }
+        if (!hasColumn('shot_generation_tasks', 'first_frame_preflight_status')) {
+          db.exec("ALTER TABLE shot_generation_tasks ADD COLUMN first_frame_preflight_status TEXT DEFAULT 'pending'");
+        }
+        if (!hasColumn('shot_generation_tasks', 'first_frame_preflight_issues')) {
+          db.exec('ALTER TABLE shot_generation_tasks ADD COLUMN first_frame_preflight_issues TEXT');
+        }
+      },
+    },
+    {
+      version: 31,
+      name: 'asset_visual_safety_state',
+      up: () => {
+        // P5 三轮审查：产品资产与条件化首帧持久化服务端视觉安全状态
+        // （hash、face/overlay verdict、检查证据、版本、pass/unverified）；
+        // unverified 必须拒绝付费提交（见 lib/visual-safety.ts）。
+        for (const table of ['product_assets', 'conditioned_first_frames']) {
+          if (!hasColumn(table, 'safety_status')) {
+            db.exec(`ALTER TABLE ${table} ADD COLUMN safety_status TEXT DEFAULT 'unverified'`);
+          }
+          if (!hasColumn(table, 'safety_evidence')) {
+            db.exec(`ALTER TABLE ${table} ADD COLUMN safety_evidence TEXT`);
+          }
+          if (!hasColumn(table, 'safety_checked_at')) {
+            db.exec(`ALTER TABLE ${table} ADD COLUMN safety_checked_at TEXT`);
+          }
+          if (!hasColumn(table, 'safety_version')) {
+            db.exec(`ALTER TABLE ${table} ADD COLUMN safety_version TEXT`);
+          }
+          if (!hasColumn(table, 'sha256')) {
+            db.exec(`ALTER TABLE ${table} ADD COLUMN sha256 TEXT`);
+          }
+        }
+      },
+    },
+    {
+      version: 32,
+      name: 'invalidate_unbound_visual_safety_passes',
+      up: () => {
+        // A legacy `pass` without a digest is not evidence about the bytes that
+        // will be sent to a provider. Force it through the new hash-bound review.
+        for (const table of ['product_assets', 'conditioned_first_frames']) {
+          db.prepare(
+            `UPDATE ${table}
+                SET safety_status = 'unverified',
+                    safety_evidence = COALESCE(safety_evidence, 'legacy pass without SHA-256 requires re-review')
+              WHERE safety_status = 'pass'
+                AND (sha256 IS NULL OR length(sha256) != 64)`
+          ).run();
+        }
+      },
+    },
+    {
+      version: 33,
+      name: 'add_provider_capabilities_and_viral_probe_artifacts',
+      up: () => {
+        // P0 capability probe：provider 真实能力记录（只记录真实 probe 结论，
+        // 未验证/不支持的能力如实标注；供 P3 ShotGenerationModule 路由前门禁）。
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS provider_capabilities (
+            provider TEXT NOT NULL,
+            model_code TEXT NOT NULL,
+            probed_at INTEGER,
+            probed_by TEXT,
+            capabilities_json TEXT NOT NULL,
+            evidence_json TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (provider, model_code)
+          );
+        `);
+        // P0 probe 产物 provenance：参考子视频/控制图/ASR 等控制工件的可追溯记录
+        db.exec(`
+          CREATE TABLE IF NOT EXISTS viral_probe_artifacts (
+            id TEXT PRIMARY KEY,
+            run_id TEXT,
+            owner_id TEXT,
+            kind TEXT NOT NULL,
+            source_video_url TEXT,
+            local_path TEXT,
+            public_url TEXT NOT NULL,
+            sha256 TEXT,
+            meta_json TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_viral_probe_artifacts_run ON viral_probe_artifacts(run_id);
+        `);
+      },
+    },
   ]);
 
   // WAL mode & busy timeout
@@ -704,7 +1465,7 @@ export function initDatabase() {
     );
   }
 
-  // Seed default model configs if empty
+  // Seed default model configs if empty（来源：单一 typed catalog，见 model-catalog.ts）
   const modelCountStmt = db.prepare('SELECT COUNT(*) as count FROM model_config');
   const modelCount = (modelCountStmt.get() as { count: number }).count;
   if (modelCount === 0) {
@@ -716,29 +1477,25 @@ export function initDatabase() {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    // Only seed models verified against 云雾 (api3.wlai.vip). is_default = one per category.
-    // Text/multimodal default: gemini-3.6-flash. Image default: gpt-image-1 (real /images/generations).
-    const initialModels = [
-      // Text + multimodal (vision via OpenAI-compat chat/completions)
-      ['Gemini 3.6 Flash', 'Gemini 3.6 Flash', 'text', '云雾 / Google', 'https://api3.wlai.vip/v1', '', 'gemini-3.6-flash', '5步工作台全链路反推与多模态视觉理解（默认）', '极快', '0.9s', '专业级', '云雾实测可用：文本+识图多模态', '默认', 1, 1],
-      ['GPT-4o', 'GPT-4o', 'text', '云雾 / OpenAI', 'https://api3.wlai.vip/v1', '', 'gpt-4o', '全能文案润色与多模态解析', '快速', '1.2s', '专业级', '云雾实测可用：文本+识图', null, 1, 0],
-      ['DeepSeek V3', 'DeepSeek V3', 'text', '云雾 / DeepSeek', 'https://api3.wlai.vip/v1', '', 'deepseek-chat', '卖点库提炼、电商爆款文案', '极快', '0.8s', '专业级', '云雾实测可用：纯文本', null, 1, 0],
-
-      // Image gen (OpenAI /images/generations — 云雾实测 200)
-      ['GPT Image 1', 'GPT Image 1', 'image', '云雾 / OpenAI', 'https://api3.wlai.vip/v1', '', 'gpt-image-1', '产品首帧/质感静态图文生图（默认）', '标准', '35s', '写实级', '云雾实测可用 gpt-image-1', '默认', 1, 1],
-      ['GPT Image 1 Mini', 'GPT Image 1 Mini', 'image', '云雾 / OpenAI', 'https://api3.wlai.vip/v1', '', 'gpt-image-1-mini', '轻量快速文生图', '快速', '30s', '高清', '云雾实测可用 gpt-image-1-mini', null, 1, 0],
-      ['GPT Image 1.5', 'GPT Image 1.5', 'image', '云雾 / OpenAI', 'https://api3.wlai.vip/v1', '', 'gpt-image-1.5', '更强指令遵循的文生图', '标准', '27s', '写实级', '云雾实测可用 gpt-image-1.5', null, 1, 0],
-      ['GPT Image 2', 'GPT Image 2', 'image', '云雾 / OpenAI', 'https://api3.wlai.vip/v1', '', 'gpt-image-2', 'OpenAI 最新图像生成', '标准', '35s', '写实级', '云雾实测可用 gpt-image-2', null, 1, 0],
-      ['Seedream 4.5', 'Seedream 4.5', 'image', '云雾 / 字节', 'https://api3.wlai.vip/v1', '', 'doubao-seedream-4-5-251128', '字节 Seedream 文生图，速度快', '快速', '13s', '专业级', '云雾实测可用（返回 URL）', null, 1, 0],
-      ['Z-Image Turbo', 'Z-Image Turbo', 'image', '云雾 / 通义', 'https://api3.wlai.vip/v1', '', 'z-image-turbo', '开源高效文生图', '极快', '13s', '高清', '云雾实测可用 z-image-turbo', null, 1, 0],
-
-      // Video (Seedance 中转，非云雾)
-      ['Seedance 2.0 Fast', 'Seedance 2.0 Fast', 'video', '星河中转 / Seedance', '/api/seedance', '', 'doubao-seedance-2-0-fast', '快节奏卡点、抖音前3秒冲击力', '极快', '3.2s', '高清', '走星河 Seedance 2.0 中转', '中转默认', 1, 1],
-      ['Seedance 2.0', 'Seedance 2.0', 'video', '星河中转 / Seedance', '/api/seedance', '', 'doubao-seedance-2-0', '商业级物理运镜，膏体拉丝镜头', '精细', '7.2s', '物理级', '星河中转 Seedance 2.0 标准模型', null, 1, 0],
-    ];
-
-    for (const m of initialModels) {
-      insertModel.run(...m);
+    // 只收录云雾/星河实测可用的模型（目录已断言 ID 唯一、每类恰好一个默认）
+    for (const m of MODEL_CATALOG) {
+      insertModel.run(
+        m.id,
+        m.id,
+        m.category,
+        m.provider,
+        m.baseUrl,
+        m.apiKey,
+        m.modelCode,
+        m.recommendedScenario,
+        m.speedRating,
+        m.speedMs,
+        m.qualityRating,
+        m.description,
+        m.badge,
+        m.enabled,
+        m.isDefault
+      );
     }
   }
 
@@ -865,85 +1622,9 @@ export function initDatabase() {
     }
   }
 
-  // One-shot migration: older seeds stored enabled=0 for every model, which emptied UI selectors
-  try {
-    const enabledCount = (db.prepare('SELECT COUNT(*) as count FROM model_config WHERE enabled = 1').get() as { count: number }).count;
-    const totalModels = (db.prepare('SELECT COUNT(*) as count FROM model_config').get() as { count: number }).count;
-    if (totalModels > 0 && enabledCount === 0) {
-      db.exec('UPDATE model_config SET enabled = 1');
-    }
-  } catch (err) {
-    console.warn('[db] model_config enabled migration skipped:', err);
-  }
-
-  // Migration: drop fake / unusable models; ensure verified 云雾 defaults
-  // (Imagen/NanoBanana/Claude/R1 等在云雾侧无渠道或不可用；文生图实测 gpt-image-1 可用)
-  try {
-    const fakeIds = [
-      'DeepSeek R1',
-      'Claude 3.5 Sonnet',
-      'Imagen 4 Ultra',
-      'Imagen 4',
-      'Imagen 4 Fast',
-      'Nano Banana Pro',
-      'Nano Banana 2 Lite',
-      'Omni Flash',
-      'Veo 3.1 Preview',
-      'Veo 3.1 Fast Preview',
-    ];
-    const del = db.prepare('DELETE FROM model_config WHERE id = ?');
-    for (const id of fakeIds) del.run(id);
-
-    const upsert = db.prepare(`
-      INSERT INTO model_config (
-        id, name, category, provider, base_url, api_key, model_code,
-        recommended_scenario, speed_rating, speed_ms, quality_rating,
-        description, badge, enabled, is_default
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        name = excluded.name,
-        category = excluded.category,
-        provider = excluded.provider,
-        model_code = excluded.model_code,
-        recommended_scenario = excluded.recommended_scenario,
-        speed_rating = excluded.speed_rating,
-        speed_ms = excluded.speed_ms,
-        quality_rating = excluded.quality_rating,
-        description = excluded.description,
-        badge = excluded.badge,
-        enabled = excluded.enabled,
-        is_default = excluded.is_default
-    `);
-
-    const yunwuBase = (process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1').replace(/\/$/, '');
-    const realModels: any[][] = [
-      ['Gemini 3.6 Flash', 'Gemini 3.6 Flash', 'text', '云雾 / Google', yunwuBase, '', 'gemini-3.6-flash', '5步工作台全链路反推与多模态视觉理解（默认）', '极快', '0.9s', '专业级', '云雾实测可用：文本+识图多模态', '默认', 1, 1],
-      ['GPT-4o', 'GPT-4o', 'text', '云雾 / OpenAI', yunwuBase, '', 'gpt-4o', '全能文案润色与多模态解析', '快速', '1.2s', '专业级', '云雾实测可用：文本+识图', null, 1, 0],
-      ['DeepSeek V3', 'DeepSeek V3', 'text', '云雾 / DeepSeek', yunwuBase, '', 'deepseek-chat', '卖点库提炼、电商爆款文案', '极快', '0.8s', '专业级', '云雾实测可用：纯文本', null, 1, 0],
-      ['GPT Image 1', 'GPT Image 1', 'image', '云雾 / OpenAI', yunwuBase, '', 'gpt-image-1', '产品首帧/质感静态图文生图（默认）', '标准', '35s', '写实级', '云雾实测可用 gpt-image-1', '默认', 1, 1],
-      ['GPT Image 1 Mini', 'GPT Image 1 Mini', 'image', '云雾 / OpenAI', yunwuBase, '', 'gpt-image-1-mini', '轻量快速文生图', '快速', '30s', '高清', '云雾实测可用 gpt-image-1-mini', null, 1, 0],
-      ['GPT Image 1.5', 'GPT Image 1.5', 'image', '云雾 / OpenAI', yunwuBase, '', 'gpt-image-1.5', '更强指令遵循的文生图', '标准', '27s', '写实级', '云雾实测可用 gpt-image-1.5', null, 1, 0],
-      ['GPT Image 2', 'GPT Image 2', 'image', '云雾 / OpenAI', yunwuBase, '', 'gpt-image-2', 'OpenAI 最新图像生成', '标准', '35s', '写实级', '云雾实测可用 gpt-image-2', null, 1, 0],
-      ['Seedream 4.5', 'Seedream 4.5', 'image', '云雾 / 字节', yunwuBase, '', 'doubao-seedream-4-5-251128', '字节 Seedream 文生图，速度快', '快速', '13s', '专业级', '云雾实测可用（返回 URL）', null, 1, 0],
-      ['Z-Image Turbo', 'Z-Image Turbo', 'image', '云雾 / 通义', yunwuBase, '', 'z-image-turbo', '开源高效文生图', '极快', '13s', '高清', '云雾实测可用 z-image-turbo', null, 1, 0],
-      ['Seedance 2.0 Fast', 'Seedance 2.0 Fast', 'video', '星河中转 / Seedance', '/api/seedance', '', 'doubao-seedance-2-0-fast', '快节奏卡点、抖音前3秒冲击力', '极快', '3.2s', '高清', '走星河 Seedance 2.0 中转', '中转默认', 1, 1],
-      ['Seedance 2.0', 'Seedance 2.0', 'video', '星河中转 / Seedance', '/api/seedance', '', 'doubao-seedance-2-0', '商业级物理运镜，膏体拉丝镜头', '精细', '7.2s', '物理级', '星河中转 Seedance 2.0 标准模型', null, 1, 0],
-    ];
-    for (const m of realModels) upsert.run(...m);
-
-    // Ensure single default per category
-    db.exec(`UPDATE model_config SET is_default = 0 WHERE category = 'text'`);
-    db.exec(`UPDATE model_config SET is_default = 1 WHERE id = 'Gemini 3.6 Flash'`);
-    db.exec(`UPDATE model_config SET is_default = 0 WHERE category = 'image'`);
-    db.exec(`UPDATE model_config SET is_default = 1 WHERE id = 'GPT Image 1'`);
-    db.exec(`UPDATE model_config SET is_default = 0 WHERE category = 'video'`);
-    db.exec(`UPDATE model_config SET is_default = 1 WHERE id = 'Seedance 2.0 Fast'`);
-  } catch (err) {
-    console.warn('[db] real-models migration skipped:', err);
-  }
-
   // Backfill empty model API keys / base URLs from 云雾 env (docs/云雾.txt + .env)
   // Gateway already falls back at runtime; this makes 模型中心 UI reflect real routing.
+  // 只填充空值，绝不覆盖管理员已保存的配置；目录对齐本身只发生在 migration 18。
   try {
     const yunwuKey = process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
     const yunwuBase = (process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1').replace(/\/$/, '');

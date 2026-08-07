@@ -9,7 +9,7 @@ export interface Step1Inputs {
   viralReason: string;
   /** 多模态视觉拆解用文本模型（默认 Gemini 3.6 Flash） */
   textModel?: string;
-  /** 文生图模型（默认 GPT Image 1） */
+  /** 文生图模型（默认 GPT Image 2） */
   imageModel?: string;
 }
 
@@ -85,7 +85,7 @@ export interface Step2Inputs {
   videoModel?: string;
   /** 运镜 Prompt 生成用文本模型（默认 Gemini 3.6 Flash） */
   textModel?: string;
-  /** 生图模型（默认 GPT Image 1 / 云雾） */
+  /** 生图模型（默认 GPT Image 2 / 云雾） */
   imageModel?: string;
   /** 工作模式：text2image (AI 文生图素材集模式) | direct_image (已有首帧图/Step1 模式) */
   tabMode?: 'text2image' | 'direct_image';

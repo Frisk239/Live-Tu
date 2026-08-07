@@ -42,16 +42,20 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
   const [localConfig, setLocalConfig] = useState<ModelConfigState>(config);
   const [activeTab, setActiveTab] = useState<'text' | 'image' | 'video'>('text');
   const [saveSuccess, setSaveSuccess] = useState(false);
+  // S0 三态：加载失败显式提示 + 重试，绝不静默空态
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const reloadModelsFromApi = async () => {
+    setLoadError(null);
     try {
       const fresh = await apiService.models.fetchModels();
       if (fresh && (fresh.textModels?.length || fresh.imageModels?.length || fresh.videoModels?.length)) {
         setLocalConfig(fresh);
         onSaveConfig(fresh);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.warn('[ModelsPageView] fetchModels failed:', err);
+      setLoadError(err?.message || '读取模型配置失败（后端不可用）');
     }
   };
 
@@ -251,6 +255,21 @@ export const ModelsPageView: React.FC<ModelsPageViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* S0 三态：模型配置加载失败必须显式提示 + 重试 */}
+      {loadError && (
+        <div className="p-4 rounded-2xl bg-red-50 border border-red-200/80 flex flex-wrap items-center gap-3 text-sm text-red-700">
+          <Activity className="w-4 h-4 shrink-0" />
+          <span className="font-semibold">模型配置加载失败（后端可能不可用）</span>
+          <span className="text-xs text-red-600">{loadError}</span>
+          <button
+            onClick={() => void reloadModelsFromApi()}
+            className="ml-auto rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold px-3 py-1.5 transition-colors cursor-pointer"
+          >
+            重试加载
+          </button>
+        </div>
+      )}
+
       {/* Header Banner */}
       <div className="p-6 rounded-2xl bg-white border border-slate-200/80 shadow-2xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="flex items-center gap-4">

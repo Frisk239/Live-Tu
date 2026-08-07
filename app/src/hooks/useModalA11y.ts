@@ -8,6 +8,11 @@ export function useModalA11y<T extends HTMLElement>(
   onClose: () => void
 ) {
   const dialogRef = useRef<T>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -19,7 +24,7 @@ export function useModalA11y<T extends HTMLElement>(
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab' || !dialog) return;
@@ -49,7 +54,7 @@ export function useModalA11y<T extends HTMLElement>(
       document.body.style.overflow = previousOverflow;
       queueMicrotask(() => previouslyFocused?.focus());
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   return dialogRef;
 }

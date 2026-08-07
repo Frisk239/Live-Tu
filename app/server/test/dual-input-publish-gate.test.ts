@@ -376,3 +376,118 @@ test('POST/GET product assets API attaches and lists assets', async () => {
   const listed = listProductAssets(productId);
   assert.ok(listed.length >= 1);
 });
+
+test('S0 provenance: product_conditioned claim requires real first-frame evidence URL', async () => {
+  const { resolveFirstFrameSource } = await import('../lib/publish-gate');
+  // 有证据：声明保留（step2 输出携带 productHeroFrameUrl / firstFrameEvidenceUrl）
+  assert.equal(
+    resolveFirstFrameSource('product_conditioned', ['/uploads/product-assets/hero.jpg']),
+    'product_conditioned'
+  );
+  // 无证据：声明降级为 undefined（例如直接拿爆款原片渲染，门禁不得给假确定性加分）
+  assert.equal(resolveFirstFrameSource('product_conditioned', [undefined, null, '']), undefined);
+  assert.equal(resolveFirstFrameSource('product_conditioned', []), undefined);
+  // 非 product_conditioned 声明原样透传
+  assert.equal(resolveFirstFrameSource('viral_keyframe', ['/x.jpg']), 'viral_keyframe');
+  assert.equal(resolveFirstFrameSource(undefined, ['/x.jpg']), undefined);
+
+  // 门禁侧联动：无证据的降级走 warning（first_frame_source_unspecified），不硬失败
+  const report = evaluatePublishGate({
+    videoUrl: '/uploads/renders/final.mp4',
+    source: 'ffmpeg',
+    durationSec: 15,
+    resolution: '1080x1920',
+    firstFrameSource: resolveFirstFrameSource('product_conditioned', []),
+    allowMockFallback: false,
+  });
+  assert.ok(report.warnings.includes('first_frame_source_unspecified'));
+  assert.equal(report.scores.productIdentity, 0.55, '无证据时不得拿到 product_conditioned 的 0.85');
+});
+
+// ---------- viral_recreation_v2 模式 ----------
+
+test('orchestrator: viral_recreation_v2 模式识别 + 双输入强制', async () => {
+  const { isViralRecreationV2Mode, isViralDirectOutMode } = await import('../lib/pipeline-orchestrator');
+
+  // 模式识别：directOutMode / pipelineData 两处都能识别
+  assert.equal(
+    isViralRecreationV2Mode({
+      ownerId: 'admin-dual',
+      idempotencyKey: 'v2-k1',
+      directOutMode: 'viral_recreation_v2',
+      pipelineData: {},
+    }),
+    true
+  );
+  assert.equal(
+    isViralRecreationV2Mode({
+      ownerId: 'admin-dual',
+      idempotencyKey: 'v2-k2',
+      pipelineData: { mode: 'viral_recreation_v2' },
+    }),
+    true
+  );
+  // 旧模式不受影响
+  assert.equal(
+    isViralRecreationV2Mode({
+      ownerId: 'admin-dual',
+      idempotencyKey: 'v2-k3',
+      directOutMode: 'viral',
+      pipelineData: {},
+    }),
+    false
+  );
+  // viral_recreation_v2 属于直出模式家族（双输入强制生效）
+  assert.equal(
+    isViralDirectOutMode({
+      ownerId: 'admin-dual',
+      idempotencyKey: 'v2-k4',
+      directOutMode: 'viral_recreation_v2',
+      pipelineData: {},
+    }),
+    true
+  );
+
+  // 双输入强制：缺产品图 → MISSING_PRODUCT_ASSETS
+  db.prepare('DELETE FROM product_assets WHERE product_id = ?').run('prod_buv_cleanser');
+  db.prepare('UPDATE products SET cover_image = NULL WHERE id = ?').run('prod_buv_cleanser');
+  assert.throws(
+    () =>
+      assertViralDualInput({
+        ownerId: 'admin-dual',
+        idempotencyKey: 'v2-k5',
+        productId: 'prod_buv_cleanser',
+        directOutMode: 'viral_recreation_v2',
+        pipelineData: {
+          directOutMode: 'viral_recreation_v2',
+          step1: { inputs: { mediaUrl: 'https://example.com/viral-ref.mp4' } },
+        },
+      }),
+    (err: any) => err?.code === 'MISSING_PRODUCT_ASSETS' || /产品图/.test(String(err?.message))
+  );
+  // 缺爆款素材 → MISSING_VIRAL_MEDIA（需先有产品资产，否则先触发 MISSING_PRODUCT_ASSETS）
+  insertProductAsset({
+    id: 'pa_v2_test',
+    productId: 'prod_buv_cleanser',
+    role: 'hero',
+    url: '/uploads/product-assets/v2_test.png',
+    filePath: 'uploads/product-assets/v2_test.png',
+    sortOrder: 0,
+    ownerId: 'admin-dual',
+  });
+  assert.throws(
+    () =>
+      assertViralDualInput({
+        ownerId: 'admin-dual',
+        idempotencyKey: 'v2-k6',
+        productId: 'prod_buv_cleanser',
+        productAssetIds: ['pa_v2_test'],
+        directOutMode: 'viral_recreation_v2',
+        pipelineData: {
+          directOutMode: 'viral_recreation_v2',
+          step1: { inputs: {} },
+        },
+      }),
+    (err: any) => err?.code === 'MISSING_VIRAL_MEDIA' || /爆款素材/.test(String(err?.message))
+  );
+});

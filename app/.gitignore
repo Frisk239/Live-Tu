@@ -4,6 +4,24 @@ dist/
 coverage/
 .DS_Store
 *.log
-.env*
+
+# Environment files (secrets — never commit real .env)
+.env
+.env.*
 !.env.example
-!deploy/.env.demo.example
+deploy/.env.*
+!deploy/.env.*.example
+
+# Runtime data (SQLite DB, uploads, backups)
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Playwright test artifacts
+.playwright-cli/
+playwright-report/
+test-results/
+
+# Scratch/temp
+scratch/

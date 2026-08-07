@@ -68,7 +68,7 @@ const ONBOARDING_STEPS = [
       '侧边栏导航为你提供了完善的专业辅助矩阵，提升创作效率与控制粒度：',
     highlights: [
       { icon: Layers, label: '爆款预设模版库', desc: '内置美妆护肤、数码测评、美食探店等热门短视频爆款模板' },
-      { icon: Cpu, label: 'AI 模型配置中心', desc: '默认 Gemini 3.6 Flash + GPT Image 1，云雾网关极速响应' },
+      { icon: Cpu, label: 'AI 模型配置中心', desc: '默认 Gemini 3.6 Flash + GPT Image 2，云雾网关极速响应' },
       { icon: Film, label: '素材管理与后台任务', desc: '管理上传的素材库与后台高并发全自动 AI 贯通任务' },
     ],
   },

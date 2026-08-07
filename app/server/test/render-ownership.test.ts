@@ -16,6 +16,7 @@ databaseModule.initDatabase();
 const { db } = databaseModule;
 const { renderRouter } = await import('../routes/render.ts');
 const { pipelineRouter } = await import('../routes/pipeline.ts');
+const { registerOwnedMedia } = await import('../lib/media-ownership.ts');
 
 db.prepare(
   `INSERT INTO users (id, username, password_hash, role)
@@ -84,4 +85,76 @@ test('pipeline step5 refuses another tenant local upload', async () => {
     }),
   });
   assert.equal(response.status, 403);
+});
+
+test('concat accepts an owned generated render instead of requiring a materials row', async () => {
+  const sessionId = `owned-render-concat-${Date.now()}`;
+  const shotId = `owned-render-shot-${Date.now()}`;
+  const generatedUrl = '/uploads/renders/owner-a-generated-only.mp4';
+  const generatedPath = path.join(process.env.UPLOADS_DIR!, 'renders', 'owner-a-generated-only.mp4');
+  fs.mkdirSync(path.dirname(generatedPath), { recursive: true });
+  // The file is deliberately not a playable MP4: after ownership passes, the
+  // renderer should fail with 500 rather than rejecting it as another user's
+  // media. This isolates the authorization branch without a FFmpeg fixture.
+  fs.writeFileSync(generatedPath, Buffer.alloc(128, 1));
+  registerOwnedMedia(generatedUrl, 'owner-a', 'seedance-cache');
+
+  db.prepare(
+    `INSERT INTO shot_generation_tasks
+       (id, session_id, owner_id, shot_index, status, video_url, qa_status, current_version)
+     VALUES (?, ?, 'owner-a', 1, 'completed', ?, 'pass', 1)`
+  ).run(shotId, sessionId, generatedUrl);
+  db.prepare(
+    `INSERT INTO shot_qa_reports
+       (id, shot_id, run_id, version, owner_id, report_json, tech_status, semantic_status, overall_verdict, manual_passed, checked_at)
+     VALUES (?, ?, ?, 1, 'owner-a', '{}', 'verified', 'pass', 'pass', 0, ?)`
+  ).run(`qa-${shotId}`, shotId, sessionId, Date.now());
+
+  const response = await fetch(`${baseUrl}/pipeline/concat-shots`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-test-user': 'owner-a' },
+    body: JSON.stringify({ sessionId, videoUrls: [generatedUrl] }),
+  });
+
+  assert.equal(response.status, 500, 'ownership passes; invalid fixture then fails in FFmpeg, not at 403');
+});
+
+test('quality concat rejects a malformed full-video plan before any render work', async () => {
+  const response = await fetch(`${baseUrl}/pipeline/concat-shots`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-test-user': 'owner-a' },
+    body: JSON.stringify({
+      sessionId: `malformed-plan-${Date.now()}`,
+      fullVideoPlan: { version: 'v1', shots: [] },
+    }),
+  });
+  const body = await response.json();
+  assert.equal(response.status, 400, JSON.stringify(body));
+  assert.equal(body.code, 'full_video_plan_invalid');
+});
+
+test('shot-task polling never performs hidden QA, retries, or concat rendering', async () => {
+  const sessionId = `read-only-poll-${Date.now()}`;
+  const shotId = `read-only-shot-${Date.now()}`;
+  db.prepare(
+    `INSERT INTO shot_generation_tasks
+       (id, session_id, owner_id, shot_index, status, video_url, qa_status, concat_status, current_version)
+     VALUES (?, ?, 'owner-a', 1, 'completed', '/uploads/renders/not-rendered.mp4', 'passed', 'pending', 1)`
+  ).run(shotId, sessionId);
+
+  const response = await fetch(`${baseUrl}/pipeline/shot-tasks/${sessionId}`, {
+    headers: { 'x-test-user': 'owner-a' },
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(body));
+  assert.equal(body.data.concatStatus, 'pending');
+  assert.equal(body.data.concatenatedVideoUrl, undefined);
+
+  const row = db.prepare(
+    'SELECT status, qa_status, concat_status, concatenated_video_url FROM shot_generation_tasks WHERE id = ?'
+  ).get(shotId) as any;
+  assert.equal(row.status, 'completed');
+  assert.equal(row.qa_status, 'passed');
+  assert.equal(row.concat_status, 'pending');
+  assert.equal(row.concatenated_video_url, null);
 });

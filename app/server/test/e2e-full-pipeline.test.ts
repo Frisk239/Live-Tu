@@ -5,6 +5,7 @@ import { productsRouter } from '../routes/products';
 import { materialsRouter } from '../routes/materials';
 import { bgmRouter } from '../routes/bgm';
 import { modelsRouter } from '../routes/models';
+import { authStub, hasGatewayKey } from './_helpers';
 
 async function runE2EFullPipelineTest() {
   console.log('===========================================================');
@@ -15,8 +16,16 @@ async function runE2EFullPipelineTest() {
   initDatabase();
   console.log('✓ [DB] SQLite 数据库连接及初始数据表结构验证通过');
 
+  // Step 1–4 需要真实 LLM Key；CI 无 Key 时干净跳过（本地开发配置 YUNWU_API_KEY 后自动恢复）
+  if (!hasGatewayKey()) {
+    console.log('SKIPPED: 未配置 YUNWU_API_KEY/GEMINI_API_KEY，跳过需要真实 LLM 的端到端链路');
+    return;
+  }
+
   const app = express();
   app.use(express.json());
+  // 路由依赖 req.authUser（权限/归属过滤），测试以管理员身份挂载
+  app.use(authStub);
   app.use('/api/pipeline', pipelineRouter);
   app.use('/api/products', productsRouter);
   app.use('/api/materials', materialsRouter);
@@ -33,9 +42,9 @@ async function runE2EFullPipelineTest() {
     console.log('\n--- 1. 验证品牌卖点库 (Products) ---');
     const resProducts = await fetch(`${baseUrl}/api/products`);
     const jsonProducts = await resProducts.json();
-    console.assert(jsonProducts.success === true, 'Products API GET failed');
+    if (!(jsonProducts.success === true)) throw new Error('Products API GET failed');
     const activeProduct = jsonProducts.data.find((p: any) => p.id === 'prod_buv_cleanser');
-    console.assert(Boolean(activeProduct), 'BUV 小绿泥默认产品缺失');
+    if (!(Boolean(activeProduct))) throw new Error('BUV 小绿泥默认产品缺失');
     console.log(`✓ 默认产品: "${activeProduct.name}" (${activeProduct.positioning})`);
 
     // ---------------------------------------------------------
@@ -44,7 +53,7 @@ async function runE2EFullPipelineTest() {
     console.log('\n--- 2. 验证素材库 (Materials) ---');
     const resMaterials = await fetch(`${baseUrl}/api/materials`);
     const jsonMaterials = await resMaterials.json();
-    console.assert(jsonMaterials.success === true, 'Materials API GET failed');
+    if (!(jsonMaterials.success === true)) throw new Error('Materials API GET failed');
     console.log(`✓ 当前素材库记录数: ${jsonMaterials.data.length}`);
 
     // ---------------------------------------------------------
@@ -53,8 +62,8 @@ async function runE2EFullPipelineTest() {
     console.log('\n--- 3. 验证 BGM 库 (BGM Library) ---');
     const resBgm = await fetch(`${baseUrl}/api/bgm`);
     const jsonBgm = await resBgm.json();
-    console.assert(jsonBgm.success === true, 'BGM API GET failed');
-    console.assert(jsonBgm.data.length >= 4, 'BGM 预置数据缺失');
+    if (!(jsonBgm.success === true)) throw new Error('BGM API GET failed');
+    if (!(jsonBgm.data.length >= 4)) throw new Error('BGM 预置数据缺失');
     console.log(`✓ 预置 BGM 乐库曲目数: ${jsonBgm.data.length}`);
 
     // ---------------------------------------------------------
@@ -63,7 +72,7 @@ async function runE2EFullPipelineTest() {
     console.log('\n--- 4. 验证 AI 模型配置网关 (Models Config) ---');
     const resModels = await fetch(`${baseUrl}/api/models/config`);
     const jsonModels = await resModels.json();
-    console.assert(jsonModels.success === true, 'Models Config GET failed');
+    if (!(jsonModels.success === true)) throw new Error('Models Config GET failed');
     const totalModels = jsonModels.textModels.length + jsonModels.imageModels.length + jsonModels.videoModels.length;
     console.log(`✓ 可用 AI 模型配置数: ${totalModels} (文本: ${jsonModels.textModels.length}, 图像: ${jsonModels.imageModels.length}, 视频: ${jsonModels.videoModels.length})`);
 
@@ -87,9 +96,9 @@ async function runE2EFullPipelineTest() {
       }),
     });
     const jsonStep1 = await resStep1.json();
-    console.assert(jsonStep1.success === true, 'Step 1 执行失败');
+    if (!(jsonStep1.success === true)) throw new Error('Step 1 执行失败');
     const step1Data = jsonStep1.data;
-    console.assert(Boolean(step1Data.static_image_prompt), 'Step 1 static_image_prompt 缺失');
+    if (!(Boolean(step1Data.static_image_prompt))) throw new Error('Step 1 static_image_prompt 缺失');
     console.log(`✓ Step 1 产出静态图 Prompt: "${step1Data.static_image_prompt.substring(0, 60)}..."`);
     console.log(`✓ Step 1 视觉归因说明: "${step1Data.rationale.substring(0, 50)}..."`);
 
@@ -109,9 +118,9 @@ async function runE2EFullPipelineTest() {
       }),
     });
     const jsonStep2 = await resStep2.json();
-    console.assert(jsonStep2.success === true, 'Step 2 执行失败');
+    if (!(jsonStep2.success === true)) throw new Error('Step 2 执行失败');
     const step2Data = jsonStep2.data;
-    console.assert(Boolean(step2Data.video_prompt), 'Step 2 video_prompt 缺失');
+    if (!(Boolean(step2Data.video_prompt))) throw new Error('Step 2 video_prompt 缺失');
     console.log(`✓ Step 2 运镜类型: [${step2Data.motion_type}] (${step2Data.motion_intensity})`);
     console.log(`✓ Step 2 视频 Prompt: "${step2Data.video_prompt.substring(0, 60)}..."`);
 
@@ -130,10 +139,10 @@ async function runE2EFullPipelineTest() {
       }),
     });
     const jsonStep3 = await resStep3.json();
-    console.assert(jsonStep3.success === true, 'Step 3 执行失败');
+    if (!(jsonStep3.success === true)) throw new Error('Step 3 执行失败');
     const step3Data = jsonStep3.data;
-    console.assert(Boolean(step3Data.title), 'Step 3 title 缺失');
-    console.assert(Boolean(step3Data.body), 'Step 3 body 缺失');
+    if (!(Boolean(step3Data.title))) throw new Error('Step 3 title 缺失');
+    if (!(Boolean(step3Data.body))) throw new Error('Step 3 body 缺失');
     console.log(`✓ Step 3 爆款标题: "${step3Data.title}"`);
     console.log(`✓ Step 3 前置 3s 钩子: "${step3Data.hook}"`);
     if (step3Data.warnings && step3Data.warnings.length > 0) {
@@ -157,10 +166,10 @@ async function runE2EFullPipelineTest() {
       }),
     });
     const jsonStep4 = await resStep4.json();
-    console.assert(jsonStep4.success === true, 'Step 4 执行失败');
+    if (!(jsonStep4.success === true)) throw new Error('Step 4 执行失败');
     const step4Data = jsonStep4.data;
     const bgmRec = step4Data.bgm_recommendation;
-    console.assert(Boolean(bgmRec.track_name), 'Step 4 track_name 缺失');
+    if (!(Boolean(bgmRec.track_name))) throw new Error('Step 4 track_name 缺失');
     console.log(`✓ Step 4 匹配曲目: "${bgmRec.track_name}" (${bgmRec.bpm} BPM)`);
     console.log(`✓ Step 4 卡点推荐秒数: "${bgmRec.sync_point}"`);
 
@@ -177,9 +186,9 @@ async function runE2EFullPipelineTest() {
       }),
     });
     const jsonStep5 = await resStep5.json();
-    console.assert(jsonStep5.success === true, 'Step 5 执行失败');
+    if (!(jsonStep5.success === true)) throw new Error('Step 5 执行失败');
     const step5Data = jsonStep5.data;
-    console.assert(Boolean(step5Data.output?.filename), 'Step 5 filename 缺失');
+    if (!(Boolean(step5Data.output?.filename))) throw new Error('Step 5 filename 缺失');
     console.log(`✓ Step 5 目标视频输出配置: ${step5Data.output.resolution} (${step5Data.output.format}) -> ${step5Data.output.filename}`);
 
     console.log('\n===========================================================');

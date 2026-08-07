@@ -1,0 +1,32 @@
+# Demo 全量部署镜像（含数据库 + 素材 + 凭据）
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+COPY package.json bun.lock ./
+# 兼容 npm（服务器无需 bun）
+RUN npm install --legacy-peer-deps
+COPY . .
+RUN npm run build
+
+FROM node:24-bookworm-slim AS runtime
+ENV NODE_ENV=production
+ENV PORT=3004
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg curl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN npm install --legacy-peer-deps --omit=dev && npm cache clean --force
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/assets/bgm ./assets/bgm
+
+# 全量打包：数据库 + 素材（demo 演示用）
+COPY data/pipeline.db /var/lib/live-tu/data/pipeline.db
+COPY uploads /var/lib/live-tu/uploads
+
+RUN mkdir -p /var/lib/live-tu/data /var/lib/live-tu/uploads /var/lib/live-tu/backups \
+    && chown -R node:node /app /var/lib/live-tu
+USER node
+EXPOSE 3004
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD ["node", "-e", "fetch(`http://127.0.0.1:${process.env.PORT || 3004}/api/ready`).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+CMD ["node", "dist/server.js"]

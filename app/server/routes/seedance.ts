@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createSignedMediaUrl } from '../lib/signed-media';
 import { cacheRemoteMedia } from './render';
 import { registerOwnedMedia } from '../lib/media-ownership';
+import { getVideoSubmissionPort } from '../lib/video-submission-port';
 import {
   canAccessSeedanceTask,
   registerSeedanceTaskOwner,
@@ -424,10 +425,13 @@ export function buildSeedanceGenerationBody(input: SeedanceCreateInput, requestB
     for (const m of input.materials) {
       const resolved = resolvePublicMediaUrl(m.url, requestBaseUrl);
       if (resolved.url) {
+        const kind = m.kind || 'image';
+        // 星河契约：role 仅对图片素材有效（reference_image / first_frame / last_frame）；
+        // video/audio 素材不携带图片角色，避免把视频错标成 first_frame
         materials.push({
           url: resolved.url,
-          kind: m.kind || 'image',
-          role: m.role || 'first_frame',
+          kind,
+          ...(kind === 'image' ? { role: m.role || 'first_frame' } : {}),
           label: m.label || 'reference',
         });
       } else if (resolved.warning) {
@@ -791,19 +795,55 @@ seedanceRouter.post('/generations', async (req, res) => {
   }
 
   try {
-    const { task, provider, fallbackUsed } = await submitSeedanceVideoWithFallback(req.body);
-    const ownerId = req.authUser?.id || String(req.body?._ownerId || '');
-    if (task.id) {
-      if (!ownerId) {
+    // P5 二轮审查修复（P0-1）：本路由不再原样转发 req.body——任意 materials /
+    // 预构建 body 一律拒绝。只接受受信参数（shotId + 受信资产 ID），
+    // 由 submitCheckedShot 在付费边界按 owner + URL 查库复核 provenance。
+    const ownerId = req.authUser?.id;
+    if (!ownerId) {
+      return res.status(401).json({ success: false, error: 'Seedance 提交需要已登录用户' });
+    }
+    const { shotId, sessionId, modelCode, attempt, _ownerId } = (req.body ?? {}) as Record<string, any>;
+    if (_ownerId && String(_ownerId) !== ownerId) {
+      return res.status(403).json({ success: false, error: '_ownerId 与登录用户不一致，拒绝提交' });
+    }
+    // 硬性拒绝：任何「直接素材提交」字段都不得出现（materials/预构建 body/prompt 直传）
+    const forbiddenFields = ['materials', 'params', 'imageUrl', 'targetImageUrl'];
+    for (const field of forbiddenFields) {
+      if (req.body && field in req.body) {
         return res.status(400).json({
           success: false,
-          error: 'Seedance task owner is required',
+          error: `拒绝直接素材提交：请求包含 ${field} 字段。请使用工作流（shotId/sessionId）提交，素材来源由服务端核验`,
         });
       }
-      registerSeedanceTaskOwner(String(task.id), ownerId, 'direct');
     }
-    return res.json({ success: true, data: task, source: fallbackUsed ? 'yunshu-fallback' : 'seedance-relay' });
+    if (typeof shotId !== 'string' || typeof sessionId !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: '拒绝任意 body 提交：必须携带 shotId + sessionId（受信提交，素材来源由服务端核验）',
+      });
+    }
+    const { submitCheckedShot } = await import('../lib/submit-checked-shot');
+    const port = getVideoSubmissionPort();
+    const result = await submitCheckedShot(port, {
+      ownerId,
+      sessionId,
+      shotId,
+      modelCode: typeof modelCode === 'string' ? modelCode : undefined,
+      attempt: Number.isInteger(attempt) ? Number(attempt) : undefined,
+    });
+    return res.json({ success: true, data: result.task, source: 'checked-submit' });
   } catch (err: any) {
+    if (
+      err?.code === 'asset_publication_unavailable' ||
+      err?.name === 'ReferencePolicyViolationError' ||
+      err?.code === 'asset_safety_not_passed' ||
+      err?.name === 'VisualSafetyViolationError'
+    ) {
+      return res.status(422).json({ success: false, code: err.code, error: err.message });
+    }
+    if (err?.name === 'SubmitConflictError' || err?.code === 'submit_conflict') {
+      return res.status(409).json({ success: false, code: err.code, error: err.message });
+    }
     return res.status(err.status || 502).json({ success: false, error: err.message });
   }
 });

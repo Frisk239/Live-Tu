@@ -2,6 +2,12 @@ import { Router } from 'express';
 import { db } from '../lib/db';
 import { callLlmGateway, callImageGenerationGateway } from '../lib/llm-gateway';
 import {
+  assertPublishableVideoContext,
+  isTrustedFirstFrameEvidence,
+  registerGeneratedMedia,
+} from '../lib/publish-context';
+import { resolveFirstFrameSource } from '../lib/publish-gate';
+import {
   Step1OutputSchema,
   Step2OutputSchema,
   Step3OutputSchema,
@@ -26,27 +32,118 @@ import {
   hasSeedanceConfig,
   buildSeedanceGenerationBody,
   preflightMediaUrl,
-  submitSeedanceVideoWithFallback,
 } from './seedance';
-import { cacheRemoteMedia, runFfmpegRender } from './render';
-import { cacheRemoteVideoToUploads } from './seedance';
+import { cacheRemoteMedia, runFfmpegRender, resolveMediaPath } from './render';
+import { publishLocalAsset } from '../lib/asset-publisher';
+import { internalWorkerHeaders } from '../lib/auth';
 import { qaShotVideo } from '../lib/shot-qa';
 import { buildShotMigrationPlan, type ProductAssetRef } from '../lib/migration-plan';
 import { resolveRunProductAssets } from '../lib/product-assets';
 import { evaluatePublishGate } from '../lib/publish-gate';
+import { evaluateFinalCompositeGate } from '../lib/final-composite-gate';
+import {
+  ensureShotFirstFrame,
+  persistShotFirstFrame,
+  markShotFirstFrameBlocked,
+  ShotFirstFrameError,
+  resolveTrustedAssetKind,
+} from '../lib/shot-first-frame';
+import { resolvePublicMediaUrl } from './seedance';
+import { getVideoSubmissionPort } from '../lib/video-submission-port';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { canUseMediaReference } from '../lib/media-ownership';
 import { registerSeedanceTaskOwner } from '../lib/seedance-ownership';
+import { recordCostEntry, updateShotCostOutcome } from '../lib/telemetry';
+import { DEFAULT_PROMPT_VERSION, type CostEntry } from '../../shared/cost-ledger';
+import { currentGitCommit } from '../lib/golden-eval';
+import { type FullVideoPlan, validateFullVideoPlan } from '../lib/full-video-plan';
 
 export const pipelineRouter = Router();
+
+/**
+ * The quality timeline is optional for legacy concat callers, but when it is
+ * supplied it must be a complete, server-validated 6-8 shot plan.  Keep this
+ * parsing at the route seam; the renderer only receives a trusted plan.
+ */
+function parseRequestedFullVideoPlan(value: unknown): { plan?: FullVideoPlan; error?: string } {
+  if (value === undefined || value === null) return {};
+  if (!value || typeof value !== 'object' || !Array.isArray((value as any).shots) || !Array.isArray((value as any).beats)) {
+    return { error: 'fullVideoPlan 必须是包含 shots 与 beats 的完整计划对象' };
+  }
+  try {
+    const plan = value as FullVideoPlan;
+    const errors = validateFullVideoPlan(plan);
+    return errors.length > 0
+      ? { error: `fullVideoPlan 未通过质量契约: ${errors.join('; ')}` }
+      : { plan };
+  } catch (error: any) {
+    return { error: `fullVideoPlan 解析失败: ${error?.message || String(error)}` };
+  }
+}
+
+/** S1 生产成本账本：构造一条账目并落库（失败仅告警，不影响主流程） */
+function recordPipelineCost(
+  partial: Partial<CostEntry> & { id: string; scope: CostEntry['scope']; provider: string; model: string },
+  ownerId: string
+): void {
+  try {
+    const entry: CostEntry = {
+      id: partial.id,
+      scope: partial.scope,
+      runId: partial.runId,
+      sampleId: partial.sampleId,
+      shotId: partial.shotId,
+      provider: partial.provider,
+      model: partial.model,
+      modelVersion: partial.modelVersion ?? partial.model,
+      seed: partial.seed ?? null,
+      promptVersion: partial.promptVersion ?? DEFAULT_PROMPT_VERSION,
+      queueMs: partial.queueMs ?? 'unknown',
+      generationMs: partial.generationMs ?? 'unknown',
+      retries: partial.retries ?? 0,
+      failureReason: partial.failureReason ?? null,
+      billing: partial.billing ?? [],
+      estimatedUsd: partial.estimatedUsd ?? 'unknown',
+      actualUsd: partial.actualUsd ?? 'unknown',
+      currency: 'USD',
+      source: partial.source ?? 'ledger',
+      manualChoice: partial.manualChoice ?? null,
+      scorecardVersion: partial.scorecardVersion ?? 'v1.0.0',
+      pipelineVersion: partial.pipelineVersion ?? 'v1.0.0',
+      gitCommit: partial.gitCommit ?? currentGitCommit(),
+      recordedAt: partial.recordedAt ?? Date.now(),
+    };
+    recordCostEntry(entry, ownerId);
+  } catch (error: any) {
+    console.warn(`[cost-ledger] 记录失败（不影响主流程）: ${String(error?.message || error).slice(0, 100)}`);
+  }
+}
+
+function elapsedSinceSqliteTimestamp(value: unknown): number {
+  if (typeof value !== 'string' || !value) return 0;
+  const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`;
+  const startedAt = Date.parse(normalized);
+  return Number.isFinite(startedAt) ? Math.max(0, Date.now() - startedAt) : 0;
+}
 
 function canAccessLocalPipelineMedia(req: any, mediaUrl: string, ownerId?: string): boolean {
   if (!mediaUrl.startsWith('/uploads/') && !mediaUrl.startsWith('uploads/')) return true;
   const normalized = mediaUrl.startsWith('/') ? mediaUrl : `/${mediaUrl}`;
   const effectiveOwnerId = req.authUser?.id || ownerId;
   if (!effectiveOwnerId && !req.authUser?.role) return false;
+  // Generated/cached renders are registered in media_ownership instead of materials.
+  // Use the shared ownership evaluator first so concat accepts a user's own
+  // Seedance cache while keeping the same cross-user and path-safety checks as
+  // every other media-consuming endpoint.
+  if (effectiveOwnerId && canUseMediaReference(
+    normalized,
+    effectiveOwnerId,
+    req.authUser?.role === 'admin'
+  )) {
+    return true;
+  }
   const ownerClause = req.authUser?.role === 'admin' ? '' : 'AND materials.owner_id = ?';
   const params = req.authUser?.role === 'admin'
     ? [normalized, normalized]
@@ -516,6 +613,8 @@ ${HARNESS_CONSTRAINTS.SELF_CRITIQUE}
           ...hRes.data,
           migrationPlan,
           productHeroFrameUrl: migrationPlan?.productHeroUrl,
+          // S0 provenance：声明 product_conditioned 时携带实际首帧证据 URL
+          firstFrameEvidenceUrl: migrationPlan?.productHeroUrl,
           firstFrameSource: migrationPlan ? 'product_conditioned' : undefined,
         },
         source: hRes.source,
@@ -614,7 +713,17 @@ pipelineRouter.post('/step2', async (req, res) => {
     productFirstFrameUrl: inputProductFirstFrame,
     firstFrameSource: inputFirstFrameSource,
     viralMediaUrl,
+    // S3 一级输入：爆款参考视频 + 系统自动提取的参考关键帧（用户不提供首帧）
+    referenceVideoUrl: inputReferenceVideoUrl,
+    referenceKeyframes: inputReferenceKeyframes,
   } = inputs;
+  const referenceVideoUrl =
+    inputReferenceVideoUrl || viralMediaUrl || pipelineData?.step1?.inputs?.mediaUrl || '';
+  const referenceKeyframes: string[] = Array.isArray(inputReferenceKeyframes)
+    ? inputReferenceKeyframes
+    : (pipelineData?.step1?.output?.shotList || [])
+        .map((s: any) => s.keyframeUrl)
+        .filter(Boolean);
 
   const productAssets: ProductAssetRef[] =
     (Array.isArray(inputProductAssets) && inputProductAssets.length > 0
@@ -669,7 +778,8 @@ pipelineRouter.post('/step2', async (req, res) => {
     rawTarget &&
     (rawTarget === viralUrl ||
       (String(rawTarget).includes('/keyframes/') && productHeroUrl));
-  const targetImageUrl = productHeroUrl || (!looksLikeViral ? rawTarget : '') || productHeroUrl;
+  // 用户显式选择的首帧图（rawTarget/imageUrl）优先于产品资产表的旧图（productHeroUrl）
+  const targetImageUrl = (!looksLikeViral && rawTarget) ? rawTarget : (productHeroUrl || '');
   const firstFrameSource =
     inputFirstFrameSource ||
     (productHeroUrl || (targetImageUrl && productAssets.some((a) => a.url === targetImageUrl))
@@ -689,6 +799,15 @@ pipelineRouter.post('/step2', async (req, res) => {
   }
   const product = getProductContext(productId, productInfo);
   const motionLlmId = textModel || 'Gemini 3.6 Flash';
+  // viral_recreation_v2 模式：step2 传入的 directOutMode 声明（与 orchestrator 同源）。
+  // 该模式允许虚构人物（P0 实测中转风控拦截 UGC 帧素材，纯生成虚构人物可过），
+  // 但文字层/竞品仍禁止——prompt 约束按模式分支，替代旧「无人物安全代理」约束。
+  const step2ViralV2 =
+    inputs.directOutMode === 'viral_recreation_v2' ||
+    pipelineData?.directOutMode === 'viral_recreation_v2' ||
+    pipelineData?.mode === 'viral_recreation_v2' ||
+    req.body.directOutMode === 'viral_recreation_v2' ||
+    req.body.pipelineData?.directOutMode === 'viral_recreation_v2';
 
   // ------------------ 多镜头分段生成分支 ------------------
   if (Array.isArray(targetShotList) && targetShotList.length > 0) {
@@ -697,7 +816,6 @@ pipelineRouter.post('/step2', async (req, res) => {
     const modelId = String(videoModel || '').includes('Fast')
       ? 'doubao-seedance-2-0-fast'
       : 'doubao-seedance-2-0';
-    const reqHost = `${req.protocol}://${req.get('host')}`;
 
     const shotTasks: Array<{
       id: string;
@@ -707,7 +825,11 @@ pipelineRouter.post('/step2', async (req, res) => {
       description: string;
       keyframeUrl: string;
       referenceKeyframeUrl?: string;
+      referenceVideoUrl?: string;
       firstFrameSource: string;
+      /** S0 provenance：实际用作 Seedance 首帧的产品图证据 URL */
+      firstFrameEvidenceUrl?: string;
+      derivedFirstFrameUrl?: string;
       video_prompt: string;
       seedanceTaskId?: string;
       status: 'pending' | 'generating' | 'completed' | 'failed';
@@ -718,15 +840,12 @@ pipelineRouter.post('/step2', async (req, res) => {
     for (let idx = 0; idx < targetShotList.length; idx++) {
       const shot = targetShotList[idx];
       const shotIndex = shot.shotIndex || (idx + 1);
-      // Product-conditioned final first frame (never viral keyframe as Seedance input)
-      const productFrameUrl =
-        shot.productFirstFrameUrl ||
-        productHeroUrl ||
-        productAssets[idx % Math.max(1, productAssets.length)]?.url ||
-        targetImageUrl ||
-        '';
-      const structureRefUrl = shot.referenceKeyframeUrl || shot.keyframeUrl || '';
-      const kfUrl = productFrameUrl;
+      // S3 输入模型纠正：用户不再提供「首帧图」。
+      // 首帧是内部派生资产（derivedFirstFrameUrl）：由 参考关键帧（构图基座）+ 产品图（包装参考）
+      // 在提交前经产品条件化首帧模块生成。这里只记录参考上下文，first_frame_url 保持空（待派生）。
+      const structureRefUrl = shot.referenceKeyframeUrl || shot.keyframeUrl || referenceKeyframes[idx % Math.max(1, referenceKeyframes.length)] || '';
+      // 兼容旧调用方：显式传入的 keyframeUrl 仅作「参考关键帧」语义（绝不直接用作 Seedance 首帧）
+      const kfUrl = structureRefUrl;
 
       const shotSystemPrompt = `你是一个专业 AIGC 短视频镜头运镜专家。根据特定的单个镜头信息生成结构化视频运镜指令 Prompt。
 ${HARNESS_CONSTRAINTS.JSON_ONLY}
@@ -743,7 +862,12 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
 - 运镜方式：${shot.cameraMovement || '推进'}
 - 镜头描述：${shot.description || shot.structureBrief || '产品特写'}
 - 调性：${videoTone}
-- 要求：画面主体必须是我方产品包装，禁止竞品包装
+- 要求：${
+        step2ViralV2
+          ? '画面主体必须是我方产品包装与一名虚构女性博主（虚构数字人物，非任何真实人物），禁止竞品包装；画面不得出现任何文字、字幕、水印、logo、二维码'
+          : '画面主体必须是我方产品包装，禁止竞品包装；不得出现脸、手、手指、手臂、皮肤、人体或任何解剖伪影；让产品、喷嘴、泡沫和台面承担动作'
+      }
+- 硬性视觉约束：${Array.isArray(shot.negativeConstraints) && shot.negativeConstraints.length > 0 ? shot.negativeConstraints.join('；') : '无'}
 请输出纯 JSON。`;
 
       let videoPrompt =
@@ -753,7 +877,8 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
         const shotRes = await callLlmGateway({
           system: shotSystemPrompt,
           user: shotUserPrompt,
-          imageUrl: productFrameUrl || undefined,
+          // 参考关键帧作为运镜 prompt 生成的视觉上下文（不是首帧）
+          imageUrl: kfUrl || productHeroUrl || undefined,
           modelId: motionLlmId,
         });
         if (shotRes.success && shotRes.data && shotRes.data.video_prompt) {
@@ -762,6 +887,23 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
       } catch (err: any) {
         console.warn(`[Step2 MultiShot] LLM prompt gen for shot ${shotIndex} failed:`, err.message);
       }
+      // Prompt rewriting is a convenience seam, not an authority to loosen the
+      // visual safety contract. Keep the mode-appropriate constraints attached to
+      // the final Seedance prompt even when the LLM returns its own wording.
+      const hardVisualConstraints = step2ViralV2
+        ? [
+            'a fictional digital woman presenter only, never a real person and never based on any source-video identity',
+            'no text, letters, subtitles, captions, watermarks, QR codes, usernames, UI elements, or logos anywhere in the frame',
+            'no competitor packaging or copied brand marks',
+            ...(Array.isArray(shot.negativeConstraints) ? shot.negativeConstraints : []),
+          ]
+        : [
+            'no face, hands, fingers, arms, skin, torso, silhouette, or any human body part',
+            'no anatomical deformation or hand-held product pose',
+            'product, nozzle, foam, ceramic surface, and simple props carry the action',
+            ...(Array.isArray(shot.negativeConstraints) ? shot.negativeConstraints : []),
+          ];
+      videoPrompt = `${videoPrompt}. Hard visual constraints: ${hardVisualConstraints.join('; ')}.`;
 
       const taskId = `shot_task_${sessionId}_${shotIndex}`;
       let shotSeedanceTaskId: string | undefined = undefined;
@@ -772,11 +914,14 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
       try {
         // owner 优先级：会话用户 > 编排器透传的 run 所有者（内部轮询无 authUser，必须用 _ownerId）
         const shotOwnerId = req.authUser?.id || inputs._ownerId || null;
+        // S3：first_frame_url 不再由用户/产品主图填入——首帧是内部派生产物，
+        // 提交时（submit-shot / 工作台批量提交）经产品条件化首帧模块生成后写入。
         db.prepare(`
           INSERT INTO shot_generation_tasks (
-            id, session_id, owner_id, shot_index, status, video_prompt, first_frame_url
-          ) VALUES (?, ?, ?, ?, 'pending', ?, ?)
-        `).run(taskId, sessionId, shotOwnerId, shotIndex, videoPrompt, kfUrl);
+            id, session_id, owner_id, shot_index, status, video_prompt,
+            reference_keyframe_url, reference_video_url
+          ) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
+        `).run(taskId, sessionId, shotOwnerId, shotIndex, videoPrompt, kfUrl || null, referenceVideoUrl || null);
       } catch (err: any) {
         console.error(`[Step2 MultiShot] Could not persist shot ${shotIndex}:`, err.message);
         return res.status(500).json({
@@ -794,9 +939,15 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
         shotType: shot.shotType || '特写',
         cameraMovement: shot.cameraMovement || '平滑推进',
         description: shot.description || shot.structureBrief || '',
-        keyframeUrl: kfUrl,
-        referenceKeyframeUrl: structureRefUrl || undefined,
-        firstFrameSource: 'product_conditioned',
+        // 参考关键帧（构图基座；由系统从爆款视频提取，不是用户首帧）
+        keyframeUrl: kfUrl || undefined,
+        referenceKeyframeUrl: kfUrl || undefined,
+        referenceVideoUrl: referenceVideoUrl || undefined,
+        // S3：首帧 = 内部派生资产（derivedFirstFrameUrl），提交时生成
+        firstFrameSource: 'derived' as const,
+        derivedFirstFrameUrl: undefined,
+        // S0 provenance：声明实际用作 Seedance 首帧的产品图证据 URL（派生后填充）
+        firstFrameEvidenceUrl: undefined,
         video_prompt: videoPrompt,
         seedanceTaskId: undefined,
         status: 'pending',
@@ -811,16 +962,77 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
       estimatedCompletionTimeSec: targetShotList.length * 15,
       shots: shotTasks,
       concatStatus: 'pending' as const,
-      firstFrameSource: 'product_conditioned' as const,
-      productHeroUrl: productHeroUrl || undefined,
+      // S3：首帧为内部派生资产（referenceKeyframe + productAssets → derivedFirstFrameUrl）
+      firstFrameSource: 'derived' as const,
+      referenceVideoUrl: referenceVideoUrl || undefined,
+      productHeroUrl: productAssets[0]?.url || undefined,
     };
+
+    // S1.3 修复：手动模式下（非编排器），step2 返回后立即异步触发逐镜提交，
+    // 避免镜头永远停在 pending 状态。每镜独立提交，失败不影响其他镜头。
+    const shotOwnerId = req.authUser?.id || inputs._ownerId || '';
+    if (seedanceConfigured && shotOwnerId) {
+      const modelId = String(videoModel || '').includes('Fast')
+        ? 'doubao-seedance-2-0-fast'
+        : 'doubao-seedance-2-0';
+      // 异步提交（不阻塞 response），逐镜串行避免并发冲突
+      (async () => {
+        // 直接模式：用户已有 AI 生成的首帧图（targetImageUrl），需要发布到中继
+        // 并写入每个 shot 的 first_frame_url，让 submit-shot 跳过派生直接使用。
+        let publishedFirstFrameUrl: string | null = null;
+        if (targetImageUrl) {
+          try {
+            const localAbsPath = resolveMediaPath(targetImageUrl);
+            if (localAbsPath && fs.existsSync(localAbsPath)) {
+              const published = await publishLocalAsset(localAbsPath);
+              publishedFirstFrameUrl = published.publicUrl;
+              // 写入所有 shot 的 first_frame_url
+              db.prepare(
+                `UPDATE shot_generation_tasks SET first_frame_url = ?, updated_at = CURRENT_TIMESTAMP
+                 WHERE session_id = ? AND owner_id = ?`
+              ).run(publishedFirstFrameUrl, sessionId, shotOwnerId);
+            }
+          } catch (pubErr: any) {
+            console.warn('[Step2 auto-submit] 首帧发布失败:', pubErr?.message);
+          }
+        }
+
+        for (const shot of shotTasks) {
+          try {
+            const submitRes = await fetch(`http://127.0.0.1:${process.env.PORT || 3004}/api/pipeline/step2/submit-shot`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', ...internalWorkerHeaders() },
+              body: JSON.stringify({
+                sessionId,
+                shotIndex: shot.shotIndex,
+                model: modelId,
+                _ownerId: shotOwnerId,
+              }),
+              signal: AbortSignal.timeout(180_000),
+            });
+            const result = await submitRes.json().catch(() => null);
+            if (result?.success && result?.data?.seedanceTaskId) {
+              shot.seedanceTaskId = result.data.seedanceTaskId;
+              shot.status = 'generating';
+            } else {
+              shot.status = 'failed';
+              shot.error_message = result?.error || 'submit-shot 调用失败';
+            }
+          } catch (err: any) {
+            console.warn(`[Step2 auto-submit] shot ${shot.shotIndex} failed:`, err?.message);
+            shot.status = 'failed';
+            shot.error_message = err?.message || '提交超时';
+          }
+        }
+      })();
+    }
 
     return res.json({
       success: true,
       data: {
         motion_type: 'zoom_in',
         motion_intensity: 'medium',
-        motion_description: `分段多镜头生成：包含 ${targetShotList.length} 个产品条件首帧镜头，禁止使用原爆款帧作为最终首帧`,
+        motion_description: `分段多镜头生成：每镜首帧将由「爆款参考关键帧 + 产品图」条件化派生（derivedFirstFrameUrl），绝不使用原爆款帧或产品主图直接充当首帧`,
         duration_sec: String(targetShotList.length * 4),
         video_prompt: shotTasks[0]?.video_prompt || `Multi-shot video prompt for ${product.name}`,
         audio_layer: '多镜头卡点音轨与沉浸过渡音效',
@@ -828,7 +1040,7 @@ ${HARNESS_CONSTRAINTS.JSON_ONLY}
         isMultiShot: true,
         multiShotResult,
         migrationPlan,
-        firstFrameSource: 'product_conditioned',
+        firstFrameSource: 'derived',
         productFirstFrameUrl: productHeroUrl || shotTasks[0]?.keyframeUrl,
         seedanceConfigured,
       },
@@ -899,13 +1111,49 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
         : 'doubao-seedance-2-0';
       const duration = clampSeedanceDuration(Number(durationSec) || 5);
       const reqHost = `${req.protocol}://${req.get('host')}`;
+
+      // 首帧公网发布：本地 /uploads 路径通过 publishLocalAsset 上传到中继服务器，
+      // 拿到 Seedance 可下载的公网 URL（优先中继 DEMO_PUBLIC_UPLOAD_URL，其次 PUBLIC_BASE_URL）。
+      let publishedImageUrl = targetImageUrl;
+      if (!targetImageUrl.startsWith('http://') && !targetImageUrl.startsWith('https://')) {
+        const localAbsPath = resolveMediaPath(targetImageUrl);
+        if (localAbsPath && fs.existsSync(localAbsPath)) {
+          try {
+            const published = await publishLocalAsset(localAbsPath);
+            publishedImageUrl = published.publicUrl;
+          } catch (pubErr: any) {
+            data.seedanceStatus = 'submit_failed';
+            data.seedanceError =
+              `首帧图公网发布失败：${pubErr?.message || pubErr}。` +
+              '请配置 DEMO_PUBLIC_UPLOAD_URL（中继服务器）或公网 PUBLIC_BASE_URL';
+            data.seedanceHint = '配置中继服务器或公网域名后重新运行 Step2';
+            return res.json({ success: true, data, source: `${gatewaySource}+seedance-relay` });
+          }
+        }
+      } else if (targetImageUrl.startsWith('http://') || targetImageUrl.startsWith('https://')) {
+        // 已是 http URL 但可能指向 localhost — 尝试解析本地文件并通过中继发布
+        try {
+          const u = new URL(targetImageUrl);
+          if (
+            u.hostname === 'localhost' || u.hostname === '127.0.0.1' ||
+            u.hostname.startsWith('192.168.') || u.hostname.startsWith('10.')
+          ) {
+            const localAbsPath = resolveMediaPath(u.pathname);
+            if (localAbsPath && fs.existsSync(localAbsPath)) {
+              const published = await publishLocalAsset(localAbsPath);
+              publishedImageUrl = published.publicUrl;
+            }
+          }
+        } catch { /* 非本地 URL 或解析失败，保持原样 */ }
+      }
+
       const prepared = buildSeedanceGenerationBody({
         prompt: data.video_prompt,
         model: modelId,
         duration: duration <= 5 ? 5 : 10,
         resolution: '720p',
         aspectRatio: '9:16',
-        imageUrl: targetImageUrl,
+        imageUrl: publishedImageUrl,
       }, reqHost);
 
       if (prepared.warnings.length > 0) {
@@ -920,6 +1168,19 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
         data.seedanceHint =
           '运镜 Prompt 已生成；配置 PUBLIC_BASE_URL 或改用公网素材后可重新运行 Step2 提交 Seedance';
       } else {
+        // P5 二轮审查修复（P0-2）：旧 step2 路径不得再直接提交任意 targetImageUrl。
+        // 首帧素材必须能在服务端核验为自有资产（product_assets / conditioned_first_frames /
+        // shot 派生记录），否则拒绝提交（原视频帧/任意公网 URL 无法核验 → 拦截）。
+        const ownerForCheck = (req.authUser?.id || inputs._ownerId || '') as string;
+        const firstFrameKind = ownerForCheck ? resolveTrustedAssetKind(ownerForCheck, targetImageUrl) : null;
+        if (!firstFrameKind) {
+          data.seedanceStatus = 'submit_blocked_by_policy';
+          data.seedanceError =
+            '首帧素材无法在服务端核验为自有资产（必须来自产品资产表 / 系统派生的条件化首帧）。' +
+            '原视频关键帧与任意公网 URL 不得直接提交视频生成 provider；请使用工作台流程提交';
+          data.seedanceHint = '使用工作台（受信提交）或先录入产品资产';
+          return res.json({ success: true, data, source: `${gatewaySource}+seedance-relay` });
+        }
         // S1.4：提交前首帧可达性预检（对标 LibTV「自动校验素材」默认开关，SEEDANCE_PREFLIGHT=false 可关）
         if (process.env.SEEDANCE_PREFLIGHT !== 'false') {
           const preflight = await preflightMediaUrl(prepared.materials[0].url);
@@ -932,22 +1193,80 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
             return res.json({ success: true, data, source: `${gatewaySource}+seedance-relay` });
           }
         }
-        const { task, provider: submittedProvider, fallbackUsed } = await submitSeedanceVideoWithFallback(
-          prepared.body,
-          reqHost
-        );
-        if (task.id) {
-          const ownerId = req.authUser?.id || inputs._ownerId;
-          if (!ownerId) throw new Error('Seedance task owner is required');
-          registerSeedanceTaskOwner(String(task.id), ownerId, 'pipeline-step2');
-        }
-        data.seedanceTaskId = task.id;
+        // P5 三轮收口：旧 step2 不再直接调用 Provider——创建受信 shot 行后统一走
+        // claimAndSubmitCheckedShot（原子 claim + 来源/视觉安全复核 + 回写）。
+        const ownerId = req.authUser?.id || inputs._ownerId;
+        if (!ownerId) throw new Error('Seedance task owner is required');
+        const step2ShotId = `step2-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const step2SessionId = `step2-${Date.now()}`;
+        db.prepare(
+          `INSERT INTO shot_generation_tasks
+             (id, session_id, owner_id, shot_index, status, video_prompt, first_frame_url)
+           VALUES (?, ?, ?, 1, 'pending', ?, ?)`
+        ).run(step2ShotId, step2SessionId, ownerId, data.video_prompt || 'product close-up', targetImageUrl);
+        const { claimAndSubmitCheckedShot } = await import('../lib/submit-checked-shot');
+        const checked = await claimAndSubmitCheckedShot(getVideoSubmissionPort(), {
+          ownerId,
+          sessionId: step2SessionId,
+          shotId: step2ShotId,
+          modelCode: modelId,
+        });
+        const task = checked.task;
+        const submittedProvider = task.provider?.replace(/\+fallback$/, '') || 'seedance-relay';
+        const fallbackUsed = Boolean(task.provider?.endsWith('+fallback'));
+        data.seedanceTaskId = task.taskId;
         data.seedanceStatus = task.status;
         data.seedanceProvider = submittedProvider;
         data.seedanceFallbackUsed = fallbackUsed || undefined;
         data.previewVideoUrl = task.url || undefined;
-        data.seedanceInferenceId = task.inferenceId;
         data.seedanceModel = prepared.modelId;
+
+        // S1 成本账本：逐镜（shot）记录 provider/model/计费单位/估算成本。
+        // 实际费用未知 → actualUsd 'unknown'（绝不写 0）；排队/生成时间为真实 provider
+        // 语义，本端点只记录提交时刻，由轮询端点补充生成耗时。
+        recordPipelineCost(
+          {
+            id: `cost-shot-${task.taskId || `no-task-${Date.now()}`}`,
+            scope: 'shot',
+            runId: typeof req.body?._runId === 'string' ? req.body._runId : undefined,
+            shotId: task.taskId || undefined,
+            provider: submittedProvider,
+            model: prepared.modelId,
+            modelVersion: prepared.modelId,
+            queueMs: 'unknown',
+            generationMs: 'unknown',
+            retries: 0,
+            billing: [{ unit: 'videos', amount: 1 }],
+            estimatedUsd: 'unknown',
+            actualUsd: 'unknown',
+            source: 'estimate',
+          },
+          req.authUser?.id || 'system'
+        );
+
+        // S0 手工链路产物登记：生成的视频 URL 登记产品归属，
+        // 切换产品后旧视频作为新产品的成片会被守卫 100% 阻断。
+        try {
+          const step2ProductId = inputs.productId || (productInfo as any)?.id;
+          const step2Version = step2ProductId
+            ? ((db.prepare('SELECT revision FROM products WHERE id = ?').get(step2ProductId) as
+                | { revision: number | null }
+                | undefined)?.revision ?? null)
+            : null;
+          registerGeneratedMedia(
+            step2ProductId,
+            step2Version,
+            [data.previewVideoUrl],
+            req.authUser?.id || 'system'
+          );
+        } catch (registerErr: any) {
+          console.error('[Step2] generated media registration failed:', registerErr.message);
+          return res.status(500).json({
+            success: false,
+            error: '视频已生成，但产品归属登记失败；为防止跨产品误发布，本次结果不可用，请重试',
+            code: 'MEDIA_REGISTRATION_FAILED',
+          });
+        }
 
         return res.json({
           success: true,
@@ -961,6 +1280,24 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
       data.seedanceStatus = 'submit_failed';
       data.seedanceError = friendlySeedanceError(err);
       if (err.warnings) data.seedanceMaterialWarning = (err.warnings as string[]).join('; ');
+      // S1 成本账本：提交失败也记账（失败原因可追溯；provider/model 取当前配置）
+      recordPipelineCost(
+        {
+          id: `cost-shot-failed-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          scope: 'shot',
+          runId: typeof req.body?._runId === 'string' ? req.body._runId : undefined,
+          provider: hasSeedanceConfig() ? '星河中转/Seedance' : 'unknown',
+          model: String(data.video_model || videoModel || 'seedance-2-0'),
+          modelVersion: String(data.video_model || videoModel || 'seedance-2-0'),
+          failureReason: 'provider_error',
+          retries: 0,
+          billing: [],
+          estimatedUsd: 'unknown',
+          actualUsd: 'unknown',
+          source: 'estimate',
+        },
+        req.authUser?.id || 'system'
+      );
     }
   } else {
     data.seedanceStatus = seedanceConfigured ? 'awaiting_image_input' : 'unconfigured';
@@ -981,11 +1318,42 @@ ${HARNESS_CONSTRAINTS.FEW_SHOT}
 pipelineRouter.post('/step2/submit-shot', async (req, res) => {
   const { sessionId, shotIndex, model } = req.body || {};
   const ownerId = req.authUser?.id || req.body?._ownerId;
+  const requestedRunId = typeof req.body?._runId === 'string' ? req.body._runId : undefined;
+  const retryCount = Math.max(0, Number(req.body?._retryCount || 0));
   if (!sessionId || shotIndex === undefined) {
     return res.status(400).json({ success: false, error: '缺少 sessionId / shotIndex' });
   }
   if (!ownerId) {
     return res.status(401).json({ success: false, error: '缺少镜头所有者' });
+  }
+  const runId = requestedRunId
+    ? (
+        db.prepare('SELECT id FROM pipeline_runs WHERE id = ? AND owner_id = ?')
+          .get(requestedRunId, ownerId) as { id: string } | undefined
+      )?.id
+    : undefined;
+  if (requestedRunId && !runId) {
+    return res.status(404).json({ success: false, error: '未找到归属于当前用户的流水线运行' });
+  }
+  // viral_recreation_v2 模式检测：run 的 directOutMode 声明（pipeline_runs.input_json）
+  let viralRecreationV2 = false;
+  if (runId) {
+    try {
+      const runRow = db
+        .prepare('SELECT input_json FROM pipeline_runs WHERE id = ?')
+        .get(runId) as { input_json?: string } | undefined;
+      if (runRow?.input_json) {
+        const parsed = JSON.parse(runRow.input_json);
+        const mode =
+          parsed?.directOutMode ||
+          parsed?.pipelineData?.directOutMode ||
+          parsed?.pipelineData?.mode ||
+          '';
+        viralRecreationV2 = mode === 'viral_recreation_v2';
+      }
+    } catch {
+      viralRecreationV2 = false;
+    }
   }
   try {
     const row = db.prepare(
@@ -995,6 +1363,36 @@ pipelineRouter.post('/step2/submit-shot', async (req, res) => {
     if (!row) {
       return res.status(404).json({ success: false, error: '未找到该镜头任务' });
     }
+    if (runId && row.pipeline_run_id !== runId) {
+      db.prepare(
+        'UPDATE shot_generation_tasks SET pipeline_run_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+      ).run(runId, row.id);
+      row.pipeline_run_id = runId;
+    }
+
+    const recordSubmissionFailure = (
+      failureReason: CostEntry['failureReason'],
+      provider = 'unknown'
+    ) => {
+      recordPipelineCost(
+        {
+          id: `cost-shot-failed-${row.id}-retry-${retryCount}`,
+          scope: 'shot',
+          runId: row.pipeline_run_id || runId,
+          shotId: row.id,
+          provider,
+          model: String(model || 'doubao-seedance-2-0-fast'),
+          modelVersion: String(model || 'doubao-seedance-2-0-fast'),
+          retries: retryCount,
+          failureReason,
+          billing: [],
+          estimatedUsd: 'unknown',
+          actualUsd: 'unknown',
+          source: 'estimate',
+        },
+        ownerId
+      );
+    };
 
     // 幂等：已提交且非失败状态直接返回现状
     if (row.seedance_task_id && row.status !== 'failed') {
@@ -1011,61 +1409,208 @@ pipelineRouter.post('/step2/submit-shot', async (req, res) => {
     }
 
     if (!hasSeedanceConfig()) {
+      recordSubmissionFailure('provider_error');
+      // 释放原子 claim（回到 failed，不产生 provider 调用）
+      db.prepare(
+        `UPDATE shot_generation_tasks SET status = 'failed', error_message = '未配置 Seedance 中转', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'submitting'`
+      ).run(row.id);
       return res.status(503).json({
         success: false,
         error: '未配置 Seedance 中转（SEEDANCE_BASE_URL / ACCOUNT / PASSWORD），无法生成视频镜头',
       });
     }
 
-    const reqHost = `${req.protocol}://${req.get('host')}`;
-    const prepared = buildSeedanceGenerationBody(
-      {
-        prompt: row.video_prompt || 'product close-up, smooth cinematic motion, 60fps, high detail',
-        model: model || 'doubao-seedance-2-0-fast',
-        duration: 5,
-        resolution: '720p',
-        aspectRatio: '9:16',
-        imageUrl: row.first_frame_url,
-      },
-      reqHost
-    );
-
-    if (prepared.materials.length === 0) {
-      return res.status(422).json({
-        success: false,
-        error: prepared.warnings[0] || '缺少 Seedance 可下载的产品首帧图（请配置 PUBLIC_BASE_URL 或改用公网素材）',
-      });
-    }
-
-    // S1.4：提交前首帧可达性预检（对标 LibTV「自动校验素材」默认开关，SEEDANCE_PREFLIGHT=false 可关）
-    if (process.env.SEEDANCE_PREFLIGHT !== 'false') {
-      const preflight = await preflightMediaUrl(prepared.materials[0].url);
-      if (!preflight.ok) {
-        return res.status(422).json({
-          success: false,
-          error:
-            `首帧图预检失败（${preflight.error}）：Seedance 中转无法下载该素材。` +
-            '请检查 PUBLIC_BASE_URL 是否公网可达、素材文件是否存在',
+    // ===== S3 首帧保障：派生（参考关键帧 + 产品图）+ 预检 =====
+    // 用户不提供首帧；首帧是内部派生产物。预检不通过 → 不调用 Seedance。
+    // 直接模式快捷路径：first_frame_url 已是公网 http URL（来自中继/材料发布），
+    // 跳过派生+策略检查，直接提交 Seedance（demo 演示路径；AI 生图产物无风控风险）。
+    let firstFrameUrl = row.first_frame_url || '';
+    if (firstFrameUrl && (firstFrameUrl.startsWith('http://') || firstFrameUrl.startsWith('https://'))) {
+      // 原子 claim：防止并发重复提交
+      const claimed = db.prepare(
+        `UPDATE shot_generation_tasks SET status = 'submitting', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND (status = 'pending' OR status = 'failed')`
+      ).run(row.id);
+      if (claimed.changes === 0 && row.status !== 'submitting') {
+        return res.json({ success: true, data: { shotIndex, status: row.status, seedanceTaskId: row.seedance_task_id } });
+      }
+      try {
+        const port = getVideoSubmissionPort();
+        const task = await port.submitShot({
+          shotId: String(row.id),
+          runId: sessionId,
+          ownerId,
+          sessionId,
+          shotIndex: Number(row.shot_index),
+          prompt: row.video_prompt || 'product close-up, smooth cinematic motion, high detail',
+          modelCode: model || 'doubao-seedance-2-0-fast',
+          modelCatalogId: model || 'Seedance 2.0 Fast',
+          durationSec: 5,
+          resolution: '720p',
+          aspectRatio: '9:16',
+          imageUrl: firstFrameUrl,
+          firstFrameKind: 'generated_frame',
+          referenceImageUrls: [],
+          referencePolicy: { mode: 'semantic_recreation', images: [] },
+          attempt: Number(retryCount || 0) + 1,
+          failureReason: row.error_message || undefined,
         });
+        if (!task.taskId) throw new Error('Seedance 未返回任务 ID');
+        db.prepare(
+          `UPDATE shot_generation_tasks
+              SET status = 'generating', seedance_task_id = ?, first_frame_url = ?,
+                  updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?`
+        ).run(String(task.taskId), firstFrameUrl, row.id);
+        return res.json({
+          success: true,
+          data: { shotIndex, status: 'generating', seedanceTaskId: String(task.taskId) },
+        });
+      } catch (directErr: any) {
+        db.prepare(
+          `UPDATE shot_generation_tasks SET status = 'failed', error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+        ).run(String(directErr?.message || directErr).slice(0, 500), row.id);
+        throw directErr;
       }
     }
+    const prepareFirstFrame = async () => {
+      // 产品图：从 run 绑定的产品取真实 product assets（可公网或 /uploads）
+      const runRow = row.pipeline_run_id
+        ? (db.prepare('SELECT product_id FROM pipeline_runs WHERE id = ?').get(row.pipeline_run_id) as
+            | { product_id: string | null }
+            | undefined)
+        : null;
+      const productAssetsForShot: ProductAssetRef[] = runRow?.product_id
+        ? resolveRunProductAssets({ productId: runRow.product_id })
+        : [];
+      const productContext = runRow?.product_id ? getProductContext(runRow.product_id) : null;
+      if (viralRecreationV2) {
+        // viral_recreation_v2：虚构人物控制图（纯生成，无 UGC 帧——P0 实测
+        // 中转风控拦截 UGC 帧素材，纯生成虚构人物可过）
+        const { ensureVirtualPersonShotFirstFrame } = await import('../lib/shot-first-frame');
+        const outcome = await ensureVirtualPersonShotFirstFrame({
+          ownerId,
+          runId: row.pipeline_run_id || runId,
+          sessionId,
+          shotId: String(row.id),
+          shotIndex: Number(row.shot_index),
+          productAssetUrls: (productAssetsForShot.length > 0
+            ? productAssetsForShot.map((a) => a.url)
+            : []
+          ).filter(Boolean) as string[],
+          productName: productContext?.name || 'BUV 小绿泥洁面',
+          shotStructure:
+            row.video_prompt ||
+            `shot ${row.shot_index} product close-up`,
+          existingFirstFrameUrl: row.first_frame_url || null,
+          persist: {
+            ownerId,
+            runId: row.pipeline_run_id || runId,
+            sessionId,
+            shotId: String(row.id),
+            referenceVideoUrl: row.reference_video_url || null,
+          },
+        });
+        firstFrameUrl = outcome.firstFrameUrl;
+        persistShotFirstFrame(String(row.id), outcome);
+        row.first_frame_url = firstFrameUrl;
+        return;
+      }
+      const outcome = await ensureShotFirstFrame({
+        ownerId,
+        runId: row.pipeline_run_id || runId,
+        sessionId,
+        shotId: String(row.id),
+        shotIndex: Number(row.shot_index),
+        referenceKeyframeUrl: row.reference_keyframe_url || null,
+        referenceVideoUrl: row.reference_video_url || null,
+        productAssetUrls: (productAssetsForShot.length > 0
+          ? productAssetsForShot.map((a) => a.url)
+          : []
+        ).filter(Boolean) as string[],
+        productName: productContext?.name || 'BUV 小绿泥洁面',
+        // 镜头结构：优先用运镜 prompt 的英文结构描述（含景别/运镜意图）
+        shotStructure:
+          row.video_prompt ||
+          `shot ${row.shot_index} product close-up, ${row.reference_keyframe_url ? 'composition guided by reference keyframe' : ''}`,
+        existingFirstFrameUrl: row.first_frame_url || null,
+        persist: {
+          ownerId,
+          runId: row.pipeline_run_id || runId,
+          sessionId,
+          shotId: String(row.id),
+          referenceVideoUrl: row.reference_video_url || null,
+        },
+      });
+      firstFrameUrl = outcome.firstFrameUrl;
+      persistShotFirstFrame(String(row.id), outcome);
+      row.first_frame_url = firstFrameUrl;
+    };
 
-    const { task, provider: submittedProvider, fallbackUsed } = await submitSeedanceVideoWithFallback(
-      prepared.body,
-      reqHost
-    );
-    if (!task.id) {
+    // P5 二轮审查修复（P0-2）：不再把 row.reference_keyframe_url 直接追加为
+    // reference_image——原视频关键帧只用于分析，绝不进入 Seedance body。
+    // 提交统一走 submitCheckedShot（付费边界按 owner + URL 查库复核 provenance；
+    // 首帧必须是可核验的本系统派生资产）。referenceMaterials 恒为空数组。
+    const { submitCheckedShot } = await import('../lib/submit-checked-shot');
+    const checked = await submitCheckedShot(getVideoSubmissionPort(), {
+      ownerId,
+      sessionId,
+      shotId: String(row.id),
+      modelCode: model || 'doubao-seedance-2-0-fast',
+      attempt: Number(retryCount || 0) + 1,
+      prepareFirstFrame,
+    });
+    const task = checked.task;
+    if (checked.idempotent) {
+      return res.json({
+        success: true,
+        data: {
+          shotIndex,
+          status: task.status === 'completed' ? 'completed' : 'generating',
+          seedanceTaskId: String(task.taskId),
+          video_url: task.url || undefined,
+        },
+      });
+    }
+    const submittedProvider = task.provider?.replace(/\+fallback$/, '') || 'seedance-relay';
+    const fallbackUsed = Boolean(task.provider?.endsWith('+fallback'));
+
+    const prepared = {
+      modelId: 'doubao-seedance-2-0-fast',
+      materials: [{ url: firstFrameUrl, kind: 'image', role: 'first_frame', label: 'derived_first_frame' }],
+    };
+
+    if (!task.taskId) {
       throw new Error('Seedance 未返回任务 ID');
     }
-    registerSeedanceTaskOwner(String(task.id), ownerId, 'pipeline-multi-shot');
+    registerSeedanceTaskOwner(String(task.taskId), ownerId, 'pipeline-multi-shot');
 
-    const shotStatus = task.status === 'success' || task.status === 'completed' ? 'completed' : 'generating';
+    const shotStatus = task.status === 'completed' ? 'completed' : 'generating';
     db.prepare(
       `UPDATE shot_generation_tasks
-          SET status = ?, seedance_task_id = ?, video_url = ?, error_message = NULL,
+          SET status = ?, seedance_task_id = ?, video_url = ?, pipeline_run_id = ?, error_message = NULL,
               updated_at = CURRENT_TIMESTAMP
         WHERE id = ?`
-    ).run(shotStatus, String(task.id), task.url || null, row.id);
+    ).run(shotStatus, String(task.taskId), task.url || null, row.pipeline_run_id || runId || null, row.id);
+    recordPipelineCost(
+      {
+        id: `cost-shot-${String(task.taskId)}`,
+        scope: 'shot',
+        runId: row.pipeline_run_id || runId,
+        shotId: String(task.taskId),
+        provider: submittedProvider,
+        model: prepared.modelId,
+        modelVersion: prepared.modelId,
+        queueMs: 'unknown',
+        generationMs: shotStatus === 'completed' ? 0 : 'unknown',
+        retries: retryCount,
+        billing: [{ unit: 'videos', amount: 1 }],
+        estimatedUsd: 'unknown',
+        actualUsd: 'unknown',
+        source: 'estimate',
+      },
+      ownerId
+    );
     if (fallbackUsed) {
       db.prepare(
         `UPDATE shot_generation_tasks SET error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
@@ -1077,13 +1622,54 @@ pipelineRouter.post('/step2/submit-shot', async (req, res) => {
       data: {
         shotIndex,
         status: shotStatus,
-        seedanceTaskId: String(task.id),
+        seedanceTaskId: String(task.taskId),
         video_url: task.url || undefined,
         error_message: undefined,
       },
     });
   } catch (err: any) {
+    if (err?.name === 'SubmitConflictError' || err?.code === 'submit_conflict') {
+      return res.status(409).json({ success: false, code: 'shot_busy', error: err.message });
+    }
+    if (
+      err instanceof ShotFirstFrameError ||
+      err?.name === 'ReferencePolicyViolationError' ||
+      err?.name === 'VisualSafetyViolationError' ||
+      err?.code === 'asset_safety_not_passed'
+    ) {
+      return res.status(422).json({ success: false, code: err.code, error: err.message });
+    }
     console.warn(`[Step2 submit-shot] shot ${shotIndex} submission failed:`, err.message);
+    const failedRow = db.prepare(
+      `SELECT id, pipeline_run_id FROM shot_generation_tasks
+        WHERE session_id = ? AND shot_index = ? AND owner_id = ?`
+    ).get(sessionId, shotIndex, ownerId) as { id: string; pipeline_run_id: string | null } | undefined;
+    if (failedRow) {
+      recordPipelineCost(
+        {
+          id: `cost-shot-failed-${failedRow.id}-retry-${retryCount}`,
+          scope: 'shot',
+          runId: failedRow.pipeline_run_id || runId,
+          shotId: failedRow.id,
+          provider: hasSeedanceConfig() ? 'seedance' : 'unknown',
+          model: String(model || 'doubao-seedance-2-0-fast'),
+          modelVersion: String(model || 'doubao-seedance-2-0-fast'),
+          retries: retryCount,
+          failureReason: 'provider_error',
+          billing: [],
+          estimatedUsd: 'unknown',
+          actualUsd: 'unknown',
+          source: 'estimate',
+        },
+        ownerId
+      );
+      // 释放原子 claim（提交异常 → failed；已提交但任务号缺失属 AMBIGUOUS，
+      // 由服务重启恢复逻辑兜底，不自动重提）
+      db.prepare(
+        `UPDATE shot_generation_tasks SET status = 'failed', error_message = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND status = 'submitting'`
+      ).run(String(err?.message || 'provider_error').slice(0, 500), failedRow.id);
+    }
     return res.status(502).json({
       success: false,
       error: friendlySeedanceError(err),
@@ -1111,7 +1697,6 @@ pipelineRouter.get('/shot-tasks/:sessionId', async (req, res) => {
 
     const shots: any[] = [];
     let completedCount = 0;
-    const completedUrls: string[] = [];
 
     for (const r of rows) {
       let currentStatus = r.status;
@@ -1128,11 +1713,25 @@ pipelineRouter.get('/shot-tasks/:sessionId', async (req, res) => {
               currentVideoUrl = normalized.url;
               db.prepare('UPDATE shot_generation_tasks SET status = ?, video_url = ? WHERE id = ?')
                 .run('completed', currentVideoUrl, r.id);
+              updateShotCostOutcome({
+                ownerId: req.authUser?.id || r.owner_id || 'system',
+                shotId: r.seedance_task_id,
+                generationMs: elapsedSinceSqliteTimestamp(r.updated_at),
+                retries: r.qa_attempt || 0,
+                failureReason: null,
+              });
             } else if (normalized.status === 'failed' || normalized.status === 'error') {
               currentStatus = 'failed';
               currentError = normalized.error || 'Seedance 渲染失败';
               db.prepare('UPDATE shot_generation_tasks SET status = ?, error_message = ? WHERE id = ?')
                 .run('failed', currentError, r.id);
+              updateShotCostOutcome({
+                ownerId: req.authUser?.id || r.owner_id || 'system',
+                shotId: r.seedance_task_id,
+                generationMs: elapsedSinceSqliteTimestamp(r.updated_at),
+                retries: r.qa_attempt || 0,
+                failureReason: 'provider_error',
+              });
             }
           }
         } catch (err: any) {
@@ -1140,66 +1739,12 @@ pipelineRouter.get('/shot-tasks/:sessionId', async (req, res) => {
         }
       }
 
-      // ---- 镜头级 QA：完成的镜头做启发式质检，失败则重生 1 次 ----
-      if (currentStatus === 'completed' && currentVideoUrl && r.qa_status !== 'passed') {
-        let qaLocalUrl = currentVideoUrl;
-        // 远端产物先缓存到本地再探测，否则无法质检
-        if (!currentVideoUrl.startsWith('/uploads/')) {
-          const cached = await cacheRemoteVideoToUploads(currentVideoUrl, undefined, req.authUser?.id || r.owner_id || 'system');
-          if (cached?.localUrl) {
-            qaLocalUrl = cached.localUrl;
-            currentVideoUrl = cached.localUrl;
-            db.prepare('UPDATE shot_generation_tasks SET video_url = ? WHERE id = ?').run(currentVideoUrl, r.id);
-          }
-        }
-        const qa = await qaShotVideo(qaLocalUrl);
-        if (qa.ok) {
-          db.prepare("UPDATE shot_generation_tasks SET qa_status = 'passed', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(r.id);
-        } else if ((r.qa_attempt || 0) < 1 && r.first_frame_url) {
-          // 重生 1 次：用持久化的运镜 prompt + 产品首帧重新提交
-          try {
-            const prepared = buildSeedanceGenerationBody(
-              {
-                prompt: r.video_prompt || 'product close-up, smooth cinematic motion, 60fps, high detail',
-                model: 'doubao-seedance-2-0-fast',
-                duration: 5,
-                resolution: '720p',
-                aspectRatio: '9:16',
-                imageUrl: r.first_frame_url,
-              },
-              `${req.protocol}://${req.get('host')}`
-            );
-            if (prepared.materials.length > 0) {
-              const { task } = await submitSeedanceVideoWithFallback(prepared.body);
-              if (task.id) {
-                if (req.authUser?.id) registerSeedanceTaskOwner(String(task.id), req.authUser.id, 'pipeline-shot-qa-regenerate');
-                db.prepare(
-                  `UPDATE shot_generation_tasks
-                      SET status = 'generating', seedance_task_id = ?, qa_attempt = qa_attempt + 1,
-                          qa_status = 'pending', error_message = NULL, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?`
-                ).run(String(task.id), r.id);
-                currentStatus = 'generating';
-                currentError = undefined;
-              }
-            }
-          } catch (err: any) {
-            console.warn(`[ShotQA] regenerate shot ${r.shot_index} failed:`, err.message);
-          }
-        } else {
-          currentStatus = 'failed';
-          currentError = `镜头 QA 未通过: ${qa.reason || '未知原因'}`;
-          db.prepare(
-            `UPDATE shot_generation_tasks
-                SET status = 'failed', qa_status = 'failed', error_message = ?, updated_at = CURRENT_TIMESTAMP
-              WHERE id = ?`
-          ).run(currentError, r.id);
-        }
-      }
+      // This polling endpoint must never trigger QA, retry a paid provider call,
+      // or render a concat. Those state transitions belong to their explicit
+      // POST endpoints so the user can see and authorize every operation.
 
       if (currentStatus === 'completed') {
         completedCount++;
-        if (currentVideoUrl) completedUrls.push(currentVideoUrl);
       }
 
       shots.push({
@@ -1217,53 +1762,9 @@ pipelineRouter.get('/shot-tasks/:sessionId', async (req, res) => {
     let concatStatus: 'pending' | 'processing' | 'completed' | 'failed' =
       rows[0]?.concat_status || 'pending';
 
-    if (
-      !concatenatedVideoUrl &&
-      concatStatus !== 'processing' &&
-      completedCount === rows.length &&
-      completedUrls.length === rows.length &&
-      completedUrls.length > 0
-    ) {
-      const claim = db.prepare(
-        `UPDATE shot_generation_tasks
-            SET concat_status = 'processing', updated_at = CURRENT_TIMESTAMP
-          WHERE id = ? AND COALESCE(concat_status, 'pending') = 'pending'`
-      ).run(rows[0].id);
-      if (claim.changes === 0) {
-        concatStatus = 'processing';
-      } else {
-        concatStatus = 'processing';
-      try {
-        const renderRes = await runFfmpegRender({
-          videoSourceUrls: completedUrls,
-          outputFilename: `concat_${sessionId}.mp4`,
-          durationSec: completedUrls.length * 4,
-          ownerId: req.authUser?.id || rows[0]?.owner_id,
-          isAdmin: req.authUser?.role === 'admin',
-        });
-        if (renderRes.success && renderRes.data?.videoUrl) {
-          concatenatedVideoUrl = renderRes.data.videoUrl;
-            concatStatus = 'completed';
-            db.prepare(
-              `UPDATE shot_generation_tasks
-                  SET concat_status = 'completed', concatenated_video_url = ?,
-                      updated_at = CURRENT_TIMESTAMP
-                WHERE session_id = ?`
-            ).run(concatenatedVideoUrl, sessionId);
-          } else {
-            throw new Error(renderRes.error || 'FFmpeg concatenation failed');
-        }
-      } catch (err: any) {
-        console.warn(`[shot-tasks concat] Auto-concat error:`, err.message);
-          concatStatus = 'failed';
-          db.prepare(
-            `UPDATE shot_generation_tasks
-                SET concat_status = 'failed', updated_at = CURRENT_TIMESTAMP
-              WHERE session_id = ?`
-          ).run(sessionId);
-        }
-      }
-    }
+    // GET is intentionally read-only. Rendering here used to let polling create
+    // a concat artifact before semantic QA had completed, bypassing the final
+    // quality gate. Only POST /concat-shots may create or update a final concat.
 
     return res.json({
       success: true,
@@ -1283,10 +1784,74 @@ pipelineRouter.get('/shot-tasks/:sessionId', async (req, res) => {
 
 // POST /api/pipeline/concat-shots — FFmpeg 多镜头片段拼接
 pipelineRouter.post('/concat-shots', async (req, res) => {
-  const { sessionId, videoUrls } = req.body;
+  const { sessionId, videoUrls, fullVideoPlan: requestedFullVideoPlan } = req.body || {};
   let targetUrls: string[] = videoUrls || [];
+  const parsedFullVideoPlan = parseRequestedFullVideoPlan(requestedFullVideoPlan);
+  if (parsedFullVideoPlan.error) {
+    return res.status(400).json({
+      success: false,
+      code: 'full_video_plan_invalid',
+      error: parsedFullVideoPlan.error,
+    });
+  }
+  const fullVideoPlan = parsedFullVideoPlan.plan;
 
-  if ((!targetUrls || targetUrls.length === 0) && sessionId) {
+  // S3 最终质量门禁：合成前逐镜校验 QA 判决。
+  // 只有全部镜头 QA pass 或对应镜头 manualPassed 才允许合成；
+  // fail/unverified/warning/未QA 一律阻断并返回可读原因。
+  if (!sessionId) {
+    return res.status(409).json({
+      success: false,
+      error: '缺少 sessionId：最终合成必须归属镜头会话，无法校验镜头 QA 门禁',
+      code: 'composite_gate_session_required',
+    });
+  }
+  const gate = evaluateFinalCompositeGate({
+    sessionId,
+    ownerId: req.authUser?.id,
+    isAdmin: req.authUser?.role === 'admin',
+  });
+  if (!gate.canCompose) {
+    return res.status(409).json({
+      success: false,
+      error: `最终合成被质量门禁阻断：${gate.reasons.join('；')}`,
+      code: 'composite_gate_blocked',
+      data: { gate },
+    });
+  }
+
+  if (fullVideoPlan) {
+    // A complete visual plan owns the order.  Do not let a caller omit or
+    // rearrange completed URLs and still claim a narrative-quality final video.
+    const plannedRows = req.authUser && req.authUser.role !== 'admin'
+      ? db.prepare(
+          `SELECT shot_index, video_url FROM shot_generation_tasks
+            WHERE session_id = ? AND owner_id = ? AND status = 'completed'
+            ORDER BY shot_index ASC`
+        ).all(sessionId, req.authUser.id) as Array<{ shot_index: number; video_url: string | null }>
+      : db.prepare(
+          `SELECT shot_index, video_url FROM shot_generation_tasks
+            WHERE session_id = ? AND status = 'completed'
+            ORDER BY shot_index ASC`
+        ).all(sessionId) as Array<{ shot_index: number; video_url: string | null }>;
+    if (plannedRows.length !== fullVideoPlan.shots.length) {
+      return res.status(409).json({
+        success: false,
+        code: 'full_video_plan_artifacts_missing',
+        error: `完整成片计划要求 ${fullVideoPlan.shots.length} 个镜头，但当前只有 ${plannedRows.length} 个已完成片段`,
+      });
+    }
+    const expectedIndexes = fullVideoPlan.shots.map((shot) => shot.shotIndex);
+    const actualIndexes = plannedRows.map((row) => Number(row.shot_index));
+    if (expectedIndexes.join(',') !== actualIndexes.join(',')) {
+      return res.status(409).json({
+        success: false,
+        code: 'full_video_plan_order_mismatch',
+        error: `已完成片段顺序 ${actualIndexes.join(',')} 与计划顺序 ${expectedIndexes.join(',')} 不一致`,
+      });
+    }
+    targetUrls = plannedRows.map((row) => String(row.video_url || '')).filter(Boolean);
+  } else if ((!targetUrls || targetUrls.length === 0) && sessionId) {
     const rows = req.authUser && req.authUser.role !== 'admin'
       ? db.prepare(
           `SELECT video_url FROM shot_generation_tasks
@@ -1312,7 +1877,7 @@ pipelineRouter.post('/concat-shots', async (req, res) => {
     const renderRes = await runFfmpegRender({
       videoSourceUrls: targetUrls,
       outputFilename: `concat_${sessionId || Date.now()}.mp4`,
-      durationSec: targetUrls.length * 4,
+      ...(fullVideoPlan ? { fullVideoPlan } : {}),
       ownerId: req.authUser?.id || req.body?._ownerId,
       isAdmin: req.authUser?.role === 'admin',
     });
@@ -1321,12 +1886,34 @@ pipelineRouter.post('/concat-shots', async (req, res) => {
       return res.status(500).json({ success: false, error: renderRes.error || '多片段 FFmpeg 拼接失败' });
     }
 
+    // A concat becomes the session's final artifact only after the QA-gated POST
+    // succeeds. Keep its state durable so polling and Step5 never surface a
+    // pre-QA preview as the final video.
+    const concatOwnerId = req.authUser?.id || req.body?._ownerId;
+    const concatUpdate = req.authUser?.role === 'admin'
+      ? db.prepare(
+          `UPDATE shot_generation_tasks
+              SET concat_status = 'completed', concatenated_video_url = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE session_id = ?`
+        )
+      : db.prepare(
+          `UPDATE shot_generation_tasks
+              SET concat_status = 'completed', concatenated_video_url = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE session_id = ? AND owner_id = ?`
+        );
+    if (req.authUser?.role === 'admin') {
+      concatUpdate.run(renderRes.data.videoUrl, sessionId);
+    } else {
+      concatUpdate.run(renderRes.data.videoUrl, sessionId, concatOwnerId);
+    }
+
     return res.json({
       success: true,
       data: {
         concatenatedVideoUrl: renderRes.data.videoUrl,
         downloadUrl: renderRes.data.downloadUrl,
         renderEngine: renderRes.data.renderEngine,
+        timeline: renderRes.data.timeline,
       },
     });
   } catch (err: any) {
@@ -1672,6 +2259,7 @@ pipelineRouter.post('/step5', async (req, res) => {
     videoSourceUrl = '',
     audioSourceUrl = '',
     previewVideoUrl = '',
+    durationSec: requestedDurationSec = null,
   } = inputs;
 
   const product = getProductContext(productId, productInfo);
@@ -1686,6 +2274,30 @@ pipelineRouter.post('/step5', async (req, res) => {
   const step2Output = inputs.step2Output || pipelineData?.step2?.output;
   const step3Output = inputs.step3Output || pipelineData?.step3?.output;
   const concatenatedVideoUrl = inputs.concatenatedVideoUrl || step2Output?.concatenatedVideoUrl || step2Output?.multiShotResult?.concatenatedVideoUrl;
+
+  // S3 最终质量门禁（Step5 侧）：多镜头会话必须在 concat 门禁通过后由 concat 产物进入成片。
+  // 若请求仍携带镜头会话（sessionId 或 step2Output.multiShotResult.sessionId），
+  // 在此再次校验 QA 判决——fail/unverified/未人工通过 的镜头禁止进入成片渲染。
+  const sessionIdForGate =
+    inputs.sessionId ||
+    step2Output?.multiShotResult?.sessionId ||
+    pipelineData?.step2?.output?.multiShotResult?.sessionId ||
+    null;
+  if (sessionIdForGate) {
+    const gate = evaluateFinalCompositeGate({
+      sessionId: String(sessionIdForGate),
+      ownerId: req.authUser?.id,
+      isAdmin: req.authUser?.role === 'admin',
+    });
+    if (!gate.canCompose) {
+      return res.status(409).json({
+        success: false,
+        error: `成片渲染被质量门禁阻断：${gate.reasons.join('；')}`,
+        code: 'composite_gate_blocked',
+        data: { gate },
+      });
+    }
+  }
 
   const rawVideoClips = inputs.videoSourceUrls || inputs.videoClips || (step2Output?.multiShotResult?.shots ? step2Output.multiShotResult.shots.map((s: any) => s.video_url).filter(Boolean) : []);
 
@@ -1713,6 +2325,34 @@ pipelineRouter.post('/step5', async (req, res) => {
     });
   }
 
+  // S0 产品上下文守卫：旧产品/stale/旧版本产物禁止发布（切换产品或编辑产品后 100% 阻断）
+  const requestedProductId = productId || (productInfo as any)?.id;
+  const currentRevision = requestedProductId
+    ? ((db.prepare('SELECT revision FROM products WHERE id = ?').get(requestedProductId) as
+        | { revision: number | null }
+        | undefined)?.revision ?? null)
+    : null;
+  const currentProductVersion = currentRevision == null ? null : String(currentRevision);
+  const contextVerdict = assertPublishableVideoContext(
+    requestedProductId,
+    [...(Array.isArray(rawVideoClips) ? rawVideoClips : []), resolvedVideo],
+    currentProductVersion,
+    req.authUser?.id || 'system'
+  );
+  if (contextVerdict.ok === false) {
+    return res.status(409).json({
+      success: false,
+      error: contextVerdict.reason,
+      code: contextVerdict.code,
+      source: 'context-guard',
+      data: {
+        artifactId: contextVerdict.artifactId,
+        artifactProductId: contextVerdict.artifactProductId,
+        productId: requestedProductId,
+      },
+    });
+  }
+
   const brandStamp = `${product.name}`;
   const timeline: Array<{
     at: string;
@@ -1736,7 +2376,7 @@ pipelineRouter.post('/step5', async (req, res) => {
 
   const renderSubtitles: Array<{ text: string; at?: string; startSec?: number; endSec?: number }> = [];
 
-  if (Array.isArray(shotList) && shotList.length > 0) {
+  if (subtitleStyle !== 'none' && Array.isArray(shotList) && shotList.length > 0) {
     let currentSec = 0;
     shotList.forEach((shot: any, idx: number) => {
       let startSec = currentSec;
@@ -1786,7 +2426,7 @@ pipelineRouter.post('/step5', async (req, res) => {
         });
       }
     });
-  } else {
+  } else if (subtitleStyle !== 'none') {
     const defaultLines = [
       title || hook || step3Output?.title || step3Output?.hook || `体验 ${product.name}！`,
       product.sgsData ? `SGS: ${String(product.sgsData).split(',')[0]}` : '',
@@ -1819,10 +2459,18 @@ pipelineRouter.post('/step5', async (req, res) => {
     });
   }
 
-  const durationSec = renderSubtitles.length > 0
-    ? Math.max(...renderSubtitles.map((s) => s.endSec || 4), 4)
-    : 4;
+  // A pre-composed multi-shot source already has its real timeline.  Callers
+  // such as the full-video planner may provide that duration explicitly; do
+  // not silently truncate the result to the legacy four-second subtitle
+  // fallback when no narration track is present yet.
+  const explicitDurationSec = Number(requestedDurationSec);
+  const durationSec = Number.isFinite(explicitDurationSec) && explicitDurationSec > 0
+    ? explicitDurationSec
+    : renderSubtitles.length > 0
+      ? Math.max(...renderSubtitles.map((s) => s.endSec || 4), 4)
+      : 4;
 
+  const renderStartedAt = Date.now();
   const renderResult = await runFfmpegRender({
     aspectRatio,
     videoSourceUrl: rawVideoClips.length > 1 ? undefined : videoForRender,
@@ -1837,6 +2485,27 @@ pipelineRouter.post('/step5', async (req, res) => {
   });
 
   if (!renderResult.success || !renderResult.data) {
+    // S1 成本账本：渲染失败记账（失败原因可追溯）
+    recordPipelineCost(
+      {
+        id: `cost-render-failed-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        scope: 'run',
+        runId: typeof (inputs as any)?._runId === 'string'
+          ? String((inputs as any)._runId)
+          : typeof (inputs as any)?.sessionId === 'string'
+            ? String((inputs as any).sessionId)
+            : undefined,
+        provider: 'local-ffmpeg',
+        model: 'ffmpeg',
+        failureReason: 'render_failed',
+        retries: 0,
+        billing: [],
+        estimatedUsd: 'unknown',
+        actualUsd: 'unknown',
+        source: 'ledger',
+      },
+      req.authUser?.id || 'system'
+    );
     return res.status(500).json({
       success: false,
       error: renderResult.error || 'FFmpeg 渲染失败',
@@ -1849,13 +2518,73 @@ pipelineRouter.post('/step5', async (req, res) => {
   }
 
   const out = renderResult.data;
+  // S1 成本账本：成片合成（本地 ffmpeg，无 provider 计费 → 成本 unknown；耗时实测）
+  recordPipelineCost(
+    {
+      id: `cost-render-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      scope: 'run',
+      runId: typeof (inputs as any)?._runId === 'string'
+        ? String((inputs as any)._runId)
+        : typeof (inputs as any)?.sessionId === 'string'
+          ? String((inputs as any).sessionId)
+          : undefined,
+      provider: 'local-ffmpeg',
+      model: 'ffmpeg',
+      generationMs: Date.now() - renderStartedAt,
+      retries: 0,
+      billing: [],
+      estimatedUsd: 'unknown',
+      actualUsd: 'unknown',
+      source: 'ledger',
+    },
+    req.authUser?.id || 'system'
+  );
   const responseSource = renderResult.source || 'ffmpeg';
-  const firstFrameSource =
+  // S0 provenance：product_conditioned 声明必须由**服务端可验证的证据**支撑
+  // （product_assets 登记的真实产品资产，或可追溯来源中绑定该产品的未过期产物）。
+  // 客户端提交的 firstFrameEvidenceUrl 字段一律不信任 —— 任意非空字符串不得换取确定性评分。
+  const claimedFirstFrameSource =
     inputs.firstFrameSource ||
     step2Output?.firstFrameSource ||
     pipelineData?.step2?.output?.firstFrameSource ||
     undefined;
+  const claimedEvidenceUrls = [
+    inputs.firstFrameEvidenceUrl,
+    step2Output?.firstFrameEvidenceUrl,
+    step2Output?.productHeroFrameUrl,
+    pipelineData?.step2?.output?.productHeroFrameUrl,
+  ];
+  const trustedEvidence = claimedEvidenceUrls.find((url) =>
+    isTrustedFirstFrameEvidence(requestedProductId, url, req.authUser?.id || 'system')
+  );
+  const firstFrameSource = resolveFirstFrameSource(
+    claimedFirstFrameSource,
+    trustedEvidence ? [trustedEvidence] : []
+  );
+  // S0 手工链路产物登记：本次渲染使用的视频源与成片统一登记，
+  // 切换产品后这些 URL 会被守卫追溯并 100% 阻断。
+  try {
+    registerGeneratedMedia(
+      requestedProductId,
+      currentProductVersion,
+      [
+        resolvedVideo,
+        ...(Array.isArray(rawVideoClips) ? rawVideoClips : []),
+        out.videoUrl,
+        out.downloadUrl,
+      ],
+      req.authUser?.id || 'system'
+    );
+  } catch (registerErr: any) {
+    console.error('[Step5] generated media registration failed:', registerErr.message);
+    return res.status(500).json({
+      success: false,
+      error: '成片已生成，但产品归属登记失败；为防止跨产品误发布，本次结果不可用，请重试',
+      code: 'MEDIA_REGISTRATION_FAILED',
+    });
+  }
 
+  const qa = await qaShotVideo(out.videoUrl || '');
   const publishReport = evaluatePublishGate({
     videoUrl: out.videoUrl,
     source: responseSource,
@@ -1873,6 +2602,8 @@ pipelineRouter.post('/step5', async (req, res) => {
     ),
     firstFrameSource,
     clipCount: rawVideoClips.length || (videoForRender ? 1 : 0),
+    qaReport: qa,
+    evidence: { qaShot: qa, firstFrameSource, firstFrameEvidenceUrl: trustedEvidence ?? undefined },
   });
 
   // 成片未通过发布门禁：硬失败（缺视频源/mock）→ 422 failed；软失败（分数/警告）→ needs_review

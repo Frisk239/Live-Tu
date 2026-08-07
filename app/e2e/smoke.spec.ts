@@ -67,6 +67,26 @@ test.describe('BUV workbench smoke', () => {
       await expect(page.locator('h1').filter({ hasText: p.heading }).first()).toBeVisible({ timeout: 10000 });
       if (p.title === '后台任务中心页面') {
         await expect(page.getByRole('heading', { name: '生产运行记录' })).toBeVisible();
+        // 隔离数据库没有任何历史 run（S0：测试不依赖开发库残留状态）。
+        // 创建一个 queued run（服务器 PIPELINE_WORKER_DISABLED=true，不会产生真实付费调用），
+        // 再点「刷新」让 Step x/5 渲染确定存在。
+        await page.evaluate(async () => {
+          await fetch('/api/runs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `smoke-${Date.now()}` },
+            body: JSON.stringify({
+              pipelineData: {
+                step1: { inputs: { mediaUrl: 'https://example.com/reference.mp4' } },
+                step2: { inputs: {} },
+                step3: { inputs: {} },
+                step4: { inputs: {} },
+                step5: { inputs: {} },
+              },
+              productId: 'prod_buv_cleanser',
+            }),
+          });
+        });
+        await page.getByRole('button', { name: '刷新' }).click();
         await expect(page.getByText(/Step [1-5]\/5/).first()).toBeVisible();
       }
     }

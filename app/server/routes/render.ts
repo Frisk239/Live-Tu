@@ -7,6 +7,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { assertSafeRemoteUrl } from '../lib/safe-url';
 import { canUseMediaReference, registerOwnedMedia } from '../lib/media-ownership';
+import {
+  composeFullVideoTimeline,
+  type FullVideoTimeline,
+  validateFullVideoTimeline,
+} from '../lib/full-video-timeline';
+import { type FullVideoPlan, validateFullVideoPlan } from '../lib/full-video-plan';
 
 export const renderRouter = Router();
 const execAsync = promisify(exec);
@@ -518,8 +524,126 @@ export interface RenderResult {
     videoUrl: string;
     downloadUrl: string;
     renderEngine: string;
+    /** Present only for the quality path: real durations + transition decisions. */
+    timeline?: FullVideoTimeline;
   };
   source?: string;
+}
+
+/**
+ * Build the concat portion of a multi-clip filter graph. When every source has
+ * an audio stream and no replacement BGM is supplied, both streams must travel
+ * through concat; `a=0` silently produces a mute final video.
+ */
+export function buildMultiClipConcatPlan(
+  clipCount: number,
+  resolutionFilter: string,
+  includeClipAudio: boolean
+): { scaleFilters: string[]; concatFilter: string; audioOutputLabel: string | null } {
+  const scaleFilters: string[] = [];
+  const concatInputs: string[] = [];
+  for (let i = 0; i < clipCount; i++) {
+    scaleFilters.push(
+      `[${i}:v]scale=${resolutionFilter}:force_original_aspect_ratio=increase,crop=${resolutionFilter},setsar=1[v${i}]`
+    );
+    concatInputs.push(includeClipAudio ? `[v${i}][${i}:a]` : `[v${i}]`);
+  }
+  return includeClipAudio
+    ? {
+        scaleFilters,
+        concatFilter: `${concatInputs.join('')}concat=n=${clipCount}:v=1:a=1[vconcat][aconcat]`,
+        audioOutputLabel: '[aconcat]',
+      }
+    : {
+        scaleFilters,
+        concatFilter: `${concatInputs.join('')}concat=n=${clipCount}:v=1:a=0[vconcat]`,
+        audioOutputLabel: null,
+      };
+}
+
+function ffmpegTransitionName(kind: FullVideoTimeline['transitions'][number]['kind']): string {
+  switch (kind) {
+    case 'fade':
+      return 'fadeblack';
+    case 'dissolve':
+      return 'fade';
+    case 'match_cut':
+    default:
+      return '';
+  }
+}
+
+/**
+ * Translate the pure FullVideoTimeline into FFmpeg's video-only filter graph.
+ * Audio is intentionally not carried through this path: the visual-demo phase
+ * has no narration/BGM contract yet, and stitching arbitrary provider audio
+ * would make a clean visual cut look less coherent rather than more coherent.
+ */
+export function buildMultiClipTimelineRenderPlan(
+  timeline: FullVideoTimeline,
+  resolutionFilter: string
+): { filters: string[]; videoOutputLabel: string; expectedDurationSec: number } {
+  const validationErrors = validateFullVideoTimeline(timeline);
+  if (validationErrors.length > 0) {
+    throw new Error(`invalid full-video timeline: ${validationErrors.join('; ')}`);
+  }
+
+  const filters: string[] = timeline.clips.map((clip, index) =>
+    `[${index}:v]trim=start=0:end=${clip.renderDurationSec.toFixed(3)},` +
+      `setpts=PTS-STARTPTS,scale=${resolutionFilter}:force_original_aspect_ratio=increase,` +
+      `crop=${resolutionFilter},setsar=1[v${index}]`
+  );
+
+  let currentLabel = 'v0';
+  let assembledDurationSec = timeline.clips[0]?.renderDurationSec ?? 0;
+  for (let index = 1; index < timeline.clips.length; index += 1) {
+    const transition = timeline.transitions[index - 1];
+    const nextLabel = `v${index}`;
+    const outputLabel = `vt${index}`;
+    if (transition.kind === 'match_cut' || transition.durationSec <= 0) {
+      filters.push(`[${currentLabel}][${nextLabel}]concat=n=2:v=1:a=0[${outputLabel}]`);
+      assembledDurationSec += timeline.clips[index].renderDurationSec;
+    } else {
+      const offsetSec = Math.max(0, assembledDurationSec - transition.durationSec);
+      filters.push(
+        `[${currentLabel}][${nextLabel}]xfade=transition=${ffmpegTransitionName(transition.kind)}:` +
+          `duration=${transition.durationSec.toFixed(3)}:offset=${offsetSec.toFixed(3)}[${outputLabel}]`
+      );
+      assembledDurationSec += timeline.clips[index].renderDurationSec - transition.durationSec;
+    }
+    currentLabel = outputLabel;
+  }
+
+  return {
+    filters,
+    videoOutputLabel: `[${currentLabel}]`,
+    expectedDurationSec: Math.round(assembledDurationSec * 1000) / 1000,
+  };
+}
+
+/**
+ * Preserve the source clip's native audio when Step 5 is styling a single
+ * generated clip without a replacement BGM.  `-map 0:a?` is intentionally
+ * optional: silent provider outputs remain renderable, while clips that do
+ * carry narration/music do not become mute at the final export step.
+ */
+export function buildSingleClipAudioMap(preserveInputAudio: boolean): string {
+  return preserveInputAudio
+    ? '-map 0:v:0 -map 0:a? -c:a aac'
+    : '-map 0:v:0 -an';
+}
+
+async function hasAudioStream(filePath: string): Promise<boolean> {
+  try {
+    const bin = quoteCmdPath(resolveFfprobeBinary());
+    const { stdout } = await execAsync(
+      `${bin} -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 ${quoteCmdPath(filePath)}`,
+      { timeout: 15_000, maxBuffer: 1024 * 1024 }
+    );
+    return stdout.trim() === 'audio';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -534,6 +658,8 @@ export async function runFfmpegRender(params: {
   brandStamp?: string;
   outputFilename?: string;
   durationSec?: number;
+  /** A validated visual plan activates duration-driven composition and transitions. */
+  fullVideoPlan?: FullVideoPlan;
   ownerId?: string;
   isAdmin?: boolean;
 }): Promise<RenderResult> {
@@ -546,6 +672,7 @@ export async function runFfmpegRender(params: {
     brandStamp = '',
     outputFilename = `v_${Date.now()}.mp4`,
     durationSec = 4,
+    fullVideoPlan,
     ownerId,
     isAdmin = false,
   } = params;
@@ -591,6 +718,42 @@ export async function runFfmpegRender(params: {
     resolvedVideoPaths.push(resolved);
   }
 
+  let fullVideoTimeline: FullVideoTimeline | undefined;
+  if (fullVideoPlan) {
+    const planErrors = validateFullVideoPlan(fullVideoPlan);
+    if (planErrors.length > 0) {
+      return { success: false, error: `完整成片计划无效: ${planErrors.join('; ')}` };
+    }
+    if (fullVideoPlan.shots.length !== resolvedVideoPaths.length) {
+      return {
+        success: false,
+        error: `完整成片计划需要 ${fullVideoPlan.shots.length} 个镜头，但收到 ${resolvedVideoPaths.length} 个已完成片段`,
+      };
+    }
+    const sourceProbes = await Promise.all(resolvedVideoPaths.map((source) => probeRenderOutput(source)));
+    if (sourceProbes.some((probe) => !probe?.durationSec)) {
+      return {
+        success: false,
+        error: '无法探测全部生成片段的真实时长；拒绝使用镜头数量估时合成',
+      };
+    }
+    try {
+      fullVideoTimeline = composeFullVideoTimeline({
+        plan: fullVideoPlan,
+        artifacts: sourceProbes.map((probe, index) => ({
+          shotIndex: index + 1,
+          videoUrl: rawUrls[index],
+          durationSec: probe!.durationSec,
+        })),
+      });
+    } catch (error: any) {
+      return {
+        success: false,
+        error: `完整成片时间线不合格: ${error?.message || String(error)}`,
+      };
+    }
+  }
+
   const ffmpegAvailable = await isFFmpegInstalled();
   if (!ffmpegAvailable) {
     return {
@@ -623,14 +786,6 @@ export async function runFfmpegRender(params: {
         ? `${inputArgs} -i "${audioPath}"`
         : inputArgs;
 
-      const scaleFilters: string[] = [];
-      const concatInputs: string[] = [];
-      for (let i = 0; i < resolvedVideoPaths.length; i++) {
-        scaleFilters.push(`[${i}:v]scale=${resolutionFilter}:force_original_aspect_ratio=increase,crop=${resolutionFilter},setsar=1[v${i}]`);
-        concatInputs.push(`[v${i}]`);
-      }
-
-      const concatFilter = `${concatInputs.join('')}concat=n=${resolvedVideoPaths.length}:v=1:a=0[vconcat]`;
       const textFilters: string[] = [];
 
       (subtitles || []).forEach((sub, idx) => {
@@ -665,10 +820,34 @@ export async function runFfmpegRender(params: {
         );
       }
 
-      const postFilter = textFilters.length > 0 ? `,[vconcat]${textFilters.join(',')}[vout]` : `;[vconcat]null[vout]`;
-      const filterComplex = `${scaleFilters.join(';')};${concatFilter}${postFilter}`;
-
-      const audioMap = audioPath ? `-map ${audioInputIndex}:a -c:a aac -shortest` : '-an';
+      let filterComplex: string;
+      let audioMap: string;
+      if (fullVideoTimeline) {
+        const timelineRender = buildMultiClipTimelineRenderPlan(fullVideoTimeline, resolutionFilter);
+        const postFilter = textFilters.length > 0
+          ? `;${timelineRender.videoOutputLabel}${textFilters.join(',')}[vout]`
+          : `;${timelineRender.videoOutputLabel}null[vout]`;
+        filterComplex = `${timelineRender.filters.join(';')}${postFilter}`;
+        // The current visual-demo contract is deliberately video-only. A future
+        // narration/BGM composer will own audio timing instead of this adapter.
+        audioMap = '-an';
+      } else {
+        const includeClipAudio = !audioPath && (
+          await Promise.all(resolvedVideoPaths.map((videoPath) => hasAudioStream(videoPath)))
+        ).every(Boolean);
+        const { scaleFilters, concatFilter, audioOutputLabel } = buildMultiClipConcatPlan(
+          resolvedVideoPaths.length,
+          resolutionFilter,
+          includeClipAudio
+        );
+        const postFilter = textFilters.length > 0 ? `,[vconcat]${textFilters.join(',')}[vout]` : `;[vconcat]null[vout]`;
+        filterComplex = `${scaleFilters.join(';')};${concatFilter}${postFilter}`;
+        audioMap = audioPath
+          ? `-map ${audioInputIndex}:a -c:a aac -shortest`
+          : audioOutputLabel
+            ? `-map "${audioOutputLabel}" -c:a aac -shortest`
+            : '-an';
+      }
       const cmd = `${bin} -y ${fullInputArgs} -filter_complex "${filterComplex}" -map "[vout]" ${audioMap} -c:v libx264 -preset ultrafast "${targetPath}"`;
 
       await execAsync(cmd, { timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
@@ -720,7 +899,8 @@ export async function runFfmpegRender(params: {
             })
           );
         }
-        const cmd = `${bin} -y -i "${singleVideoPath}" -vf "${filters.join(',')}" -c:v libx264 -preset ultrafast -an -t ${safeDurationSec} "${targetPath}"`;
+        const audioMap = buildSingleClipAudioMap(await hasAudioStream(singleVideoPath));
+        const cmd = `${bin} -y -i "${singleVideoPath}" -vf "${filters.join(',')}" ${audioMap} -c:v libx264 -preset ultrafast -t ${safeDurationSec} "${targetPath}"`;
         await execAsync(cmd, { timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
       }
     }
@@ -745,8 +925,11 @@ export async function runFfmpegRender(params: {
         videoUrl: relativeUrl,
         downloadUrl: relativeUrl,
         renderEngine: resolvedVideoPaths.length > 1
-          ? `Native System FFmpeg (Multi-Shot Concat Filter Chain: ${resolvedVideoPaths.length} clips)`
+          ? fullVideoTimeline
+            ? `Native System FFmpeg (Full Video Timeline: ${resolvedVideoPaths.length} clips, ${fullVideoTimeline.transitions.filter((transition) => transition.durationSec > 0).length} visual transitions)`
+            : `Native System FFmpeg (Multi-Shot Concat Filter Chain: ${resolvedVideoPaths.length} clips)`
           : 'Native System FFmpeg (Multi-track Filter Chain)',
+        ...(fullVideoTimeline ? { timeline: fullVideoTimeline } : {}),
       },
     };
   } catch (err: any) {

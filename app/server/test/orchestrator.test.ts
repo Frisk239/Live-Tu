@@ -12,6 +12,7 @@ process.env.NODE_ENV = 'test';
 const { db, initDatabase } = await import('../lib/db');
 const { PipelineOrchestrator } = await import('../lib/pipeline-orchestrator');
 type StepExecutor = import('../lib/pipeline-orchestrator').StepExecutor;
+const PASSED_PUBLISH_REPORT = { passed: true, status: 'passed', blockers: [], warnings: [] };
 
 before(() => {
   initDatabase();
@@ -30,7 +31,7 @@ async function waitForStatus(orchestrator: InstanceType<typeof PipelineOrchestra
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
     const snapshot = orchestrator.get(id, 'test-owner');
-    if (['completed', 'failed', 'cancelled'].includes(snapshot.status)) return snapshot;
+    if (['completed', 'failed', 'cancelled', 'needs_review'].includes(snapshot.status)) return snapshot;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error('orchestrator test timed out');
@@ -51,7 +52,7 @@ test('durably executes all five steps and deduplicates start requests', async ()
             audioSampleUrl: '/uploads/bgm/track.mp3',
           },
         },
-        5: { videoUrl: '/uploads/renders/final.mp4' },
+        5: { videoUrl: '/uploads/renders/final.mp4', publishReport: PASSED_PUBLISH_REPORT },
       };
       return { data: outputs[step], source: 'fake' };
     },
@@ -117,7 +118,7 @@ test('retries from the failed step without re-running completed upstream steps',
                 ? { title: 'title', hook: 'hook', cta: 'cta' }
                 : step === 4
                   ? { bgm_recommendation: { track_name: 'track' } }
-                  : { videoUrl: '/uploads/renders/final.mp4' },
+                  : { videoUrl: '/uploads/renders/final.mp4', publishReport: PASSED_PUBLISH_REPORT },
         source: 'fake',
       };
     },
@@ -172,7 +173,10 @@ test('preserves the complete provider task id while polling Seedance', async () 
       if (step === 4) {
         return { data: { bgm_recommendation: { track_name: 'track' } }, source: 'fake' };
       }
-      return { data: { videoUrl: '/uploads/renders/final.mp4' }, source: 'fake' };
+      return {
+        data: { videoUrl: '/uploads/renders/final.mp4', publishReport: PASSED_PUBLISH_REPORT },
+        source: 'fake',
+      };
     },
     async pollSeedance(taskId) {
       polledTaskIds.push(taskId);
@@ -328,7 +332,14 @@ test('cancelled runs do not commit late step results', async () => {
 });
 
 test('S1.3 submits multi-shot shots one-by-one via submitShot before polling', async () => {
-  const submitted: Array<{ sessionId: string; shotIndex: number; model?: string; ownerId?: string }> = [];
+  const submitted: Array<{
+    sessionId: string;
+    shotIndex: number;
+    model?: string;
+    ownerId?: string;
+    runId?: string;
+    retryCount?: number;
+  }> = [];
   let pollCount = 0;
   const fakeExecutor: StepExecutor = {
     async execute(step) {
@@ -354,7 +365,10 @@ test('S1.3 submits multi-shot shots one-by-one via submitShot before polling', a
       if (step === 4) {
         return { data: { bgm_recommendation: { track_name: 'track' } }, source: 'fake' };
       }
-      return { data: { videoUrl: '/uploads/renders/final.mp4' }, source: 'fake' };
+      return {
+        data: { videoUrl: '/uploads/renders/final.mp4', publishReport: PASSED_PUBLISH_REPORT },
+        source: 'fake',
+      };
     },
     async pollSeedance() {
       throw new Error('not expected');
@@ -373,8 +387,8 @@ test('S1.3 submits multi-shot shots one-by-one via submitShot before polling', a
         },
       };
     },
-    async submitShot(sessionId, shotIndex, model, ownerId) {
-      submitted.push({ sessionId, shotIndex, model, ownerId });
+    async submitShot(sessionId, shotIndex, model, ownerId, runId, retryCount) {
+      submitted.push({ sessionId, shotIndex, model, ownerId, runId, retryCount });
       return { shotIndex, status: 'generating', seedanceTaskId: `seed-${shotIndex}` };
     },
   };
@@ -396,13 +410,105 @@ test('S1.3 submits multi-shot shots one-by-one via submitShot before polling', a
   assert.equal(completed.status, 'completed');
   // 每镜独立提交一次，owner 从 run 透传
   assert.deepEqual(
-    submitted.map((s) => ({ shotIndex: s.shotIndex, model: s.model, ownerId: s.ownerId })),
+    submitted.map((s) => ({
+      shotIndex: s.shotIndex,
+      model: s.model,
+      ownerId: s.ownerId,
+      runId: s.runId,
+      retryCount: s.retryCount,
+    })),
     [
-      { shotIndex: 1, model: 'doubao-seedance-2-0-fast', ownerId: 'test-owner' },
-      { shotIndex: 2, model: 'doubao-seedance-2-0-fast', ownerId: 'test-owner' },
+      {
+        shotIndex: 1,
+        model: 'doubao-seedance-2-0-fast',
+        ownerId: 'test-owner',
+        runId: run.id,
+        retryCount: 0,
+      },
+      {
+        shotIndex: 2,
+        model: 'doubao-seedance-2-0-fast',
+        ownerId: 'test-owner',
+        runId: run.id,
+        retryCount: 0,
+      },
     ]
   );
   assert.ok(pollCount >= 1, '提交完成后应轮询 shot session');
   const step2Output = completed.steps[1].output as any;
   assert.equal(step2Output.multiShotResult.shots[0].seedanceTaskId, 'seed-1');
+});
+
+test('S0 soft gate: step5 publishReport needs_review lands on needs_review without CHECK failure', async () => {
+  let publishReport: any = { status: 'needs_review', passed: false, blockers: ['duration_below_12s'] };
+  const fakeExecutor: StepExecutor = {
+    async execute(step) {
+      if (step === 1) return { data: { static_image_prompt: 'prompt', shotList: [] }, source: 'fake' };
+      if (step === 2) return { data: { video_prompt: 'motion', previewVideoUrl: '/uploads/renders/preview.mp4' }, source: 'fake' };
+      if (step === 3) return { data: { title: 'title', hook: 'hook', cta: 'cta' }, source: 'fake' };
+      if (step === 4) return { data: { bgm_recommendation: { track_name: 'track' } }, source: 'fake' };
+      return {
+        data: {
+          videoUrl: '/uploads/renders/final.mp4',
+          // 软门禁：成片已生成但未达发布标准 → 编排器必须落到 needs_review，不得静默 completed
+          publishReport,
+        },
+        source: 'fake',
+      };
+    },
+    async pollSeedance() { throw new Error('not expected'); },
+    async pollShotSession() { throw new Error('not expected'); },
+    async submitShot() { throw new Error('not expected'); },
+  };
+  const orchestrator = new PipelineOrchestrator('http://unused', fakeExecutor);
+  const run = orchestrator.start({
+    ownerId: 'test-owner',
+    idempotencyKey: 'soft-gate-needs-review-request',
+    productId: 'prod_buv_cleanser',
+    pipelineData: {
+      step1: { inputs: { mediaUrl: 'https://example.com/reference.mp4' } },
+      step2: { inputs: { videoModel: 'Seedance 2.0 Fast' } },
+      step3: { inputs: {} },
+      step4: { inputs: {} },
+      step5: { inputs: {} },
+    },
+  });
+
+  const snapshot = await waitForStatus(orchestrator, run.id);
+  assert.equal(snapshot.status, 'needs_review');
+  assert.equal(snapshot.steps[4].status, 'needs_review');
+  assert.equal(snapshot.steps[4].errorCode, 'PUBLISH_NEEDS_REVIEW');
+
+  // S0 provenance：run 与 artifacts 都记录绑定产品与版本；step2 产物记录实际生成的视频模型
+  const runRow = db.prepare('SELECT product_id, product_version FROM pipeline_runs WHERE id = ?').get(run.id) as {
+    product_id: string | null;
+    product_version: string | null;
+  };
+  assert.equal(runRow.product_id, 'prod_buv_cleanser');
+  assert.ok(runRow.product_version, 'run 应定格绑定产品的 updated_at 作为 product_version');
+
+  const artifact = db
+    .prepare('SELECT product_id, product_version, model FROM artifacts WHERE run_id = ? AND step_number = 2')
+    .get(run.id) as { product_id: string | null; product_version: string | null; model: string | null };
+  assert.equal(artifact.product_id, 'prod_buv_cleanser');
+  assert.equal(artifact.product_version, runRow.product_version);
+  assert.equal(artifact.model, 'Seedance 2.0 Fast');
+
+  // 防御性白名单：即使 status 字符串写成 passed，只要 passed=false 也不得 completed。
+  publishReport = { status: 'passed', passed: false, blockers: ['inconsistent_gate_contract'] };
+  const inconsistent = orchestrator.start({
+    ownerId: 'test-owner',
+    idempotencyKey: 'soft-gate-inconsistent-report-request',
+    productId: 'prod_buv_cleanser',
+    pipelineData: {
+      step1: { inputs: { mediaUrl: 'https://example.com/reference.mp4' } },
+      step2: { inputs: { videoModel: 'Seedance 2.0 Fast' } },
+      step3: { inputs: {} },
+      step4: { inputs: {} },
+      step5: { inputs: {} },
+    },
+  });
+  const inconsistentSnapshot = await waitForStatus(orchestrator, inconsistent.id);
+  assert.equal(inconsistentSnapshot.status, 'needs_review');
+  assert.equal(inconsistentSnapshot.steps[4].status, 'needs_review');
 });

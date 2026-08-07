@@ -3,11 +3,21 @@ dist/
 build/
 .env
 *.env
+!.env.example
 *.log
 *.log.*
 *.db*
 app/data/
 uploads/
+
+# Credentials & secrets (never commit real env files)
+.env.*
+!.env.example
+!.env.*.example
+deploy/.env.*
+!deploy/.env.*.example
+app/deploy/.env.*
+!app/deploy/.env.*.example
 
 # Media and reference videos
 爆款视频/
@@ -29,6 +39,16 @@ playwright-report/
 scratch/
 app/scratch/
 
+# Runtime data (SQLite, uploads, backups)
+app/data/
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Docker compose with hardcoded secrets (use deploy/ templates instead)
+compose.demo.yml
+
 # E2E (uncomment if you want to ignore e2e tests)
 # app/e2e/
 
@@ -37,14 +57,39 @@ CONTEXT.md
 docs/
 yuanxing/
 
-# VS Code
+# VS Code / IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+.zcode/
 
 # OS
 .DS_Store
 Thumbs.db
 
-docs/DEPLOY_AGENT_PROMPT.md
+# P3 真实 Demo 证据（产物较大，不入库）
+app/p3-evidence/
+
+# Open-source reference clones (read-only research)
+reference/
+
+# Demo assets (large binary files for demo only)
+demo-assets/
+
+# Internal planning docs (not for delivery)
+PRODUCTION_READINESS.md
+implementation_plan.md
+*_DELIVERY_REPORT.md
+*_GAP_ANALYSIS.md
+*_GAP_RESEARCH.md
+*_ROADMAP.md
+*_PLAN.md
+*_EVIDENCE.md
+*_RESEARCH.md
+*_EXECUTOR_PROMPT.md
+app/S4_1_DELIVERY_REPORT.md
+
+# Evidence and demo artifacts
+p0-evidence/
+*.tar.gz

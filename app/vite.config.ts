@@ -28,6 +28,11 @@ export default defineConfig(({mode}) => {
       },
     },
     server: {
+      // 内网穿透访问开发服务器时，仅允许明确配置的 Host。
+      allowedHosts: (env.VITE_ALLOWED_HOSTS || 'frp-ski.com')
+        .split(',')
+        .map((host) => host.trim())
+        .filter(Boolean),
       watch: {
         ignored: ['**/data/**', '**/uploads/**', '**/dist/**', '**/test-results/**', '**/.system_generated/**', '**/*.db*'],
       },

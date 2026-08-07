@@ -3,6 +3,7 @@ import express from 'express';
 import { materialsRouter } from '../routes/materials';
 import path from 'node:path';
 import fs from 'node:fs';
+import { authStub } from './_helpers';
 
 async function runMaterialsTest() {
   console.log('--- Starting Ticket 04 Materials CRUD Tests ---');
@@ -10,6 +11,8 @@ async function runMaterialsTest() {
 
   const app = express();
   app.use(express.json({ limit: '10mb' }));
+  // 路由依赖 req.authUser（权限/归属过滤），测试以管理员身份挂载
+  app.use(authStub);
   app.use('/api/materials', materialsRouter);
 
   const server = app.listen(3097);
@@ -18,8 +21,8 @@ async function runMaterialsTest() {
     // Test 1: GET /api/materials
     const res1 = await fetch('http://localhost:3097/api/materials');
     const json1 = await res1.json();
-    console.assert(json1.success === true, 'Test 1 Failed: GET materials success false');
-    console.assert(Array.isArray(json1.data), 'Test 1 Failed: GET materials data not array');
+    if (!(json1.success === true)) throw new Error('Test 1 Failed: GET materials success false');
+    if (!(Array.isArray(json1.data))) throw new Error('Test 1 Failed: GET materials data not array');
     console.log(`✓ Test 1 Passed: GET /api/materials returned ${json1.data.length} materials`);
 
     // Test 2: POST /api/materials/upload with base64 DataURL
@@ -35,15 +38,18 @@ async function runMaterialsTest() {
       }),
     });
     const json2 = await res2.json();
-    console.assert(json2.success === true, 'Test 2 Failed: POST materials/upload success false');
+    if (!(json2.success === true)) throw new Error('Test 2 Failed: POST materials/upload success false');
     const createdItem = json2.data;
-    console.assert(Boolean(createdItem?.id), 'Test 2 Failed: Missing created material ID');
-    console.assert(createdItem.url.startsWith('/uploads/materials/'), 'Test 2 Failed: Incorrect material URL');
+    if (!(Boolean(createdItem?.id))) throw new Error('Test 2 Failed: Missing created material ID');
+    if (!(createdItem.url.startsWith('/uploads/materials/'))) throw new Error('Test 2 Failed: Incorrect material URL');
     console.log(`✓ Test 2 Passed: POST /api/materials/upload saved file to disk and SQLite (ID: ${createdItem.id})`);
 
-    // Verify file exists on disk
-    const diskPath = path.join(process.cwd(), createdItem.filePath);
-    console.assert(fs.existsSync(diskPath), 'Test 2 Verification Failed: File not found on disk');
+    // Verify file exists on disk（filePath 相对 uploads 根，解析到测试隔离目录）
+    const diskPath = path.resolve(
+      process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'),
+      createdItem.filePath.replace(/^uploads[\\/]/, '')
+    );
+    if (!(fs.existsSync(diskPath))) throw new Error('Test 2 Verification Failed: File not found on disk');
     console.log(`✓ Test 2 Verification Passed: Disk file verified at ${diskPath}`);
 
     // Test 3: DELETE /api/materials/:id
@@ -51,14 +57,14 @@ async function runMaterialsTest() {
       method: 'DELETE',
     });
     const json3 = await res3.json();
-    console.assert(json3.success === true, 'Test 3 Failed: DELETE material success false');
+    if (!(json3.success === true)) throw new Error('Test 3 Failed: DELETE material success false');
     console.log(`✓ Test 3 Passed: DELETE /api/materials/${createdItem.id} returned success`);
 
     // Verify file deleted from disk and SQLite
-    console.assert(!fs.existsSync(diskPath), 'Test 3 Verification Failed: File still exists on disk after deletion');
+    if (!(!fs.existsSync(diskPath))) throw new Error('Test 3 Verification Failed: File still exists on disk after deletion');
     const stmt = db.prepare('SELECT * FROM materials WHERE id = ?');
     const row = stmt.get(createdItem.id);
-    console.assert(!row, 'Test 3 Verification Failed: Record still in SQLite after deletion');
+    if (!(!row)) throw new Error('Test 3 Verification Failed: Record still in SQLite after deletion');
     console.log('✓ Test 3 Verification Passed: File removed from disk and record removed from SQLite');
 
     console.log('--- ALL TICKET 04 MATERIALS CRUD TESTS PASSED! ---');

@@ -78,6 +78,11 @@ test('persists multi-shot tasks before provider work and isolates sessions by ow
     const created = await createResponse.json();
     assert.equal(createResponse.status, 200, JSON.stringify(created));
     const sessionId = created.data.multiShotResult.sessionId as string;
+    db.prepare(
+      `INSERT INTO pipeline_runs (
+         id, owner_id, status, current_step, input_json, idempotency_key
+       ) VALUES (?, ?, 'running', 2, '{}', ?)`
+    ).run('run-multi-test', 'owner-one', 'multi-shot-cost-ledger-test');
 
     const persisted = db.prepare(
       'SELECT owner_id, status FROM shot_generation_tasks WHERE session_id = ?'
@@ -105,10 +110,19 @@ test('persists multi-shot tasks before provider work and isolates sessions by ow
     const submitShot = await fetch(`${baseUrl}/step2/submit-shot`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-test-user': 'owner-one' },
-      body: JSON.stringify({ sessionId, shotIndex: 1 }),
+      body: JSON.stringify({ sessionId, shotIndex: 1, _runId: 'run-multi-test', _retryCount: 1 }),
     });
     const submitBody = await submitShot.json();
     assert.equal(submitShot.status, 503, JSON.stringify(submitBody));
+    const { queryCostLedger } = await import('../lib/telemetry.ts');
+    const failedSubmissionCosts = queryCostLedger({
+      ownerId: 'owner-one',
+      runId: 'run-multi-test',
+      scope: 'shot',
+    });
+    assert.equal(failedSubmissionCosts.length, 1, '正式 submit-shot 失败必须写入 shot 成本账本');
+    assert.equal(failedSubmissionCosts[0].failureReason, 'provider_error');
+    assert.equal(failedSubmissionCosts[0].retries, 1);
 
     // 参数缺失应 400
     const missingParams = await fetch(`${baseUrl}/step2/submit-shot`, {

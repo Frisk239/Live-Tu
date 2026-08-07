@@ -1,5 +1,17 @@
-import { ModelMetadata, ModelConfigState } from '../data/models';
+import { ModelMetadata, ModelConfigState, DEFAULT_TEXT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '../data/models';
 import { PipelineData, TaskItem, MaterialItem, ProductItem, ProductAsset, StepId } from '../types';
+// S0 状态契约单一来源：与后端 SQLite CHECK 约束 / 编排器同一份定义（shared/run-state.ts）
+import type { RunStatus, StepStatus } from '../../shared/run-state';
+// S2 工作台契约单一来源：自主模式 / SaveState / 预检 / 确认点 / 重试（shared/workbench-contract.ts）
+import type {
+  AutonomyMode,
+  ConfirmResult,
+  ConfirmType,
+  PreflightResult,
+  RetryShotResult,
+  SaveState,
+  WorkbenchState,
+} from '../../shared/workbench-contract';
 
 /**
  * Standard REST API Client for AIGC Video Processing Pipeline
@@ -74,7 +86,7 @@ function parseAuthUser(value: any): AuthUser {
 export interface PipelineRunSnapshot {
   id: string;
   ownerId: string;
-  status: 'queued' | 'running' | 'waiting_external' | 'completed' | 'failed' | 'cancelled' | 'needs_review';
+  status: RunStatus;
   currentStep: number;
   errorCode?: string;
   errorMessage?: string;
@@ -82,7 +94,7 @@ export interface PipelineRunSnapshot {
   updatedAt: string;
   steps: Array<{
     step: number;
-    status: 'pending' | 'running' | 'waiting_external' | 'completed' | 'failed' | 'cancelled' | 'stale' | 'needs_review';
+    status: StepStatus;
     attempt: number;
     output?: any;
     errorCode?: string;
@@ -195,6 +207,199 @@ export const apiService = {
     },
   },
 
+  // --- S2 工作台（shared/workbench-contract 契约驱动） ---
+  workbench: {
+    async getState(opts: { runId?: string | null; sessionId?: string | null }): Promise<WorkbenchState> {
+      const params = new URLSearchParams();
+      if (opts.runId) params.set('runId', opts.runId);
+      if (opts.sessionId) params.set('sessionId', opts.sessionId);
+      const res = await fetch(`${API_BASE_URL}/workbench/state?${params.toString()}`);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '读取工作台状态失败');
+      if (!json.data || typeof json.data !== 'object' || Array.isArray(json.data)) {
+        throw new Error('工作台状态格式无效');
+      }
+      return json.data as WorkbenchState;
+    },
+
+    async saveDraft(opts: {
+      runId?: string | null;
+      sessionId?: string | null;
+      draftJson?: string | null;
+      autonomyMode?: AutonomyMode;
+      saveState?: SaveState;
+    }): Promise<WorkbenchState> {
+      const res = await fetch(`${API_BASE_URL}/workbench/draft`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // P1-2：草稿接口不接受 paidAuthEnabled（付费授权唯一入口 = /workbench/paid-auth）
+        body: JSON.stringify({
+          runId: opts.runId ?? null,
+          sessionId: opts.sessionId ?? null,
+          draftJson: opts.draftJson ?? null,
+          autonomyMode: opts.autonomyMode,
+          saveState: opts.saveState,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '保存草稿失败');
+      return json.data;
+    },
+
+    async setAutonomy(opts: {
+      runId?: string | null;
+      sessionId?: string | null;
+      autonomyMode: AutonomyMode;
+    }): Promise<WorkbenchState> {
+      const res = await fetch(`${API_BASE_URL}/workbench/autonomy`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: opts.runId ?? null,
+          sessionId: opts.sessionId ?? null,
+          autonomyMode: opts.autonomyMode,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '切换自主模式失败');
+      return json.data;
+    },
+
+    async setPaidAuth(opts: {
+      runId?: string | null;
+      sessionId?: string | null;
+      enabled: boolean;
+    }): Promise<WorkbenchState> {
+      const res = await fetch(`${API_BASE_URL}/workbench/paid-auth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: opts.runId ?? null,
+          sessionId: opts.sessionId ?? null,
+          enabled: opts.enabled,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '更新付费授权失败');
+      return json.data;
+    },
+
+    async runPreflight(opts: { runId?: string | null; sessionId?: string | null }): Promise<PreflightResult> {
+      const res = await fetch(`${API_BASE_URL}/workbench/preflight`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: opts.runId ?? null, sessionId: opts.sessionId ?? null }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '预检失败');
+      return json.data;
+    },
+
+    async confirm(opts: {
+      runId?: string | null;
+      sessionId?: string | null;
+      type: ConfirmType;
+    }): Promise<ConfirmResult> {
+      const res = await fetch(`${API_BASE_URL}/workbench/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId: opts.runId ?? null,
+          sessionId: opts.sessionId ?? null,
+          type: opts.type,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) {
+        const error = new Error(json.error || '确认失败') as Error & { code?: string; preflight?: PreflightResult };
+        error.code = json.code;
+        error.preflight = json.preflight;
+        throw error;
+      }
+      return json.data;
+    },
+
+    async retryShot(opts: {
+      runId: string;
+      shotId: string;
+      attempt: number;
+      failureReason: string;
+      promptOverride?: string | null;
+    }): Promise<RetryShotResult> {
+      const res = await fetch(`${API_BASE_URL}/workbench/retry-shot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '重试镜头失败');
+      return json.data;
+    },
+
+    async cancel(opts: { runId?: string | null; sessionId?: string | null }): Promise<WorkbenchState> {
+      const res = await fetch(`${API_BASE_URL}/workbench/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: opts.runId ?? null, sessionId: opts.sessionId ?? null }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '取消失败');
+      return json.data;
+    },
+
+    // --- P3 质量闭环 ---
+    async qaShot(opts: { runId: string; shotId: string }): Promise<any> {
+      const res = await fetch(`${API_BASE_URL}/workbench/qa-shot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || 'QA 检查失败');
+      return json.data;
+    },
+
+    async fixShot(opts: { runId: string; shotId: string; skipAutoFix?: boolean }): Promise<any> {
+      const res = await fetch(`${API_BASE_URL}/workbench/fix-shot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '修复失败');
+      return json.data;
+    },
+
+    async manualPass(opts: { runId: string; shotId: string; comment?: string }): Promise<any> {
+      const res = await fetch(`${API_BASE_URL}/workbench/manual-pass`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '人工通过失败');
+      return json.data;
+    },
+
+    async useVersion(opts: { runId: string; shotId: string; versionId: string }): Promise<any> {
+      const res = await fetch(`${API_BASE_URL}/workbench/use-version`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) throw new Error(json.error || '版本选择失败');
+      return json.data;
+    },
+
+    async getShotVersions(shotId: string): Promise<any[]> {
+      const res = await fetch(`${API_BASE_URL}/workbench/shot-versions?shotId=${encodeURIComponent(shotId)}`);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json.success) return [];
+      return json.data || [];
+    },
+  },
+
   // --- 1. Model Configuration REST API ---
   models: {
     async fetchModels(): Promise<ModelConfigState> {
@@ -209,9 +414,9 @@ export const apiService = {
           imageModels: json.imageModels || [],
           videoModels: json.videoModels || [],
           autoRecommendationEnabled: json.autoRecommendationEnabled ?? true,
-          defaultTextModel: json.defaultTextModel || 'Gemini 3.6 Flash',
-          defaultImageModel: json.defaultImageModel || 'GPT Image 1',
-          defaultVideoModel: json.defaultVideoModel || 'Seedance 2.0 Fast',
+          defaultTextModel: json.defaultTextModel || DEFAULT_TEXT_MODEL,
+          defaultImageModel: json.defaultImageModel || DEFAULT_IMAGE_MODEL,
+          defaultVideoModel: json.defaultVideoModel || DEFAULT_VIDEO_MODEL,
         };
       } catch (err) {
         localStorage.removeItem('aigc_model_config');
@@ -348,20 +553,33 @@ export const apiService = {
       if (!res.ok || json.success === false) throw new Error(json.error || '删除产品图失败');
       return json;
     },
+
+    /**
+     * S0：切换工作台产品上下文。旧产品绑定 Run 的下游产物全部标记 stale，
+     * 之后发布/合成引用旧产物会被服务端 409 阻断。
+     */
+    async switchContext(
+      productId: string
+    ): Promise<{ success: boolean; staleCount: number; message: string }> {
+      const res = await fetch(
+        `${API_BASE_URL}/products/${encodeURIComponent(productId)}/context-switch`,
+        { method: 'POST' }
+      );
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.success === false) throw new Error(json.error || '切换产品上下文失败');
+      return json;
+    },
   },
 
   // --- 3. Material & Asset REST API ---
   materials: {
     async fetchMaterials(): Promise<MaterialItem[]> {
-      try {
-        const res = await fetch(`${API_BASE_URL}/materials`);
-        if (!res.ok) throw new Error('Fetch materials failed');
-        const json = await res.json();
-        return json.data || [];
-      } catch (err) {
-        console.warn('[API Client] Materials fetch fallback');
-        return [];
-      }
+      // S0：失败必须抛错（loading/error/empty 三态由调用方维护），不得吞成空数组
+      const res = await fetch(`${API_BASE_URL}/materials`);
+      if (!res.ok) throw new Error(`读取素材库失败 (HTTP ${res.status})`);
+      const json = await res.json();
+      if (json.success === false) throw new Error(json.error || '读取素材库失败');
+      return json.data || [];
     },
 
     async uploadMaterial(file: File, onProgress?: (percent: number) => void): Promise<MaterialItem> {
@@ -432,14 +650,12 @@ export const apiService = {
   // --- 4. Pipeline Task Execution & History REST API ---
   tasks: {
     async fetchTasks(): Promise<TaskItem[]> {
-      try {
-        const res = await fetch(`${API_BASE_URL}/tasks`);
-        if (!res.ok) throw new Error('Fetch tasks failed');
-        const json = await res.json();
-        return json.data || [];
-      } catch (err) {
-        return [];
-      }
+      // S0：失败必须抛错（loading/error/empty 三态由调用方维护），不得吞成空数组
+      const res = await fetch(`${API_BASE_URL}/tasks`);
+      if (!res.ok) throw new Error(`读取任务列表失败 (HTTP ${res.status})`);
+      const json = await res.json();
+      if (json.success === false) throw new Error(json.error || '读取任务列表失败');
+      return json.data || [];
     },
 
     async createTask(taskData: { id?: string; title?: string; status?: string; currentStep?: number; pipelineData: any; thumbnailUrl?: string }): Promise<{ success: boolean; data: TaskItem }> {
@@ -492,14 +708,12 @@ export const apiService = {
   // --- 5. BGM Library REST API ---
   bgm: {
     async fetchBgm(): Promise<BgmTrack[]> {
-      try {
-        const res = await fetch(`${API_BASE_URL}/bgm`);
-        if (!res.ok) throw new Error('Fetch BGM failed');
-        const json = await res.json();
-        return json.data || [];
-      } catch {
-        return [];
-      }
+      // S0：失败必须抛错（loading/error/empty 三态由调用方维护），不得吞成空数组
+      const res = await fetch(`${API_BASE_URL}/bgm`);
+      if (!res.ok) throw new Error(`读取 BGM 库失败 (HTTP ${res.status})`);
+      const json = await res.json();
+      if (json.success === false) throw new Error(json.error || '读取 BGM 库失败');
+      return json.data || [];
     },
 
     async uploadBgm(params: {
@@ -558,14 +772,12 @@ export const apiService = {
   // --- 6. Presets Preset Templates REST API ---
   presets: {
     async fetchPresets(): Promise<any[]> {
-      try {
-        const res = await fetch(`${API_BASE_URL}/presets`);
-        if (!res.ok) throw new Error('Fetch presets failed');
-        const json = await res.json();
-        return json.data || [];
-      } catch (err) {
-        return [];
-      }
+      // S0：失败必须抛错（loading/error/empty 三态由调用方维护），不得吞成空数组
+      const res = await fetch(`${API_BASE_URL}/presets`);
+      if (!res.ok) throw new Error(`读取预设模板失败 (HTTP ${res.status})`);
+      const json = await res.json();
+      if (json.success === false) throw new Error(json.error || '读取预设模板失败');
+      return json.data || [];
     },
 
     async createPreset(preset: { title: string; tag?: string; description?: string; coverImage?: string; pipelineData: any }): Promise<{ success: boolean; data: any }> {

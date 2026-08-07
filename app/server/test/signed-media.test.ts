@@ -40,6 +40,25 @@ test('serves only a correctly signed upload path', async () => {
   assert.equal((await fetch(tampered)).status, 403);
 });
 
+test('S1.4 caches identical signed URLs within TTL and re-signs on ttl change', () => {
+  const first = createSignedMediaUrl('/uploads/materials/fixture.txt', 'https://buv.example.com:3004');
+  const second = createSignedMediaUrl('/uploads/materials/fixture.txt', 'https://buv.example.com:3004');
+  assert.equal(first, second, 'TTL 内同素材应返回相同签名 URL（缓存命中）');
+
+  const otherTtl = createSignedMediaUrl(
+    '/uploads/materials/fixture.txt',
+    'https://buv.example.com:3004',
+    7200
+  );
+  const otherTtlAgain = createSignedMediaUrl(
+    '/uploads/materials/fixture.txt',
+    'https://buv.example.com:3004',
+    7200
+  );
+  assert.equal(otherTtl, otherTtlAgain);
+  assert.notEqual(otherTtl, first, '不同 TTL 应产生不同签名（缓存键含 TTL）');
+});
+
 test('refuses private base and converts public upload URLs into provider-safe signed URLs', () => {
   // Private base (e.g. localhost dev) must be refused — Seedance cannot download it
   const refused = resolvePublicMediaUrl('/uploads/materials/fixture.txt', baseUrl);

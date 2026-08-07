@@ -45,6 +45,8 @@ interface SidebarProps {
   onOpenSessionManager?: () => void;
   onLogout?: () => void;
   can: (permission: Permission) => boolean;
+  /** S0 真实引擎就绪状态（来自 /api/health 探测）；null = 探测中 */
+  engineReadiness?: { ffmpegInstalled: boolean | null; seedanceReady: boolean } | null;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -60,15 +62,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenSessionManager,
   onLogout,
   can,
+  engineReadiness,
 }) => {
   const currentWidthClass = isExpanded ? 'w-[240px]' : 'w-[68px]';
 
+  const mobileItems: Array<{
+    view: MainViewType;
+    title: string;
+    label: string;
+    permission: Permission;
+    icon: React.ReactNode;
+  }> = [
+    { view: 'pipeline', title: '5步短视频反推与生成主工程', label: '工作台', permission: 'module.pipeline.read', icon: <Workflow className="w-5 h-5" /> },
+    { view: 'materials', title: '视频素材库页面', label: '素材库', permission: 'module.materials.read', icon: <Film className="w-5 h-5" /> },
+    { view: 'tasks', title: '后台任务中心页面', label: '任务', permission: 'module.tasks.read', icon: <FolderKanban className="w-5 h-5" /> },
+    { view: 'presets', title: '8 大黄金爆款示范模板库与 AI 全链路反推', label: '模板', permission: 'module.presets.read', icon: <Sparkles className="w-5 h-5" /> },
+    { view: 'knowledge', title: '卖点库与品牌知识中心', label: '知识库', permission: 'module.knowledge.read', icon: <BookOpen className="w-5 h-5" /> },
+  ];
+
   return (
     <aside
-      className={`sticky top-0 h-screen z-30 bg-white text-slate-900 border-r border-slate-200/80 flex flex-col justify-between shrink-0 select-none transition-all duration-300 ${currentWidthClass}`}
+      className={`fixed bottom-0 inset-x-0 z-40 md:z-30 md:sticky md:top-0 md:bottom-auto md:left-auto md:right-auto md:h-screen bg-white text-slate-900 border-t md:border-t-0 md:border-r border-slate-200/80 shrink-0 select-none transition-all duration-300 md:${currentWidthClass}`}
+      aria-label="主导航"
     >
-      {/* Top Section */}
-      <div className="overflow-hidden flex flex-col h-full justify-between">
+      {/* 桌面端：常驻侧栏 */}
+      <div className="hidden md:flex overflow-hidden flex-col h-full justify-between">
         <div className="flex flex-col flex-1 min-h-0 overflow-y-auto">
           {/* Header */}
           <div className={`p-3.5 border-b border-slate-200/80 bg-slate-50/50 flex items-center min-h-[61px] ${isExpanded ? 'justify-between' : 'justify-center'}`}>
@@ -308,16 +326,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span className="truncate">新手上手指南</span>
               </button>
 
-              {/* AI Engine Status Badge */}
-              <div
-                className="flex items-center gap-2.5 rounded-lg text-xs font-medium border border-emerald-200/80 bg-emerald-50 text-emerald-700 px-3 py-2 mt-1"
-                title="企业级多模型 (DeepSeek / Gemini / GPT)"
-              >
-                <Zap className="w-4 h-4 fill-emerald-600 text-emerald-600 shrink-0" />
-                <span className="truncate">
-                  全量 AI 引擎在线
-                </span>
-              </div>
+              {/* S0 真实引擎状态（来自 /api/health 探测），不再静态宣称在线 */}
+              {(() => {
+                const readiness = engineReadiness;
+                const ffmpegOk = readiness?.ffmpegInstalled === true;
+                const seedanceOk = readiness?.seedanceReady === true;
+                const allOk = Boolean(readiness && ffmpegOk && seedanceOk);
+                const checking = !readiness;
+                const palette = allOk
+                  ? 'border-emerald-200/80 bg-emerald-50 text-emerald-700'
+                  : checking
+                    ? 'border-slate-200 bg-slate-50 text-slate-500'
+                    : 'border-amber-200/80 bg-amber-50 text-amber-700';
+                const label = allOk
+                  ? '引擎就绪'
+                  : checking
+                    ? '引擎检测中…'
+                    : '引擎部分离线';
+                const detail = allOk
+                  ? 'FFmpeg ✓ Seedance ✓'
+                  : checking
+                    ? '正在探测 FFmpeg / Seedance'
+                    : `FFmpeg ${ffmpegOk ? '✓' : '✗'} Seedance ${seedanceOk ? '✓' : '✗'}`;
+                return (
+                  <div
+                    className={`flex items-center gap-2.5 rounded-lg text-xs font-medium border px-3 py-2 mt-1 ${palette}`}
+                    title={detail}
+                  >
+                    <Zap className={`w-4 h-4 shrink-0 ${allOk ? 'fill-emerald-600 text-emerald-600' : checking ? 'text-slate-400' : 'fill-amber-500 text-amber-500'}`} />
+                    <span className="truncate">{label}</span>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -344,6 +384,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
         </div>
       </div>
+
+      {/* 移动端：底部导航（drawer/bottom navigation，不保留压缩后的常驻窄侧栏） */}
+      <nav className="md:hidden flex items-stretch justify-around h-14 border-t border-slate-200/80 bg-white" aria-label="移动端底部导航">
+        {mobileItems.map((item) =>
+          can(item.permission) ? (
+            <button
+              key={item.view}
+              onClick={() => onChangeView(item.view)}
+              aria-label={item.title}
+              aria-current={activeView === item.view ? 'page' : undefined}
+              className={`flex flex-col items-center justify-center gap-0.5 flex-1 min-w-0 py-1.5 cursor-pointer ${
+                activeView === item.view ? 'text-blue-600' : 'text-slate-500 hover:text-slate-700'
+              }`}
+              data-testid={`mobile-nav-${item.view}`}
+            >
+              {item.icon}
+              <span className="text-[10px] font-semibold leading-none truncate max-w-full px-0.5">{item.label}</span>
+            </button>
+          ) : null
+        )}
+      </nav>
     </aside>
   );
 };

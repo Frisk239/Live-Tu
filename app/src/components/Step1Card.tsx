@@ -34,7 +34,7 @@ import {
   Maximize2,
   Minimize2,
 } from 'lucide-react';
-import { ModelConfigState } from '../data/models';
+import { ModelConfigState, DEFAULT_TEXT_MODEL, DEFAULT_IMAGE_MODEL } from '../data/models';
 import { PromptEditorModal } from './PromptEditorModal';
 import { StepModelPicker } from './StepModelPicker';
 import { apiService } from '../services/api';
@@ -168,8 +168,8 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
     platform: 'douyin',
     bloggerType: 'skincare_expert',
     viralReason: '',
-    textModel: 'Gemini 3.6 Flash',
-    imageModel: 'GPT Image 1',
+    textModel: DEFAULT_TEXT_MODEL,
+    imageModel: DEFAULT_IMAGE_MODEL,
   };
 
   const showVideoPicker = Boolean(sourceVideoUrl) || isVideoMedia(safeInputs.mediaUrl || '');
@@ -268,14 +268,14 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
         modelConfig.defaultTextModel ||
         modelConfig.textModels.find((m) => m.enabled && m.isDefault)?.id ||
         modelConfig.textModels.find((m) => m.enabled)?.id ||
-        'Gemini 3.6 Flash';
+        DEFAULT_TEXT_MODEL;
     }
     if (!inputs.imageModel) {
       patch.imageModel =
         modelConfig.defaultImageModel ||
         modelConfig.imageModels.find((m) => m.enabled && m.isDefault)?.id ||
         modelConfig.imageModels.find((m) => m.enabled)?.id ||
-        'GPT Image 1';
+        DEFAULT_IMAGE_MODEL;
     }
     if (Object.keys(patch).length) onUpdateInputs(patch);
   }, [
@@ -621,7 +621,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
     const formattedText = completedItems
       .map(
         (item, index) =>
-          `【任务 #${index + 1} - ${item.name}】\nModel: ${inputs.imageModel || 'GPT Image 1'}\nPrompt: ${
+          `【任务 #${index + 1} - ${item.name}】\nModel: ${inputs.imageModel || DEFAULT_IMAGE_MODEL}\nPrompt: ${
             item.output?.static_image_prompt
           }\n`
       )
@@ -965,6 +965,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                   <input
                     type="file"
                     accept="video/*,image/*"
+                    data-testid="step1-single-upload-input"
                     onChange={async (e) => {
                       if (e.target.files && e.target.files[0]) {
                         await handleSingleUpload(e.target.files[0]);
@@ -1437,7 +1438,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
                         <span className="text-xs font-bold text-emerald-400 font-mono flex items-center gap-2">
                           <span>static_image_prompt</span>
                           <span className="px-2 py-0.5 rounded bg-emerald-500/20 border border-emerald-500/30 text-[10px] text-emerald-300">
-                            {inputs.imageModel || 'GPT Image 1'} 适配
+                            {inputs.imageModel || DEFAULT_IMAGE_MODEL} 适配
                           </span>
                         </span>
 
@@ -2045,7 +2046,7 @@ export const Step1Card: React.FC<Step1CardProps> = React.memo(({
               : '第 1 步：静态图 Prompt 精细化编辑器'
           }
           promptType="static_image_prompt"
-          modelName={inputs.imageModel || 'GPT Image 1'}
+          modelName={inputs.imageModel || DEFAULT_IMAGE_MODEL}
           initialPrompt={
             editingQueueItem?.output?.static_image_prompt || output?.static_image_prompt || ''
           }

@@ -22,13 +22,21 @@ jobs:
 
       - run: npm ci
       - run: npm run lint
-      - run: npm run test:security
-      - run: npm run test:orchestrator
-      - run: npm run test:migrations
-      - run: npm run test:permissions
-      - run: npm run test:backup
-      - run: npm run test:multi-shot
+      - run: npm run build
+      # S0 可信 CI：全量 server 测试（fresh DB 门禁，自动发现 + 每文件隔离库）
+      - run: npm run test:server
+      # legacy DB 升级门禁（旧库 → 最新 schema）
+      - run: npm run test:server:legacy
+      # P0 viral probe 专项门禁（provider-capabilities / viral-subclip / viral-control-image /
+      # viral-probe-runner 契约测试，全部零真实付费；CI 无 provider 密钥也能跑）
+      - run: npm run test:viral
       - run: npm run test:production
+      # S1 黄金集门禁：对比仓库 fixture 基线；加权质量下降 >5% 或 hard gate 回归 → 非零退出
+      # 定性（审查共识）：真实样本接入前这是「算法漂移门禁」——证明评分器/权重/编排改动
+      # 未降低确定性的筛选分，不等价于真实视频质量门禁；fixture 基线全部 unverified，
+      # unverified 显式列出但不阻断（阻断只看回归）。真实质量门禁随真实黄金样本接入自动生效。
+      - name: Golden set regression gate (S1)
+        run: npm run eval:golden -- --baseline server/test/fixtures/golden-baseline.json
       - name: Build production container
         run: docker build --tag live-tu:ci .
 
@@ -74,10 +82,25 @@ jobs:
         env:
           PORT: 3004
           ALLOW_MOCK_FALLBACK: "false"
+          # 禁止后台 worker 执行真实生成：smoke 创建 run 只为验证 UI 渲染，避免任何付费/外部调用
+          PIPELINE_WORKER_DISABLED: "true"
+          # S2 工作台 E2E 需要 fake 视频 provider（独立 runner 自起服务器并自带该 env，
+          # 这里仅为与 test:e2e:all 共用服务器的场景保持一致，绝不触发真实付费）
+          FAKE_VIDEO_PROVIDER: "true"
 
       - run: npm run test:e2e:all
         env:
           E2E_BASE_URL: http://127.0.0.1:3004
+
+      # S2 工作台专属门禁（自包含 runner：独立端口 + 临时 DB + FAKE_VIDEO_PROVIDER=true
+      # + FAKE_VIDEO_FAIL_NEXT=1 确定性重试演示 + PIPELINE_WORKER_DISABLED=true，零真实付费）
+      - name: S2 workbench e2e gate
+        run: npm run test:e2e:workbench
+
+      # P3 质量闭环专属门禁（自包含 runner：独立端口 + 临时 DB + fake 视频/技术 QA/语义 QA
+      # 注入：第 1 镜可恢复缺陷（fail-once）、第 2 镜持续不合格（修复上限 + 人工通过），零真实付费）
+      - name: P3 quality-loop e2e gate
+        run: npm run test:e2e:quality-loop
 
       - name: Print server log on failure
         if: failure()

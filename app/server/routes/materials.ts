@@ -229,6 +229,7 @@ materialsRouter.post('/upload-file', (req, res) => {
         },
       });
     } catch (error: any) {
+      console.error('[materials-upload-debug] 上传失败:', error, 'stack:', error?.stack);
       if (storageUrl) {
         try {
           await deleteMinioObjectByUrl(storageUrl);

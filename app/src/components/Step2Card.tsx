@@ -30,7 +30,7 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { ModelConfigState } from '../data/models';
+import { ModelConfigState, DEFAULT_TEXT_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_MODEL } from '../data/models';
 import { PromptEditorModal } from './PromptEditorModal';
 import { StepModelPicker } from './StepModelPicker';
 import { ShotGenerationTracker } from './ShotGenerationTracker';
@@ -72,6 +72,11 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [copiedJson, setCopiedJson] = useState(false);
   const [activeTab, setActiveTab] = useState<'visual' | 'json'>('visual');
+  // S2：Step2 明确分为「首帧创意」与「镜头生成」两个认知阶段
+  const [phase, setPhase] = useState<'first_frame' | 'shots'>('first_frame');
+  useEffect(() => {
+    if (output?.multiShotResult) setPhase('shots');
+  }, [output?.multiShotResult]);
   const [isPromptEditorOpen, setIsPromptEditorOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -91,14 +96,14 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
         modelConfig.defaultTextModel ||
         modelConfig.textModels.find((m) => m.enabled && m.isDefault)?.id ||
         modelConfig.textModels.find((m) => m.enabled)?.id ||
-        'Gemini 3.6 Flash';
+        DEFAULT_TEXT_MODEL;
     }
     if (!inputs.videoModel) {
       patch.videoModel =
         modelConfig.defaultVideoModel ||
         modelConfig.videoModels.find((m) => m.enabled && m.isDefault)?.id ||
         modelConfig.videoModels.find((m) => m.enabled)?.id ||
-        'Seedance 2.0 Fast';
+        DEFAULT_VIDEO_MODEL;
     }
     if (Object.keys(patch).length) onUpdateInputs(patch);
   }, [
@@ -428,9 +433,40 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
         </div>
       </div>
 
+      {/* S2 认知阶段切换：首帧创意 / 镜头生成 */}
+      <div className="px-6 pt-4" role="tablist" aria-label="第 2 步认知阶段">
+        <div className="inline-flex p-1 bg-slate-100 rounded-xl border border-slate-200/80 gap-1 text-xs font-bold">
+          <button
+            role="tab"
+            aria-selected={phase === 'first_frame'}
+            onClick={() => setPhase('first_frame')}
+            className={`px-3.5 py-1.5 rounded-lg transition-colors cursor-pointer ${
+              phase === 'first_frame' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+            }`}
+            data-testid="step2-phase-first-frame"
+          >
+            ① 首帧创意
+          </button>
+          <button
+            role="tab"
+            aria-selected={phase === 'shots'}
+            onClick={() => setPhase('shots')}
+            className={`px-3.5 py-1.5 rounded-lg transition-colors cursor-pointer ${
+              phase === 'shots' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-500 hover:text-slate-700'
+            }`}
+            data-testid="step2-phase-shots"
+          >
+            ② 镜头生成{output?.multiShotResult ? ' · 进行中' : ''}
+          </button>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-1.5">
+          首帧创意：确定产品首帧与候选图；镜头生成：逐镜提交、轮询与局部重试（JSON/prompt 默认折叠）
+        </p>
+      </div>
+
       <div className="p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Inputs Column */}
-        <div className="lg:col-span-5 space-y-4 border-r border-slate-100 pr-0 lg:pr-6">
+        {/* Left Inputs Column（首帧创意阶段） */}
+        <div className={`${phase === 'first_frame' ? 'lg:col-span-12' : 'hidden'} space-y-4 lg:pr-6`}>
           <div className="text-xs font-semibold text-slate-700 uppercase tracking-wider flex items-center justify-between">
             <div className="flex items-center gap-1.5">
               <Video className="w-4 h-4 text-slate-500" />
@@ -519,11 +555,12 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
                   生图大模型 (Text-to-Image Engine)
                 </label>
                 <select
-                  value={inputs.imageModel || 'GPT Image 1'}
+                  value={inputs.imageModel || DEFAULT_IMAGE_MODEL}
                   onChange={(e) => onUpdateInputs({ imageModel: e.target.value })}
                   className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-blue-500 shadow-2xs cursor-pointer"
                 >
-                  <option value="GPT Image 1">GPT Image 1 ★ 推荐（画质高、光影细腻）</option>
+                  <option value="GPT Image 2">GPT Image 2 ★ 推荐（云雾实测可用）</option>
+                  <option value="GPT Image 1">GPT Image 1（画质高、光影细腻）</option>
                   <option value="云雾矢量模组">云雾 Vision 生图模组</option>
                   <option value="Midjourney V6 Bridge">Midjourney V6.1 旗舰画质</option>
                 </select>
@@ -635,10 +672,56 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
                       <Maximize2 className="w-4 h-4" />
                     </button>
                   </div>
+                  <label className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg text-xs font-semibold text-blue-700 cursor-pointer transition-colors">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>更换首帧图片</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const fd = new FormData();
+                        fd.append('file', file);
+                        try {
+                          const res = await fetch('/api/v1/materials/upload-file', { method: 'POST', body: fd });
+                          const json = await res.json();
+                          if (json.success && json.data?.url) {
+                            onUpdateInputs({ imageUrl: json.data.url });
+                          }
+                        } catch {}
+                      }}
+                    />
+                  </label>
                 </div>
               ) : (
-                <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl text-xs text-amber-800">
-                  ⚠️ 尚未检测到首帧图片（请切换到【AI 生图选优】Tab 生成素材或在 Step 1 上传图片）
+                <div className="p-3 bg-amber-50 border border-amber-200/80 rounded-xl space-y-2">
+                  <p className="text-xs text-amber-800">
+                    ⚠️ 尚未检测到首帧图片（请切换到【AI 生图选优】Tab 生成素材或在 Step 1 上传图片）
+                  </p>
+                  <label className="flex items-center justify-center gap-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-xs font-bold text-white cursor-pointer transition-colors shadow-sm">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>从本地选择首帧图片</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const fd = new FormData();
+                        fd.append('file', file);
+                        try {
+                          const res = await fetch('/api/v1/materials/upload-file', { method: 'POST', body: fd });
+                          const json = await res.json();
+                          if (json.success && json.data?.url) {
+                            onUpdateInputs({ imageUrl: json.data.url });
+                          }
+                        } catch {}
+                      }}
+                    />
+                  </label>
                 </div>
               )}
 
@@ -723,8 +806,8 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
           </div>
         </div>
 
-        {/* Right Output Column (Immersive Dark Focus Canvas) */}
-        <div className="lg:col-span-7 flex flex-col justify-between bg-slate-900 text-slate-100 p-5 rounded-xl border border-slate-800 shadow-2xs">
+        {/* Right Output Column（镜头生成阶段） */}
+        <div className={`${phase === 'shots' ? 'lg:col-span-12' : 'hidden'} flex flex-col justify-between bg-slate-900 text-slate-100 p-5 rounded-xl border border-slate-800 shadow-2xs`}>
           <div>
             <div className="flex items-center justify-between mb-3">
               <div className="text-xs font-semibold text-blue-400 uppercase tracking-wider flex items-center gap-1.5">
@@ -827,7 +910,7 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
                     <span className="text-xs font-bold text-blue-400 font-mono flex items-center gap-2">
                       <span>video_prompt</span>
                       <span className="px-2 py-0.5 rounded-full bg-blue-900/40 text-blue-300 font-medium text-[10px] border border-blue-700/50">
-                        {inputs.videoModel || 'Seedance 2.0 Fast'} 适配
+                        {inputs.videoModel || DEFAULT_VIDEO_MODEL} 适配
                       </span>
                     </span>
 
@@ -891,7 +974,7 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-slate-300 font-mono">星河 Seedance 视频生成引擎</span>
                       <span className="text-[10px] text-slate-500 font-mono">
-                        ({output.seedanceModel || inputs.videoModel || 'Seedance 2.0 Fast'})
+                        ({output.seedanceModel || inputs.videoModel || DEFAULT_VIDEO_MODEL})
                       </span>
                     </div>
 
@@ -991,7 +1074,7 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
                     <div>
                       <span className="text-slate-500">模型代码：</span>
                       <span className="font-mono text-slate-200">
-                        {output.seedanceModel || inputs.videoModel || 'Seedance 2.0 Fast'}
+                        {output.seedanceModel || inputs.videoModel || DEFAULT_VIDEO_MODEL}
                       </span>
                     </div>
                     <div>
@@ -1107,7 +1190,7 @@ export const Step2Card: React.FC<Step2CardProps> = React.memo(({
           onClose={() => setIsPromptEditorOpen(false)}
           title="第 2 步：图生视频 Video Prompt 精细化编辑器"
           promptType="video_prompt"
-          modelName={inputs.videoModel || 'Seedance 2.0 Fast'}
+          modelName={inputs.videoModel || DEFAULT_VIDEO_MODEL}
           initialPrompt={output.video_prompt}
           onSavePrompt={handleSavePromptFromEditor}
           onRegenerate={handleRegenerateFromEditor}

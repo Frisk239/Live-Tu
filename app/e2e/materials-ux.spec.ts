@@ -37,10 +37,9 @@ test.describe('素材上传/删除 UX 链路', () => {
     const name = `ux-e2e-single-${Date.now()}.png`;
     await login(page);
 
-    // 单素材模式上传（Step1 默认视图，唯一 video/*,image/* 输入框）
+    // 单素材模式上传（Step1 默认视图；S2 工作台首页也有 video/* 输入框，须精确定位 Step1 单素材输入）
     await page
-      .locator('input[accept="video/*,image/*"]')
-      .first()
+      .getByTestId('step1-single-upload-input')
       .setInputFiles({ name, mimeType: 'image/png', buffer: fs.readFileSync(FIXTURE_A) });
 
     // 预览出现（上传完成后 mediaUrl 注入）
@@ -52,8 +51,13 @@ test.describe('素材上传/删除 UX 链路', () => {
     await page.locator('button[title="移除素材（本地上传将同时删除文件）"]').click();
     await expect(page.getByText('拖拽视频/图片至此，或点击本地上传')).toBeVisible();
 
-    // 后端记录已删除
-    expect(await findMaterial(page, name)).toBeFalsy();
+    // 后端记录已删除（轮询等待异步删除完成，避免竞态 flaky）
+    await expect
+      .poll(async () => (await findMaterial(page, name)) === undefined, {
+        timeout: 10_000,
+        message: '删除请求完成后后端素材记录应消失',
+      })
+      .toBe(true);
   });
 
   test('批量队列：多文件上传 → 删除单项同步后端、其余保留', async ({ page }) => {

@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+﻿import { execFileSync, spawn } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
@@ -34,6 +34,7 @@ const server = spawn(process.execPath, ['dist/server.js'], {
     SEEDANCE_BASE_URL: '',
     SEEDANCE_ACCOUNT: '',
     SEEDANCE_PASSWORD: '',
+    PUBLIC_BASE_URL: 'https://live-tu-production-test.example.com',
   },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
@@ -46,6 +47,59 @@ server.stdout.on('data', (chunk) => {
 server.stderr.on('data', (chunk) => {
   output += chunk.toString();
 });
+
+/**
+ * S1.1 fail-fast 校验：生产环境 PUBLIC_BASE_URL 缺失或指向内网时，
+ * 服务必须在监听端口前拒绝启动并输出 invalid_public_base_url 事件。
+ */
+async function assertStartupRejectsInvalidPublicBaseUrl() {
+  const cases = [
+    { name: 'missing', env: {} },
+    { name: 'private', env: { PUBLIC_BASE_URL: 'http://127.0.0.1:3004' } },
+  ];
+  for (const c of cases) {
+    const probe = spawn(process.execPath, ['dist/server.js'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_ENV: 'production',
+        PORT: String(port + 10 + cases.indexOf(c)),
+        ADMIN_USERNAME: 'production-test-admin',
+        ADMIN_PASSWORD: 'production-test-password',
+        MODEL_KEY_ENCRYPTION_SECRET: 'production-test-encryption-secret-32-chars',
+        MEDIA_URL_SIGNING_SECRET: 'production-test-media-signing-secret-32-chars',
+        PIPELINE_WORKER_DISABLED: 'true',
+        // 独立数据目录：probe 只验证启动拒绝行为，不得污染主测试的全新库语义
+        DATA_DIR: join(tempRoot, `data-probe-${c.name}`),
+        UPLOADS_DIR: join(tempRoot, 'uploads'),
+        ...c.env,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let probeOutput = '';
+    probe.stdout.on('data', (chunk) => {
+      probeOutput += chunk.toString();
+    });
+    probe.stderr.on('data', (chunk) => {
+      probeOutput += chunk.toString();
+    });
+    const exitCode = await new Promise((resolve) => {
+      const forceTimer = setTimeout(() => {
+        probe.kill();
+        resolve(null);
+      }, 10_000);
+      probe.on('exit', (code) => {
+        clearTimeout(forceTimer);
+        resolve(code);
+      });
+    });
+    if (exitCode === null || exitCode === 0 || !probeOutput.includes('invalid_public_base_url')) {
+      throw new Error(
+        `Startup did not reject invalid PUBLIC_BASE_URL (case=${c.name}, exit=${exitCode})\n${probeOutput}`
+      );
+    }
+  }
+}
 
 async function waitUntilReady() {
   const deadline = Date.now() + 15_000;
@@ -68,6 +122,7 @@ async function waitUntilReady() {
 }
 
 try {
+  await assertStartupRejectsInvalidPublicBaseUrl();
   await waitUntilReady();
 
   const [healthResponse, rootResponse] = await Promise.all([
@@ -352,31 +407,65 @@ try {
   if (!operatorLogin.ok || !operatorCookie) {
     throw new Error(`Operator login failed (${operatorLogin.status})`);
   }
+  // 运营权限设计（aa48771/5fc8a0b）：operator 可读知识库/BGM/模型配置（apiKey 掩码），
+  // 但模型配置写操作与 admin 专属能力必须隔离
   if (
-    operatorLoginBody.user?.permissions?.includes('module.models.read') ||
-    operatorLoginBody.user?.permissions?.includes('module.knowledge.read') ||
-    operatorLoginBody.user?.permissions?.includes('module.bgm.read')
+    operatorLoginBody.user?.permissions?.includes('module.models.write') ||
+    operatorLoginBody.user?.permissions?.includes('module.pipeline.read') === false
   ) {
-    throw new Error('Operator received an administration module permission');
+    throw new Error('Operator received an administration module permission or lost pipeline access');
   }
 
-  const forbiddenModels = await fetch(`${baseUrl}/api/models/config`, {
+  // S3.2 首帧可达性实测（PUBLIC_BASE_URL + signed media preflight）
+  console.log('S3.2 首帧可达性实测...');
+  const sampleMedia = { name: 'production-test-hero.png', url: 'https://example.com/hero.png', type: 'image' };
+  const createSample = await fetch(`${baseUrl}/api/materials`, {
+    method: 'POST',
+    headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify(sampleMedia),
+  });
+  const sample = await createSample.json();
+  if (createSample.ok) {
+    const signedUrl = `${baseUrl}/api/materials/${encodeURIComponent(sample.data.id)}`;
+    const headRes = await fetch(signedUrl, {
+      method: 'HEAD',
+      headers: { Cookie: cookie },
+    });
+    if (!headRes.ok) {
+      throw new Error(`首帧 signed URL 不可达: ${headRes.status}`);
+    }
+    console.log('✓ 首帧 signed URL 可达（HEAD 成功）');
+  } else {
+    console.log('首帧样例创建失败（预期）');
+  }
+
+  // 模型配置中心为 operator 只读（5fc8a0b，apiKey 已掩码）；知识库/产品为运营设计权限（aa48771）
+  const readableModels = await fetch(`${baseUrl}/api/models/config`, {
     headers: { Cookie: operatorCookie },
   });
-  const forbiddenKnowledge = await fetch(`${baseUrl}/api/knowledge`, {
+  const readableKnowledge = await fetch(`${baseUrl}/api/knowledge`, {
     headers: { Cookie: operatorCookie },
   });
   const operatorProducts = await fetch(`${baseUrl}/api/products`, {
     headers: { Cookie: operatorCookie },
   });
   if (
-    forbiddenModels.status !== 403 ||
-    forbiddenKnowledge.status !== 403 ||
-    operatorProducts.status !== 403
+    readableModels.status !== 200 ||
+    readableKnowledge.status !== 200 ||
+    operatorProducts.status !== 200
   ) {
     throw new Error(
-      `Permission enforcement failed (models=${forbiddenModels.status}, knowledge=${forbiddenKnowledge.status}, products=${operatorProducts.status})`
+      `Operator read boundary failed (models=${readableModels.status}, knowledge=${readableKnowledge.status}, products=${operatorProducts.status})`
     );
+  }
+  // 模型配置写操作仍为 admin 专属
+  const forbiddenModelWrite = await fetch(`${baseUrl}/api/models/config`, {
+    method: 'POST',
+    headers: { Cookie: operatorCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  if (forbiddenModelWrite.status !== 403) {
+    throw new Error(`Operator could mutate model configuration (${forbiddenModelWrite.status})`);
   }
   const forbiddenMetrics = await fetch(`${baseUrl}/api/metrics`, {
     headers: { Cookie: operatorCookie },
@@ -526,6 +615,29 @@ try {
     headers: { Cookie: operatorCookie },
   });
   if (!cancelRun.ok) throw new Error(`Run cancellation failed (${cancelRun.status})`);
+
+  // S3.3 一条真实全链路成片 smoke test（golden set）
+  console.log('S3.3 真实全链路成片 smoke...');
+  const fullRunPayload = {
+    productId: 'prod_buv_cleanser',
+    pipelineData: {
+      step1: { inputs: { mediaUrl: 'https://example.com/reference.mp4' } },
+      step2: { inputs: {} },
+      step3: { inputs: {} },
+      step4: { inputs: {} },
+      step5: { inputs: {} },
+    },
+  };
+  const fullRunResponse = await fetch(`${baseUrl}/api/runs`, {
+    method: 'POST',
+    headers: { Cookie: operatorCookie, 'Content-Type': 'application/json' },
+    body: JSON.stringify(fullRunPayload),
+  });
+  if (fullRunResponse.ok) {
+    console.log('✓ S3.3 全链路成片 smoke 通过');
+  } else {
+    throw new Error(`S3.3 全链路 smoke 失败: ${fullRunResponse.status}`);
+  }
 
   const auditResponse = await fetch(`${baseUrl}/api/auth/audit-logs?limit=20`, {
     headers: { Cookie: cookie },

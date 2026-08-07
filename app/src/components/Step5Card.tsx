@@ -33,6 +33,18 @@ interface Step5Readiness {
   publicBaseUrl?: string | null;
 }
 
+/**
+ * 发布门禁 blocker/warning 的证据解释（S1：发布页必须解释证据来源，不能只显示总分）。
+ * report.blockerEvidence[code] / warningEvidence[code] 由服务端 publish-gate 生成，
+ * 包含 source（哪个输入/探测产生）与 detail（可读解释）。
+ */
+function explainGateCode(report: any, code: string, kind: 'blocker' | 'warning'): string {
+  const map = kind === 'blocker' ? report.blockerEvidence : report.warningEvidence;
+  const entry = map?.[code];
+  if (!entry) return `（无证据条目：${code}）`;
+  return `证据来源：${entry.source} — ${entry.detail}`;
+}
+
 interface Step5CardProps {
   inputs: Step5Inputs;
   output?: Step5Output;
@@ -50,6 +62,10 @@ interface Step5CardProps {
   /** Optional: jump back to step 2 when video missing */
   onGoStep2?: () => void;
   readiness?: Step5Readiness;
+  // --- P3：镜头质量摘要 ---
+  shotQaSummary?: Array<{ shotIndex: number; verdict: string; summary: string | null }>;
+  qaPassed?: number;
+  qaTotal?: number;
 }
 
 export const Step5Card: React.FC<Step5CardProps> = React.memo(({
@@ -68,6 +84,9 @@ export const Step5Card: React.FC<Step5CardProps> = React.memo(({
   upstreamStale = false,
   onGoStep2,
   readiness,
+  shotQaSummary = [],
+  qaPassed = 0,
+  qaTotal = 0,
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -691,22 +710,70 @@ export const Step5Card: React.FC<Step5CardProps> = React.memo(({
                         ? '✅ 已通过'
                         : (output as any).publishReport.status === 'needs_review'
                           ? '🟡 待审核（成片已生成，未达发布标准）'
-                          : '❌ 未通过'}
+                          : (output as any).publishReport.status === 'unverified'
+                            ? '🔵 未验证（无法确认，不计为通过）'
+                            : '❌ 未通过'}
                     </div>
                     {(output as any).publishReport.blockers?.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mb-1">
+                      <div className="flex flex-col gap-1 mb-1">
                         {(output as any).publishReport.blockers.map((b: string) => (
-                          <span key={b} className="text-[10px] text-rose-300 px-1.5 py-0.5 rounded bg-rose-500/15">✗ {b}</span>
+                          <div key={b} className="text-[10px] text-rose-300 px-1.5 py-1 rounded bg-rose-500/15">
+                            ✗ <b>{b}</b>
+                            <span className="block text-rose-300/80 mt-0.5">
+                              {explainGateCode((output as any).publishReport, b, 'blocker')}
+                            </span>
+                          </div>
                         ))}
                       </div>
                     )}
                     {(output as any).publishReport.warnings?.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
+                      <div className="flex flex-col gap-1">
                         {(output as any).publishReport.warnings.map((w: string) => (
-                          <span key={w} className="text-[10px] text-amber-300 px-1.5 py-0.5 rounded bg-amber-500/10">○ {w}</span>
+                          <div key={w} className="text-[10px] text-amber-300 px-1.5 py-1 rounded bg-amber-500/10">
+                            ○ <b>{w}</b>
+                            <span className="block text-amber-300/80 mt-0.5">
+                              {explainGateCode((output as any).publishReport, w, 'warning')}
+                            </span>
+                          </div>
                         ))}
                       </div>
                     )}
+                    <div className="mt-1.5 text-[10px] text-slate-500">
+                      评分卡版本 {(output as any).publishReport.scorerVersion || 'unknown'} · 证据随每项展示
+                    </div>
+                  </div>
+                )}
+
+                {/* P3：镜头质量摘要（语义 QA 逐镜判决） */}
+                {shotQaSummary && shotQaSummary.length > 0 && (
+                  <div className="p-3.5 rounded-xl bg-slate-900 border border-emerald-800/60" data-testid="shot-qa-summary">
+                    <span className="text-xs font-bold text-emerald-300 block mb-2">
+                      镜头质量摘要（{qaPassed}/{qaTotal} 通过）
+                    </span>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                      {shotQaSummary.map((s) => (
+                        <div
+                          key={s.shotIndex}
+                          className={`rounded-lg px-2 py-1.5 text-[11px] border ${
+                            s.verdict === 'pass'
+                              ? 'bg-emerald-500/10 border-emerald-700/40 text-emerald-300'
+                              : s.verdict === 'fail'
+                                ? 'bg-rose-500/10 border-rose-700/40 text-rose-300'
+                                : s.verdict === 'warning'
+                                  ? 'bg-amber-500/10 border-amber-700/40 text-amber-300'
+                                  : 'bg-slate-800/70 border-slate-700 text-slate-400'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <b>#{s.shotIndex}</b>
+                            <span>
+                              {s.verdict === 'pass' ? '✅' : s.verdict === 'fail' ? '❌' : s.verdict === 'warning' ? '🟡' : '🔵'}
+                            </span>
+                          </div>
+                          {s.summary && <div className="text-[10px] opacity-80 mt-0.5 truncate">{s.summary}</div>}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>

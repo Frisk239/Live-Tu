@@ -2,6 +2,7 @@ import { Router } from 'express';
 import path from 'node:path';
 import fs from 'node:fs';
 import multer from 'multer';
+import { randomUUID } from 'node:crypto';
 import { db } from '../lib/db';
 import { requirePermission } from '../lib/auth';
 import { callLlmGateway } from '../lib/llm-gateway';
@@ -11,6 +12,7 @@ import {
   listProductAssets,
 } from '../lib/product-assets';
 import { registerOwnedMedia } from '../lib/media-ownership';
+import { markStaleArtifactsExceptProduct } from '../lib/publish-context';
 
 export const productsRouter = Router();
 
@@ -105,7 +107,7 @@ productsRouter.post(
     }
     return next();
   },
-  (req, res) => {
+  async (req, res) => {
     try {
       const productId = req.params.id;
       const product = db.prepare('SELECT id FROM products WHERE id = ?').get(productId);
@@ -145,6 +147,34 @@ productsRouter.post(
 
       if (req.authUser?.id && url.startsWith('/uploads/')) {
         registerOwnedMedia(url, req.authUser.id, 'product_asset');
+      }
+
+      // Upload is not usable by any provider until this awaited, hash-bound safety
+      // assessment has been recorded. A remote JSON URL has no local digest and is
+      // deliberately left unverified instead of inheriting a stale verdict.
+      if (req.authUser?.id) {
+        const ownerId = req.authUser.id;
+        try {
+          const { evaluateVisualSafety, recordVisualSafety, sha256OfLocalFile } = await import('../lib/visual-safety');
+          // hash 绑定：multipart 上传直接取产物路径；JSON url 若是本系统 /uploads
+          // 素材（如 materials 上传的图片），从本地字节解析——否则远程裸 URL 无
+          // 本地摘要，按 unverified 拒绝（不继承过期判决）。路径穿越守卫：
+          // 解析结果必须仍在 uploadsRoot 内，否则视为不可哈希。
+          const uploadsRoot = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'));
+          let localPath: string | null = file?.filename
+            ? path.join(productAssetsDir, file.filename)
+            : null;
+          if (!localPath && url.startsWith('/uploads/')) {
+            const resolved = path.resolve(uploadsRoot, url.slice('/uploads/'.length));
+            if (resolved.startsWith(`${uploadsRoot}${path.sep}`)) localPath = resolved;
+          }
+          const assessment = await evaluateVisualSafety(url, { sha256: sha256OfLocalFile(localPath) });
+          recordVisualSafety(ownerId, url, assessment);
+        } catch (e: any) {
+          // The inserted row remains at its migration default (unverified), which
+          // blocks image/video providers. Do not return a successful safety result.
+          console.warn('[visual-safety] evaluation could not be recorded:', e?.message || e);
+        }
       }
 
       // Optionally set cover if empty
@@ -309,7 +339,8 @@ productsRouter.put('/:id', requirePermission('module.knowledge.write'), (req, re
           prohibited_words = ?,
           target_audience = ?,
           custom_selling_points = ?,
-          updated_at = CURRENT_TIMESTAMP
+          updated_at = CURRENT_TIMESTAMP,
+          revision = revision + 1
       WHERE id = ?
     `);
 
@@ -348,6 +379,52 @@ productsRouter.delete('/:id', requirePermission('module.knowledge.write'), (req,
     return res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// POST /api/products/:id/context-switch — 切换工作台产品上下文（S0 产品污染修复）
+// 工作台切换到新绑定产品时调用：旧产品 Run 的下游产物全部标记 stale，
+// 之后任何发布/合成路径引用 stale 产物都会被 publish-context 守卫阻断（409）。
+productsRouter.post(
+  '/:id/context-switch',
+  requirePermission('module.knowledge.write'),
+  (req, res) => {
+    try {
+      const productId = req.params.id;
+      const product = db.prepare('SELECT id FROM products WHERE id = ?').get(productId);
+      if (!product) {
+        return res.status(404).json({ success: false, error: '产品不存在' });
+      }
+      const { staleCount } = markStaleArtifactsExceptProduct(
+        productId,
+        (req as any).authUser?.id || 'system'
+      );
+      // 审计：记录上下文切换（谁、切到哪个产品、作废了多少旧产物）
+      try {
+        db.prepare(
+          `INSERT INTO audit_logs (id, user_id, action, entity_type, entity_id, metadata_json)
+           VALUES (?, ?, 'product_context_switch', 'product', ?, ?)`
+        ).run(
+          randomUUID(),
+          (req as any).authUser?.id || null,
+          productId,
+          JSON.stringify({ staleCount })
+        );
+      } catch (auditErr: any) {
+        console.warn('[products] context-switch audit skipped:', auditErr.message);
+      }
+      return res.json({
+        success: true,
+        productId,
+        staleCount,
+        message:
+          staleCount > 0
+            ? `已切换到「${productId}」，${staleCount} 个旧产品产物已标记过期，重新生成后可发布`
+            : `已切换到「${productId}」`,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err.message });
+    }
+  }
+);
 
 // POST /api/products/optimize 或 /api/selling-points/optimize — AI 智能提炼/优化卖点
 export async function handleSellingPointsOptimize(req: any, res: any) {

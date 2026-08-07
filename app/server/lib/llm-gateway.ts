@@ -2,6 +2,7 @@ import { db } from './db';
 import fs from 'node:fs';
 import path from 'node:path';
 import { decryptSecret } from './secrets';
+import { isEditsCapableModelCode } from './image-conditioning-capability';
 
 export interface LlmGatewayParams {
   system: string;
@@ -217,6 +218,12 @@ export interface ImageGenParams {
   prompt: string;
   size?: string;
   modelId?: string;
+  /**
+   * S3 多图条件生成（参考图编辑）：数组顺序即 /images/edits 的 image 顺序
+   * （首图 = 构图基座/参考关键帧，后续图 = 产品包装参考）。
+   * 支持 /uploads 本地路径、http(s) 公网 URL、data: URL。
+   */
+  referenceImages?: Array<{ url?: string; localPath?: string } | string>;
 }
 
 export interface ImageGenResponse {
@@ -227,8 +234,70 @@ export interface ImageGenResponse {
   error?: string;
 }
 
+/** 把参考图引用解析为本地 Buffer（/uploads 读盘、http(s) 下载、data: 解码） */
+export async function resolveReferenceImageBuffer(
+  ref: { url?: string; localPath?: string } | string
+): Promise<{ buffer: Buffer; name: string; mime: string } | null> {
+  const url = typeof ref === 'string' ? ref : ref.localPath || ref.url || '';
+  if (!url) return null;
+  try {
+    if (url.startsWith('data:image/')) {
+      const match = url.match(/^data:image\/(\w+);base64,(.+)$/);
+      if (!match) return null;
+      return {
+        buffer: Buffer.from(match[2], 'base64'),
+        name: `ref-${Date.now()}.${match[1] === 'jpeg' ? 'jpg' : match[1]}`,
+        mime: `image/${match[1] === 'jpeg' ? 'jpeg' : match[1]}`,
+      };
+    }
+    if (url.startsWith('/uploads/') || url.startsWith('uploads/')) {
+      const uploadsRoot = path.resolve(process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads'));
+      const abs = path.resolve(uploadsRoot, url.replace(/^\/?uploads\//, ''));
+      if (!abs.startsWith(`${uploadsRoot}${path.sep}`) || !fs.existsSync(abs)) return null;
+      const buffer = fs.readFileSync(abs);
+      const ext = path.extname(abs).toLowerCase().replace('.', '');
+      return {
+        buffer,
+        name: path.basename(abs),
+        mime: ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png',
+      };
+    }
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      // 图床 CDN 传播延迟：新发布图片可能秒级 404——重试 3 次（2s 退避）
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await fetch(url, {
+            signal: AbortSignal.timeout(90_000),
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36' },
+          });
+          if (!res.ok) {
+            if (attempt < 2) {
+              await new Promise((r) => setTimeout(r, 2_000));
+              continue;
+            }
+            return null;
+          }
+          const buffer = Buffer.from(await res.arrayBuffer());
+          const mime = res.headers.get('content-type')?.split(';')[0]?.trim() || 'image/png';
+          const name = path.basename(new URL(url).pathname) || `ref-${Date.now()}.png`;
+          return { buffer, name, mime };
+        } catch {
+          if (attempt < 2) {
+            await new Promise((r) => setTimeout(r, 2_000));
+            continue;
+          }
+        }
+      }
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export async function callImageGenerationGateway(params: ImageGenParams): Promise<ImageGenResponse> {
-  const { prompt, size = '1024x1024', modelId } = params;
+  const { prompt, size = '1024x1024', modelId, referenceImages } = params;
 
   let targetModel: any = null;
   if (modelId) {
@@ -248,8 +317,8 @@ export async function callImageGenerationGateway(params: ImageGenParams): Promis
   let apiKey = targetModel?.api_key
     ? decryptSecret(targetModel.api_key)
     : process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY || '';
-  let modelCode = targetModel?.model_code || process.env.IMAGE_MODEL || 'gpt-image-1';
-  let modelName = targetModel?.name || 'GPT Image 1';
+  let modelCode = targetModel?.model_code || process.env.IMAGE_MODEL || 'gpt-image-2';
+  let modelName = targetModel?.name || 'GPT Image 2';
 
   baseUrl = baseUrl.replace(/\/$/, '');
   const envYunwuKey = process.env.YUNWU_API_KEY || process.env.GEMINI_API_KEY;
@@ -258,6 +327,24 @@ export async function callImageGenerationGateway(params: ImageGenParams): Promis
     apiKey = envYunwuKey;
     baseUrl = (process.env.YUNWU_BASE_URL || 'https://api3.wlai.vip/v1').replace(/\/$/, '');
     isYunwuFallback = true;
+  }
+
+  // S3 能力门禁：多图条件生成只走 /images/edits（云雾实测 gpt-image-1/2 200；
+  // /images/generations 的 input 数组被网关拒绝 500 "prompt is required"）。
+  // 模型能力与密钥配置无关——先于 apiKey 检查，保证在任何环境（含 CI 无密钥）
+  // 都显式失败，绝不静默退化为纯文本生图。
+  const hasReferences = Array.isArray(referenceImages) && referenceImages.length > 0;
+  if (hasReferences && !isEditsCapableModelCode(modelCode)) {
+    return {
+      success: false,
+      imageUrl: '',
+      modelUsed: `${modelName} (${modelCode})`,
+      source: isYunwuFallback ? 'yunwu' : 'direct',
+      error:
+        'product_conditioning_provider_unavailable: ' +
+        `模型 ${modelCode} 不支持参考图编辑（/images/edits）条件生成。` +
+        '已拒绝生成条件化首帧，禁止静默退化为随机图/纯文本生图/直接产品主图。',
+    };
   }
 
   if (!apiKey) {
@@ -271,24 +358,55 @@ export async function callImageGenerationGateway(params: ImageGenParams): Promis
   }
 
   try {
-    // gpt-image-1 实测约 30–40s，超时给足
+    // gpt-image-1/2 实测约 30–105s（多图编辑更慢），超时给足
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 90000);
+    const timeoutId = setTimeout(() => controller.abort(), hasReferences ? 200_000 : 90_000);
 
-    const response = await fetch(`${baseUrl}/images/generations`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: modelCode,
-        prompt,
-        n: 1,
-        size,
-      }),
-      signal: controller.signal,
-    });
+    let response: Response;
+    if (hasReferences) {
+      // 参考图编辑：POST /images/edits（multipart：image[] + prompt）
+      const resolved = await Promise.all(
+        referenceImages.map(async (ref) => resolveReferenceImageBuffer(ref))
+      );
+      if (resolved.some((r) => !r)) {
+        clearTimeout(timeoutId);
+        return {
+          success: false,
+          imageUrl: '',
+          modelUsed: `${modelName} (${modelCode})`,
+          source: isYunwuFallback ? 'yunwu' : 'direct',
+          error: '参考图解析失败（本地文件缺失或公网 URL 不可达），无法进行条件生成',
+        };
+      }
+      const fd = new FormData();
+      fd.append('model', modelCode);
+      fd.append('prompt', prompt);
+      for (const r of resolved as Array<{ buffer: Buffer; name: string; mime: string }>) {
+        fd.append('image', new Blob([r.buffer], { type: r.mime }), r.name);
+      }
+      fd.append('size', size);
+      response = await fetch(`${baseUrl}/images/edits`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: fd,
+        signal: controller.signal,
+      });
+    } else {
+      response = await fetch(`${baseUrl}/images/generations`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: modelCode,
+          prompt,
+          n: 1,
+          size,
+        }),
+        signal: controller.signal,
+      });
+    }
 
     clearTimeout(timeoutId);
 
